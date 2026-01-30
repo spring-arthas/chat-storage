@@ -19,10 +19,10 @@ struct LoginView: View {
     // MARK: - State Variables (状态变量)
     
     /// 用户名输入（手机号或邮箱）
-    @State private var username: String = ""
+    @State private var username: String = "18806504525"
     
     /// 密码输入
-    @State private var password: String = ""
+    @State private var password: String = "spring"
     
     /// 错误提示信息
     @State private var errorMessage: String = ""
@@ -98,6 +98,12 @@ struct LoginView: View {
                 TextField("手机号或邮箱", text: $username)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 300)
+                    .onSubmit {
+                        // 按下回车键时，如果密码已填写则登录，否则跳转到密码框
+                        if !password.isEmpty {
+                            handleLogin()
+                        }
+                    }
                     .onChange(of: username) { _ in
                         // 清除错误信息（用户重新输入时）
                         if !errorMessage.isEmpty {
@@ -115,6 +121,10 @@ struct LoginView: View {
                 SecureField("请输入密码", text: $password)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 300)
+                    .onSubmit {
+                        // 按下回车键时触发登录
+                        handleLogin()
+                    }
                     .onChange(of: password) { _ in
                         // 清除错误信息（用户重新输入时）
                         if !errorMessage.isEmpty {

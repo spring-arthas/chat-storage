@@ -34,6 +34,9 @@ struct RegisterView: View {
     /// 确认密码输入
     @State private var confirmPassword: String = ""
     
+    /// 邮箱输入
+    @State private var email: String = ""
+    
     /// 错误提示信息
     @State private var errorMessage: String = ""
     
@@ -68,6 +71,12 @@ struct RegisterView: View {
                 TextField("手机号或邮箱", text: $username)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 300)
+                    .onSubmit {
+                        // 按回车跳转到下一个输入框或注册
+                        if !password.isEmpty && !confirmPassword.isEmpty && !email.isEmpty {
+                            handleRegister()
+                        }
+                    }
                     .onChange(of: username) { _ in
                         // 清除错误信息
                         if !errorMessage.isEmpty {
@@ -85,6 +94,12 @@ struct RegisterView: View {
                 SecureField("至少6位字符", text: $password)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 300)
+                    .onSubmit {
+                        // 按回车跳转到下一个输入框或注册
+                        if !confirmPassword.isEmpty && !email.isEmpty {
+                            handleRegister()
+                        }
+                    }
                     .onChange(of: password) { _ in
                         if !errorMessage.isEmpty {
                             errorMessage = ""
@@ -101,7 +116,33 @@ struct RegisterView: View {
                 SecureField("再次输入密码", text: $confirmPassword)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 300)
+                    .onSubmit {
+                        // 按回车跳转到邮箱输入框或注册
+                        if !email.isEmpty {
+                            handleRegister()
+                        }
+                    }
                     .onChange(of: confirmPassword) { _ in
+                        if !errorMessage.isEmpty {
+                            errorMessage = ""
+                        }
+                    }
+            }
+            
+            // 邮箱输入框
+            VStack(alignment: .leading, spacing: 8) {
+                Text("邮箱")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                
+                TextField("请输入邮箱地址", text: $email)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 300)
+                    .onSubmit {
+                        // 按回车触发注册
+                        handleRegister()
+                    }
+                    .onChange(of: email) { _ in
                         if !errorMessage.isEmpty {
                             errorMessage = ""
                         }
@@ -145,7 +186,7 @@ struct RegisterView: View {
             
             Spacer()
         }
-        .frame(minWidth: 400, minHeight: 550)
+        .frame(minWidth: 400, minHeight: 600)
         .padding()
     }
     
@@ -174,6 +215,12 @@ struct RegisterView: View {
             return
         }
         
+        // 验证邮箱格式
+        guard InputValidator.isValidEmail(email) else {
+            errorMessage = InputValidator.getEmailErrorMessage(email)
+            return
+        }
+        
         // 显示加载状态
         isLoading = true
         
@@ -183,7 +230,7 @@ struct RegisterView: View {
                 let user = try await authService.register(
                     userName: username,
                     password: password,
-                    mail: username  // 使用用户名作为邮箱（如果是邮箱格式）
+                    mail: email  // 使用独立的邮箱字段
                 )
                 
                 // 注册成功

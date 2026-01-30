@@ -90,4 +90,18 @@ struct InputValidator {
         }
         return ""
     }
+    
+    /// 获取邮箱错误提示
+    /// - Parameter email: 用户输入的邮箱
+    /// - Returns: 错误提示信息
+    static func getEmailErrorMessage(_ email: String) -> String {
+        if email.isEmpty {
+            return "请输入邮箱"
+        } else if !email.contains("@") {
+            return "邮箱必须包含 @ 符号"
+        } else if !isValidEmail(email) {
+            return "邮箱格式不正确"
+        }
+        return ""
+    }
 }

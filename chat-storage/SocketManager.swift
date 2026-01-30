@@ -43,7 +43,7 @@ class SocketManager: NSObject, ObservableObject {
     private var reconnectTimer: Timer?
     
     /// 服务器地址（可动态配置）
-    private var host: String = "172.21.32.54"  // 默认服务器地址
+    private var host: String = "192.168.0.103"  // 默认服务器地址
     
     /// 服务器端口（可动态配置）
     private var port: UInt32 = 10086
@@ -473,7 +473,8 @@ extension SocketManager: StreamDelegate {
             
         case .hasBytesAvailable:
             if aStream == inputStream {
-                readAvailableData()
+                // 调用帧处理方法（在 SocketManager+FrameHandling.swift 中定义）
+                receiveAndProcessFrames()
             }
             
         case .hasSpaceAvailable:

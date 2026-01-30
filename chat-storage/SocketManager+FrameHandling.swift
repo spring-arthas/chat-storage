@@ -67,38 +67,25 @@ extension SocketManager {
         }
     }
     
-    /// 启动接收循环
+    /// 启动接收循环（在独立线程中运行，通过 StreamDelegate 回调触发数据读取）
     func startReceiveLoop() {
-        guard !isReceiving else { return }
+        guard !isReceiving else { 
+            print("⚠️ 接收循环已在运行中")
+            return 
+        }
         
         isReceiving = true
         receiveBuffer.removeAll()
         
-        receiveThread = Thread { [weak self] in
-            guard let self = self else { return }
-            
-            print("🔄 接收循环已启动")
-            
-            while self.isReceiving && self.connectionState == .connected {
-                autoreleasepool {
-                    self.receiveAndProcessFrames()
-                }
-                
-                // 短暂休眠，避免 CPU 占用过高
-                Thread.sleep(forTimeInterval: 0.01)
-            }
-            
-            print("⏹️ 接收循环已停止")
-        }
-        
-        receiveThread?.start()
+        print("🔄 接收循环已启动（事件驱动模式）")
+        print("📌 注意：数据接收由 StreamDelegate 的 hasBytesAvailable 事件触发")
     }
     
     /// 停止接收循环
     func stopReceiveLoop() {
+        print("🛑 正在停止接收循环...")
+        
         isReceiving = false
-        receiveThread?.cancel()
-        receiveThread = nil
         receiveBuffer.removeAll()
         
         // 清理所有等待中的 continuation
@@ -108,34 +95,90 @@ extension SocketManager {
         }
         responseContinuations.removeAll()
         continuationLock.unlock()
+        
+        print("✅ 接收循环已完全停止")
     }
     
-    /// 接收并处理帧
-    private func receiveAndProcessFrames() {
-        guard let inputStream = inputStream, inputStream.hasBytesAvailable else {
+    /// 接收并处理帧（由 StreamDelegate 的 hasBytesAvailable 事件触发）
+    /// 这个方法会在主线程的 RunLoop 中被调用
+    func receiveAndProcessFrames() {
+        guard isReceiving else {
+            print("⚠️ 接收循环未启动，跳过数据处理")
             return
         }
         
-        // 读取数据到缓冲区
-        let bufferSize = 4096
-        var buffer = [UInt8](repeating: 0, count: bufferSize)
+        guard let inputStream = inputStream else {
+            print("❌ 输入流不可用")
+            return
+        }
         
-        let bytesRead = inputStream.read(&buffer, maxLength: bufferSize)
+        // 检查流状态
+        guard inputStream.streamStatus == .open else {
+            print("⚠️ 输入流状态异常: \(inputStream.streamStatus.rawValue)")
+            return
+        }
         
-        if bytesRead > 0 {
-            receiveBuffer.append(Data(bytes: buffer, count: bytesRead))
+        // 只有在有数据可读时才读取
+        guard inputStream.hasBytesAvailable else {
+            return
+        }
+        
+        do {
+            // 读取数据到缓冲区
+            let bufferSize = 4096
+            var buffer = [UInt8](repeating: 0, count: bufferSize)
             
-            // 尝试提取完整的帧
-            while let (frame, remaining) = FrameParser.extractFrame(from: receiveBuffer) {
-                receiveBuffer = remaining
-                handleReceivedFrame(frame)
+            let bytesRead = inputStream.read(&buffer, maxLength: bufferSize)
+            
+            if bytesRead > 0 {
+                // 成功读取数据
+                receiveBuffer.append(Data(bytes: buffer, count: bytesRead))
+                print("📥 读取到 \(bytesRead) 字节数据，缓冲区总大小: \(receiveBuffer.count) 字节")
+                
+                // 尝试提取并处理完整的帧
+                var frameCount = 0
+                while let (frame, remaining) = FrameParser.extractFrame(from: receiveBuffer) {
+                    receiveBuffer = remaining
+                    frameCount += 1
+                    
+                    do {
+                        // 处理帧时也需要异常保护
+                        handleReceivedFrame(frame)
+                    } catch {
+                        print("❌ 处理帧时发生异常: \(error)")
+                        // 继续处理下一个帧
+                    }
+                }
+                
+                if frameCount > 0 {
+                    print("✅ 本次共处理 \(frameCount) 个完整帧，剩余缓冲区: \(receiveBuffer.count) 字节")
+                }
+                
+            } else if bytesRead == 0 {
+                // 连接已关闭
+                print("⚠️ 读取到 0 字节，连接可能已关闭")
+                
+            } else {
+                // 读取错误
+                if let error = inputStream.streamError {
+                    print("❌ 读取数据时发生流错误: \(error.localizedDescription)")
+                } else {
+                    print("❌ 读取数据时发生未知错误")
+                }
             }
+            
+        } catch {
+            print("❌ 接收数据时发生异常: \(error)")
+            print("   错误详情: \(error.localizedDescription)")
         }
     }
     
     /// 处理接收到的帧
     private func handleReceivedFrame(_ frame: Frame) {
         print("📥 接收到帧: \(frame.type.description), 长度: \(frame.length) 字节")
+        
+        // 打印可视化的帧数据
+        printFrameVisualization(frame)
         
         // 在主线程处理响应
         DispatchQueue.main.async { [weak self] in
@@ -151,6 +194,146 @@ extension SocketManager {
                 // 未找到对应的等待者，可能是主动推送的消息
                 print("⚠️ 收到未预期的帧类型: \(frame.type.description)")
             }
+        }
+    }
+    
+    /// 打印帧的可视化数据（用于调试）
+    /// - Parameter frame: 要打印的帧
+    private func printFrameVisualization(_ frame: Frame) {
+        print("┌─────────────────────────────────────────────────────────────")
+        print("│ 📦 帧数据详情")
+        print("├─────────────────────────────────────────────────────────────")
+        print("│ 类型: \(frame.type.description) (0x\(String(format: "%02X", frame.type.rawValue)))")
+        print("│ 标志位: 0x\(String(format: "%02X", frame.flags))")
+        print("│ 数据长度: \(frame.length) 字节")
+        print("├─────────────────────────────────────────────────────────────")
+        
+        // 打印十六进制数据（仅前256字节，避免过长）
+        let hexDataLimit = min(256, frame.data.count)
+        if hexDataLimit > 0 {
+            print("│ 📋 十六进制数据 (前 \(hexDataLimit) 字节):")
+            let hexData = frame.data.prefix(hexDataLimit)
+            let hexString = hexData.map { String(format: "%02X", $0) }.joined(separator: " ")
+            
+            // 每行显示32字节
+            let bytesPerLine = 32
+            var offset = 0
+            while offset < hexString.count {
+                let endIndex = min(offset + bytesPerLine * 3 - 1, hexString.count - 1)
+                let line = String(hexString[hexString.index(hexString.startIndex, offsetBy: offset)...hexString.index(hexString.startIndex, offsetBy: endIndex)])
+                print("│   \(line)")
+                offset += bytesPerLine * 3
+            }
+            
+            if frame.data.count > hexDataLimit {
+                print("│   ... (还有 \(frame.data.count - hexDataLimit) 字节未显示)")
+            }
+            print("├─────────────────────────────────────────────────────────────")
+        }
+        
+        // 尝试解析并打印 JSON 数据
+        if let jsonString = String(data: frame.data, encoding: .utf8) {
+            print("│ 📄 JSON 数据:")
+            
+            // 尝试格式化 JSON
+            if let jsonData = jsonString.data(using: .utf8),
+               let jsonObject = try? JSONSerialization.jsonObject(with: jsonData, options: []),
+               let prettyJsonData = try? JSONSerialization.data(withJSONObject: jsonObject, options: [.prettyPrinted, .sortedKeys]),
+               let prettyJsonString = String(data: prettyJsonData, encoding: .utf8) {
+                
+                // 为每行添加前缀
+                let lines = prettyJsonString.components(separatedBy: "\n")
+                for line in lines {
+                    print("│   \(line)")
+                }
+            } else {
+                // 如果格式化失败，直接打印原始字符串
+                print("│   \(jsonString)")
+            }
+        } else {
+            print("│ ⚠️  数据不是有效的 UTF-8 字符串")
+        }
+        
+        print("└─────────────────────────────────────────────────────────────")
+        
+        // 针对特定帧类型的额外处理
+        printFrameTypeSpecificInfo(frame)
+    }
+    
+    /// 打印特定帧类型的额外信息
+    /// - Parameter frame: 帧对象
+    private func printFrameTypeSpecificInfo(_ frame: Frame) {
+        switch frame.type {
+        case .userResponse:
+            print("🔐 用户操作响应帧详情:")
+            if let dict = try? FrameParser.decodeAsDictionary(frame) {
+                if let code = dict["code"] as? Int {
+                    print("  ├─ 响应码: \(code) \(getResponseCodeDescription(code))")
+                }
+                if let message = dict["message"] as? String {
+                    print("  ├─ 消息: \(message)")
+                }
+                if let data = dict["data"] {
+                    print("  └─ 数据: \(data)")
+                }
+            }
+            
+        case .dirResponse:
+            print("📁 目录操作响应帧详情:")
+            if let dict = try? FrameParser.decodeAsDictionary(frame) {
+                if let code = dict["code"] as? Int {
+                    print("  ├─ 响应码: \(code) \(getResponseCodeDescription(code))")
+                }
+                if let message = dict["message"] as? String {
+                    print("  └─ 消息: \(message)")
+                }
+            }
+            
+        case .fileResponse:
+            print("📄 文件操作响应帧详情:")
+            if let dict = try? FrameParser.decodeAsDictionary(frame) {
+                if let code = dict["code"] as? Int {
+                    print("  ├─ 响应码: \(code) \(getResponseCodeDescription(code))")
+                }
+                if let message = dict["message"] as? String {
+                    print("  └─ 消息: \(message)")
+                }
+            }
+            
+        case .ackFrame:
+            print("✅ 确认帧详情:")
+            if let dict = try? FrameParser.decodeAsDictionary(frame) {
+                print("  └─ 确认数据: \(dict)")
+            }
+            
+        case .resumeAck:
+            print("⏸️ 断点续传应答帧详情:")
+            if let dict = try? FrameParser.decodeAsDictionary(frame) {
+                if let uploadedSize = dict["uploadedSize"] as? Int {
+                    print("  ├─ 已上传大小: \(uploadedSize) 字节")
+                }
+                if let canResume = dict["canResume"] as? Bool {
+                    print("  └─ 可续传: \(canResume ? "是" : "否")")
+                }
+            }
+            
+        default:
+            break
+        }
+    }
+    
+    /// 获取响应码的描述
+    /// - Parameter code: 响应码
+    /// - Returns: 描述文本
+    private func getResponseCodeDescription(_ code: Int) -> String {
+        switch code {
+        case 200: return "✅ 成功"
+        case 400: return "❌ 请求错误"
+        case 401: return "🔒 未授权"
+        case 403: return "🚫 禁止访问"
+        case 404: return "🔍 未找到"
+        case 500: return "💥 服务器错误"
+        default: return ""
         }
     }
 }
