@@ -31,10 +31,10 @@ class SocketManager: NSObject, ObservableObject {
     // MARK: - Private Properties
     
     /// 输入流（从服务器接收数据）
-    private var inputStream: InputStream?
+    internal var inputStream: InputStream?
     
     /// 输出流（发送数据到服务器）
-    private var outputStream: OutputStream?
+    internal var outputStream: OutputStream?
     
     /// 心跳定时器
     private var heartbeatTimer: Timer?
@@ -47,6 +47,24 @@ class SocketManager: NSObject, ObservableObject {
     
     /// 服务器端口（可动态配置）
     private var port: UInt32 = 10086
+    
+    // MARK: - Frame Handling Properties
+    
+    /// 接收数据缓冲区
+    internal var receiveBuffer = Data()
+    
+    /// 响应等待队列（用于同步等待响应）
+    internal var responseContinuations: [FrameTypeEnum: CheckedContinuation<Frame, Error>] = [:]
+    
+    /// 响应队列锁
+    internal let continuationLock = NSLock()
+    
+    /// 接收循环线程
+    internal var receiveThread: Thread?
+    
+    /// 是否正在接收
+    internal var isReceiving = false
+
     
     /// 心跳间隔（秒）
     private let heartbeatInterval: TimeInterval = 30.0
@@ -247,6 +265,7 @@ class SocketManager: NSObject, ObservableObject {
         
         stopHeartbeat()
         stopReconnect()
+        stopReceiveLoop()  // 停止接收循环
         
         inputStream?.close()
         outputStream?.close()
@@ -448,6 +467,7 @@ extension SocketManager: StreamDelegate {
                 updateState(.connected)
                 reconnectAttempts = 0  // 重置重连次数
                 startHeartbeat()
+                startReceiveLoop()  // 启动接收循环
                 print("🎉 Socket 连接成功！")
             }
             

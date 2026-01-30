@@ -13,6 +13,9 @@ struct LoginView: View {
     /// 全局 Socket 连接管理器
     @EnvironmentObject var socketManager: SocketManager
     
+    /// 认证服务
+    @StateObject private var authService: AuthenticationService
+    
     // MARK: - State Variables (状态变量)
     
     /// 用户名输入（手机号或邮箱）
@@ -32,6 +35,12 @@ struct LoginView: View {
     
     /// 是否显示配置服务器窗口
     @State private var showConfigServer: Bool = false
+    
+    // MARK: - Initializer
+    
+    init() {
+        _authService = StateObject(wrappedValue: AuthenticationService(socketManager: SocketManager.shared))
+    }
     
     // MARK: - Body (界面布局)
     
@@ -157,7 +166,9 @@ struct LoginView: View {
                     .fill(socketManager.connectionState == .connected ? Color.green : Color.gray)
                     .frame(width: 8, height: 8)
                 
-                Text("服务器: \(socketManager.connectionState.description)")
+                // 显示服务器地址和连接状态
+                let server = socketManager.getCurrentServer()
+                Text("服务器: \(server.host):\(server.port) \(socketManager.connectionState.description)")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -189,59 +200,43 @@ struct LoginView: View {
         // 显示加载状态
         isLoading = true
         
-        // ============ 伪代码：登录逻辑 ============
-        // TODO: 替换为真实的 API 调用
-        
-        // 模拟网络请求延迟
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            // 伪代码：调用登录 API
-            let success = performLogin(username: username, password: password)
-            
-            isLoading = false
-            
-            if success {
-                // 登录成功：跳转到主界面
-                print("✅ 登录成功！用户名: \(username)")
-                // TODO: 导航到 ContentView（主界面）
-                // 实现方式：在 App 级别管理登录状态，或使用 NavigationStack
-            } else {
-                // 登录失败：显示错误
-                errorMessage = "用户名或密码错误"
+        // 执行登录
+        Task {
+            do {
+                let user = try await authService.login(
+                    userName: username,
+                    password: password
+                )
+                
+                // 登录成功
+                await MainActor.run {
+                    isLoading = false
+                    print("✅ 登录成功！用户名: \(user.userName)")
+                    // TODO: 导航到主界面
+                }
+                
+            } catch let error as AuthError {
+                // 认证错误
+                await MainActor.run {
+                    isLoading = false
+                    errorMessage = error.localizedDescription
+                }
+                
+            } catch let error as SocketError {
+                // Socket 错误
+                await MainActor.run {
+                    isLoading = false
+                    errorMessage = "连接错误: \(error.localizedDescription)"
+                }
+                
+            } catch {
+                // 其他错误
+                await MainActor.run {
+                    isLoading = false
+                    errorMessage = "登录失败: \(error.localizedDescription)"
+                }
             }
         }
-        // ============ 伪代码结束 ============
-    }
-    
-    /// 伪代码：执行登录请求
-    /// - Parameters:
-    ///   - username: 用户名
-    ///   - password: 密码
-    /// - Returns: 是否登录成功
-    private func performLogin(username: String, password: String) -> Bool {
-        // ============ 伪代码 ============
-        // 这里应该调用真实的登录 API
-        // 示例代码：
-        /*
-         let url = URL(string: "https://api.example.com/login")!
-         var request = URLRequest(url: url)
-         request.httpMethod = "POST"
-         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-         
-         let body = ["username": username, "password": password]
-         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-         
-         URLSession.shared.dataTask(with: request) { data, response, error in
-             // 处理响应
-         }.resume()
-         */
-        
-        // 模拟登录验证（仅供测试）
-        // 测试账号：phone: 13800138000, email: test@example.com, password: 123456
-        let isValidAccount = (username == "13800138000" || username == "test@example.com") 
-                             && password == "123456"
-        
-        return isValidAccount
-        // ============ 伪代码结束 ============
     }
 }
 

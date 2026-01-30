@@ -13,6 +13,16 @@ struct RegisterView: View {
     /// 控制是否显示注册视图（由父视图 LoginView 传入）
     @Binding var showRegister: Bool
     
+    /// 认证服务
+    @StateObject private var authService: AuthenticationService
+    
+    // MARK: - Initializer
+    
+    init(showRegister: Binding<Bool>) {
+        _showRegister = showRegister
+        _authService = StateObject(wrappedValue: AuthenticationService(socketManager: SocketManager.shared))
+    }
+    
     // MARK: - State Variables (状态变量)
     
     /// 用户名输入（手机号或邮箱）
@@ -167,72 +177,45 @@ struct RegisterView: View {
         // 显示加载状态
         isLoading = true
         
-        // ============ 伪代码：注册逻辑 ============
-        // TODO: 替换为真实的 API 调用
-        
-        // 模拟网络请求延迟
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            // 伪代码：调用注册 API
-            let success = performRegister(username: username, password: password)
-            
-            isLoading = false
-            
-            if success {
-                // 注册成功：返回登录界面或直接登录
-                print("✅ 注册成功！用户名: \(username)")
-                // 方案1: 返回登录界面，让用户重新登录
-                showRegister = false
-                // 方案2: 自动登录并跳转到主界面（需要实现状态管理）
-                // TODO: 在实际项目中，可以保存注册返回的 Token，然后直接进入主界面
-            } else {
-                // 注册失败：显示错误
-                errorMessage = "注册失败，该账号可能已存在"
+        // 执行注册
+        Task {
+            do {
+                let user = try await authService.register(
+                    userName: username,
+                    password: password,
+                    mail: username  // 使用用户名作为邮箱（如果是邮箱格式）
+                )
+                
+                // 注册成功
+                await MainActor.run {
+                    isLoading = false
+                    print("✅ 注册成功！用户名: \(user.userName)")
+                    // 返回登录界面
+                    showRegister = false
+                }
+                
+            } catch let error as AuthError {
+                // 认证错误
+                await MainActor.run {
+                    isLoading = false
+                    errorMessage = error.localizedDescription
+                }
+                
+            } catch let error as SocketError {
+                // Socket 错误
+                await MainActor.run {
+                    isLoading = false
+                    errorMessage = "连接错误: \(error.localizedDescription)"
+                }
+                
+            } catch {
+                // 其他错误
+                await MainActor.run {
+                    isLoading = false
+                    errorMessage = "注册失败: \(error.localizedDescription)"
+                }
             }
         }
-        // ============ 伪代码结束 ============
-    }
-    
-    /// 伪代码：执行注册请求
-    /// - Parameters:
-    ///   - username: 用户名
-    ///   - password: 密码
-    /// - Returns: 是否注册成功
-    private func performRegister(username: String, password: String) -> Bool {
-        // ============ 伪代码 ============
-        // 这里应该调用真实的注册 API
-        // 示例代码：
-        /*
-         let url = URL(string: "https://api.example.com/register")!
-         var request = URLRequest(url: url)
-         request.httpMethod = "POST"
-         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-         
-         let body = ["username": username, "password": password]
-         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-         
-         URLSession.shared.dataTask(with: request) { data, response, error in
-             // 处理响应
-             if let data = data {
-                 // 解析返回的 JSON
-                 // 保存 Token 到 UserDefaults 或 Keychain
-             }
-         }.resume()
-         */
-        
-        // 模拟注册验证（仅供测试）
-        // 这里简单返回 true，表示注册成功
-        print("📝 伪代码：正在注册账号...")
-        print("   用户名: \(username)")
-        print("   密码: \(password)")
-        
-        // 实际项目中，这里需要：
-        // 1. 发送 POST 请求到服务器
-        // 2. 检查服务器返回的状态码
-        // 3. 如果成功，保存返回的 Token
-        // 4. 如果失败，解析错误信息（如"用户已存在"）
-        
-        return true // 模拟注册成功
-        // ============ 伪代码结束 ============
     }
 }
 
