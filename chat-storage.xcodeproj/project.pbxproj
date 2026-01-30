@@ -16,6 +16,11 @@
 		4E15EB342F2B48250093C805 /* chat_storageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E15EB332F2B48250093C805 /* chat_storageTests.swift */; };
 		4E15EB3E2F2B48250093C805 /* chat_storageUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E15EB3D2F2B48250093C805 /* chat_storageUITests.swift */; };
 		4E15EB402F2B48250093C805 /* chat_storageUITestsLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E15EB3F2F2B48250093C805 /* chat_storageUITestsLaunchTests.swift */; };
+		4ED769982F2C4D6D006CFB2F /* InputValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4ED769952F2C4D6D006CFB2F /* InputValidator.swift */; };
+		4ED769992F2C4D6D006CFB2F /* RegisterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4ED769962F2C4D6D006CFB2F /* RegisterView.swift */; };
+		4ED7699A2F2C4D6D006CFB2F /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4ED769972F2C4D6D006CFB2F /* LoginView.swift */; };
+		4ED7699C2F2C52F8006CFB2F /* SocketManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4ED7699B2F2C52F8006CFB2F /* SocketManager.swift */; };
+		4ED7699E2F2C88DF006CFB2F /* ConfigServerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4ED7699D2F2C88DF006CFB2F /* ConfigServerView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -49,6 +54,11 @@
 		4E15EB392F2B48250093C805 /* chat-storageUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "chat-storageUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		4E15EB3D2F2B48250093C805 /* chat_storageUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = chat_storageUITests.swift; sourceTree = "<group>"; };
 		4E15EB3F2F2B48250093C805 /* chat_storageUITestsLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = chat_storageUITestsLaunchTests.swift; sourceTree = "<group>"; };
+		4ED769952F2C4D6D006CFB2F /* InputValidator.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = InputValidator.swift; sourceTree = "<group>"; };
+		4ED769962F2C4D6D006CFB2F /* RegisterView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = RegisterView.swift; sourceTree = "<group>"; };
+		4ED769972F2C4D6D006CFB2F /* LoginView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
+		4ED7699B2F2C52F8006CFB2F /* SocketManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = SocketManager.swift; sourceTree = "<group>"; };
+		4ED7699D2F2C88DF006CFB2F /* ConfigServerView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ConfigServerView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -99,6 +109,11 @@
 		4E15EB1B2F2B48230093C805 /* chat-storage */ = {
 			isa = PBXGroup;
 			children = (
+				4ED7699B2F2C52F8006CFB2F /* SocketManager.swift */,
+				4ED7699D2F2C88DF006CFB2F /* ConfigServerView.swift */,
+				4ED769952F2C4D6D006CFB2F /* InputValidator.swift */,
+				4ED769972F2C4D6D006CFB2F /* LoginView.swift */,
+				4ED769962F2C4D6D006CFB2F /* RegisterView.swift */,
 				4E15EB1C2F2B48230093C805 /* chat_storageApp.swift */,
 				4E15EB1E2F2B48230093C805 /* ContentView.swift */,
 				4E15EB202F2B48250093C805 /* Assets.xcassets */,
@@ -265,8 +280,13 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4ED7699E2F2C88DF006CFB2F /* ConfigServerView.swift in Sources */,
+				4ED769982F2C4D6D006CFB2F /* InputValidator.swift in Sources */,
+				4ED7699A2F2C4D6D006CFB2F /* LoginView.swift in Sources */,
+				4ED7699C2F2C52F8006CFB2F /* SocketManager.swift in Sources */,
 				4E15EB262F2B48250093C805 /* Persistence.swift in Sources */,
 				4E15EB292F2B48250093C805 /* chat_storage.xcdatamodeld in Sources */,
+				4ED769992F2C4D6D006CFB2F /* RegisterView.swift in Sources */,
 				4E15EB1F2F2B48230093C805 /* ContentView.swift in Sources */,
 				4E15EB1D2F2B48230093C805 /* chat_storageApp.swift in Sources */,
 			);

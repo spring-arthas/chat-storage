@@ -1,0 +1,514 @@
+//  全局socket连接
+//  SocketManager.swift
+//  chat-storage
+//
+//  Created by HLJY on 2026/1/30.
+//
+
+import Foundation
+import Combine
+
+/// 全局 Socket 连接管理器
+/// 负责维护与服务器的 TCP Socket 长连接
+class SocketManager: NSObject, ObservableObject {
+    
+    // MARK: - Singleton
+    
+    /// 单例实例
+    static let shared = SocketManager()
+    
+    // MARK: - Published Properties (UI 可观察的状态)
+    
+    /// 当前连接状态
+    @Published var connectionState: ConnectionState = .disconnected
+    
+    /// 最后的错误信息
+    @Published var lastError: String?
+    
+    /// 接收到的消息（用于调试或日志）
+    @Published var lastReceivedMessage: String?
+    
+    // MARK: - Private Properties
+    
+    /// 输入流（从服务器接收数据）
+    private var inputStream: InputStream?
+    
+    /// 输出流（发送数据到服务器）
+    private var outputStream: OutputStream?
+    
+    /// 心跳定时器
+    private var heartbeatTimer: Timer?
+    
+    /// 重连定时器
+    private var reconnectTimer: Timer?
+    
+    /// 服务器地址（可动态配置）
+    private var host: String = "172.21.32.54"  // 默认服务器地址
+    
+    /// 服务器端口（可动态配置）
+    private var port: UInt32 = 10086
+    
+    /// 心跳间隔（秒）
+    private let heartbeatInterval: TimeInterval = 30.0
+    
+    /// 重连间隔（秒）
+    private let reconnectInterval: TimeInterval = 3.0
+    
+    /// 最大重连次数
+    private let maxReconnectAttempts: Int = 5
+    
+    /// 当前重连次数
+    private var reconnectAttempts: Int = 0
+    
+    // MARK: - Initialization
+    
+    private override init() {
+        super.init()
+        print("📱 SocketManager 初始化完成")
+    }
+    
+    deinit {
+        disconnect()
+    }
+    
+    // MARK: - Connection Management
+    
+    // MARK: - Dynamic Configuration
+    
+    /// 测试连接到指定服务器
+    /// - Parameters:
+    ///   - host: 服务器地址
+    ///   - port: 服务器端口
+    ///   - completion: 完成回调（成功/失败）
+    func testConnection(host: String, port: UInt32, completion: @escaping (Bool) -> Void) {
+        print("🧪 测试连接: \(host):\(port)")
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            var readStream: Unmanaged<CFReadStream>?
+            var writeStream: Unmanaged<CFWriteStream>?
+            
+            CFStreamCreatePairWithSocketToHost(
+                kCFAllocatorDefault,
+                host as CFString,
+                port,
+                &readStream,
+                &writeStream
+            )
+            
+            guard let readStreamRef = readStream?.takeRetainedValue(),
+                  let writeStreamRef = writeStream?.takeRetainedValue() else {
+                print("❌ 测试连接失败：无法创建 Socket 流")
+                DispatchQueue.main.async {
+                    completion(false)
+                }
+                return
+            }
+            
+            let testInputStream = readStreamRef as InputStream
+            let testOutputStream = writeStreamRef as OutputStream
+            
+            // 设置超时
+            testInputStream.schedule(in: .current, forMode: .default)
+            testOutputStream.schedule(in: .current, forMode: .default)
+            
+            testInputStream.open()
+            testOutputStream.open()
+            
+            // 等待连接结果（最多3秒）
+            var attempts = 0
+            let maxAttempts = 30  // 3秒（每次100ms）
+            
+            while attempts < maxAttempts {
+                if testInputStream.streamStatus == .open && testOutputStream.streamStatus == .open {
+                    print("✅ 测试连接成功")
+                    
+                    // 关闭测试连接
+                    testInputStream.close()
+                    testOutputStream.close()
+                    testInputStream.remove(from: .current, forMode: .default)
+                    testOutputStream.remove(from: .current, forMode: .default)
+                    
+                    DispatchQueue.main.async {
+                        completion(true)
+                    }
+                    return
+                }
+                
+                if testInputStream.streamStatus == .error || testOutputStream.streamStatus == .error {
+                    print("❌ 测试连接失败：流错误")
+                    testInputStream.close()
+                    testOutputStream.close()
+                    testInputStream.remove(from: .current, forMode: .default)
+                    testOutputStream.remove(from: .current, forMode: .default)
+                    
+                    DispatchQueue.main.async {
+                        completion(false)
+                    }
+                    return
+                }
+                
+                Thread.sleep(forTimeInterval: 0.1)
+                attempts += 1
+            }
+            
+            // 超时
+            print("❌ 测试连接超时")
+            testInputStream.close()
+            testOutputStream.close()
+            testInputStream.remove(from: .current, forMode: .default)
+            testOutputStream.remove(from: .current, forMode: .default)
+            
+            DispatchQueue.main.async {
+                completion(false)
+            }
+        }
+    }
+    
+    /// 切换到新的服务器连接
+    /// - Parameters:
+    ///   - host: 新服务器地址
+    ///   - port: 新服务器端口
+    func switchConnection(host: String, port: UInt32) {
+        print("🔄 切换服务器: \(host):\(port)")
+        
+        // 断开旧连接
+        disconnect()
+        
+        // 更新配置
+        self.host = host
+        self.port = port
+        
+        // 连接新服务器
+        connect()
+    }
+    
+    /// 获取当前服务器配置
+    /// - Returns: (host, port)
+    func getCurrentServer() -> (host: String, port: UInt32) {
+        return (host, port)
+    }
+    
+    // MARK: - Connection Management
+    
+    /// 连接到服务器
+    func connect() {
+        // 避免重复连接
+        guard connectionState != .connecting && connectionState != .connected else {
+            print("⚠️ Socket 已在连接中或已连接，跳过")
+            return
+        }
+        
+        print("🔌 开始连接到服务器: \(host):\(port)")
+        updateState(.connecting)
+        
+        // 创建 Socket 流
+        var readStream: Unmanaged<CFReadStream>?
+        var writeStream: Unmanaged<CFWriteStream>?
+        
+        CFStreamCreatePairWithSocketToHost(
+            kCFAllocatorDefault,
+            host as CFString,
+            port,
+            &readStream,
+            &writeStream
+        )
+        
+        guard let readStreamRef = readStream?.takeRetainedValue(),
+              let writeStreamRef = writeStream?.takeRetainedValue() else {
+            handleConnectionError("无法创建 Socket 流")
+            return
+        }
+        
+        // 转换为 Foundation 类型
+        let inputStream = readStreamRef as InputStream
+        let outputStream = writeStreamRef as OutputStream
+        
+        self.inputStream = inputStream
+        self.outputStream = outputStream
+        
+        // 设置代理
+        inputStream.delegate = self
+        outputStream.delegate = self
+        
+        // 添加到 RunLoop
+        inputStream.schedule(in: .current, forMode: .common)
+        outputStream.schedule(in: .current, forMode: .common)
+        
+        // 打开流
+        inputStream.open()
+        outputStream.open()
+        
+        print("📡 Socket 流已打开，等待连接...")
+    }
+    
+    /// 断开连接
+    func disconnect() {
+        print("🔌 主动断开 Socket 连接")
+        
+        stopHeartbeat()
+        stopReconnect()
+        
+        inputStream?.close()
+        outputStream?.close()
+        
+        inputStream?.remove(from: .current, forMode: .common)
+        outputStream?.remove(from: .current, forMode: .common)
+        
+        inputStream?.delegate = nil
+        outputStream?.delegate = nil
+        
+        inputStream = nil
+        outputStream = nil
+        
+        updateState(.disconnected)
+        reconnectAttempts = 0
+    }
+    
+    // MARK: - Data Transmission
+    
+    /// 发送数据到服务器
+    /// - Parameter data: 要发送的数据
+    /// - Returns: 是否发送成功
+    @discardableResult
+    func send(data: Data) -> Bool {
+        guard connectionState == .connected else {
+            print("❌ Socket 未连接，无法发送数据")
+            return false
+        }
+        
+        guard let outputStream = outputStream else {
+            print("❌ 输出流不可用")
+            return false
+        }
+        
+        let bytesWritten = data.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) -> Int in
+            guard let baseAddress = buffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                return 0
+            }
+            return outputStream.write(baseAddress, maxLength: buffer.count)
+        }
+        
+        if bytesWritten > 0 {
+            print("📤 发送数据成功: \(bytesWritten) 字节")
+            return true
+        } else {
+            print("❌ 发送数据失败")
+            return false
+        }
+    }
+    
+    /// 发送字符串消息
+    /// - Parameter message: 要发送的字符串
+    /// - Returns: 是否发送成功
+    @discardableResult
+    func send(message: String) -> Bool {
+        guard let data = message.data(using: .utf8) else {
+            print("❌ 字符串转换为数据失败")
+            return false
+        }
+        return send(data: data)
+    }
+    
+    // MARK: - Heartbeat
+    
+    /// 启动心跳
+    private func startHeartbeat() {
+        stopHeartbeat()
+        
+        print("💓 启动心跳，间隔: \(heartbeatInterval) 秒")
+        
+        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: heartbeatInterval, repeats: true) { [weak self] _ in
+            self?.sendHeartbeat()
+        }
+    }
+    
+    /// 停止心跳
+    private func stopHeartbeat() {
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
+    }
+    
+    /// 发送心跳包
+    private func sendHeartbeat() {
+        print("💓 发送心跳包")
+        send(message: "PING\n")
+    }
+    
+    // MARK: - Auto Reconnect
+    
+    /// 启动自动重连
+    private func startReconnect() {
+        guard reconnectAttempts < maxReconnectAttempts else {
+            print("❌ 达到最大重连次数 (\(maxReconnectAttempts))，停止重连")
+            updateState(.failed)
+            lastError = "连接失败：达到最大重连次数"
+            return
+        }
+        
+        reconnectAttempts += 1
+        updateState(.reconnecting)
+        
+        print("🔄 将在 \(reconnectInterval) 秒后尝试第 \(reconnectAttempts) 次重连...")
+        
+        reconnectTimer = Timer.scheduledTimer(withTimeInterval: reconnectInterval, repeats: false) { [weak self] _ in
+            self?.connect()
+        }
+    }
+    
+    /// 停止自动重连
+    private func stopReconnect() {
+        reconnectTimer?.invalidate()
+        reconnectTimer = nil
+    }
+    
+    // MARK: - State Management
+    
+    /// 更新连接状态
+    /// - Parameter state: 新状态
+    private func updateState(_ state: ConnectionState) {
+        DispatchQueue.main.async {
+            self.connectionState = state
+            print("📊 连接状态更新: \(state)")
+        }
+    }
+    
+    /// 处理连接错误
+    /// - Parameter message: 错误信息
+    private func handleConnectionError(_ message: String) {
+        print("❌ 连接错误: \(message)")
+        
+        DispatchQueue.main.async {
+            self.lastError = message
+        }
+        
+        updateState(.disconnected)
+        
+        // 自动重连
+        if reconnectAttempts < maxReconnectAttempts {
+            startReconnect()
+        }
+    }
+    
+    // MARK: - Data Reception
+    
+    /// 读取接收到的数据
+    private func readAvailableData() {
+        guard let inputStream = inputStream else { return }
+        
+        let bufferSize = 4096
+        var buffer = [UInt8](repeating: 0, count: bufferSize)
+        
+        while inputStream.hasBytesAvailable {
+            let bytesRead = inputStream.read(&buffer, maxLength: bufferSize)
+            
+            if bytesRead > 0 {
+                let data = Data(bytes: buffer, count: bytesRead)
+                
+                if let message = String(data: data, encoding: .utf8) {
+                    print("📥 接收到数据: \(message)")
+                    
+                    DispatchQueue.main.async {
+                        self.lastReceivedMessage = message
+                    }
+                    
+                    // TODO: 在这里处理接收到的消息
+                    handleReceivedMessage(message)
+                }
+            } else if bytesRead < 0 {
+                print("❌ 读取数据时发生错误")
+                handleConnectionError("读取数据失败")
+                break
+            }
+        }
+    }
+    
+    /// 处理接收到的消息
+    /// - Parameter message: 接收到的消息字符串
+    private func handleReceivedMessage(_ message: String) {
+        // TODO: 根据您的协议解析消息
+        // 例如：JSON 解析、命令分发等
+        
+        if message.contains("PONG") {
+            print("💓 收到心跳响应")
+        }
+    }
+}
+
+// MARK: - StreamDelegate
+
+extension SocketManager: StreamDelegate {
+    
+    func stream(_ aStream: Stream, handle eventCode: Stream.Event) {
+        switch eventCode {
+        case .openCompleted:
+            print("✅ Stream 打开完成")
+            
+            // 两个流都打开后才算连接成功
+            if inputStream?.streamStatus == .open && outputStream?.streamStatus == .open {
+                updateState(.connected)
+                reconnectAttempts = 0  // 重置重连次数
+                startHeartbeat()
+                print("🎉 Socket 连接成功！")
+            }
+            
+        case .hasBytesAvailable:
+            if aStream == inputStream {
+                readAvailableData()
+            }
+            
+        case .hasSpaceAvailable:
+            print("📝 输出流有可用空间")
+            
+        case .errorOccurred:
+            if let error = aStream.streamError {
+                handleConnectionError("Stream 错误: \(error.localizedDescription)")
+            }
+            
+        case .endEncountered:
+            print("🔌 连接已关闭")
+            disconnect()
+            
+            // 断线后自动重连
+            if reconnectAttempts < maxReconnectAttempts {
+                startReconnect()
+            }
+            
+        default:
+            print("⚠️ 未处理的 Stream 事件: \(eventCode)")
+        }
+    }
+}
+
+// MARK: - ConnectionState Enum
+
+extension SocketManager {
+    
+    /// 连接状态枚举
+    enum ConnectionState {
+        case disconnected   // 未连接
+        case connecting     // 连接中
+        case connected      // 已连接
+        case reconnecting   // 重连中
+        case failed         // 连接失败
+        
+        var description: String {
+            switch self {
+            case .disconnected: return "未连接"
+            case .connecting: return "连接中..."
+            case .connected: return "已连接"
+            case .reconnecting: return "重连中..."
+            case .failed: return "连接失败"
+            }
+        }
+        
+        var color: String {
+            switch self {
+            case .disconnected: return "gray"
+            case .connecting: return "blue"
+            case .connected: return "green"
+            case .reconnecting: return "orange"
+            case .failed: return "red"
+            }
+        }
+    }
+}

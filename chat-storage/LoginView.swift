@@ -8,6 +8,11 @@
 import SwiftUI
 
 struct LoginView: View {
+    // MARK: - Environment Objects (环境对象)
+    
+    /// 全局 Socket 连接管理器
+    @EnvironmentObject var socketManager: SocketManager
+    
     // MARK: - State Variables (状态变量)
     
     /// 用户名输入（手机号或邮箱）
@@ -25,6 +30,9 @@ struct LoginView: View {
     /// 是否正在登录（用于显示加载状态）
     @State private var isLoading: Bool = false
     
+    /// 是否显示配置服务器窗口
+    @State private var showConfigServer: Bool = false
+    
     // MARK: - Body (界面布局)
     
     var body: some View {
@@ -32,8 +40,24 @@ struct LoginView: View {
             // 显示注册界面
             RegisterView(showRegister: $showRegister)
         } else {
-            // 显示登录界面
-            loginContent
+            // 显示登录界面，带配置按钮
+            ZStack(alignment: .bottomTrailing) {
+                loginContent
+                
+                // 配置服务端地址按钮（右下角）
+                Button("配置服务端地址") {
+                    showConfigServer = true
+                }
+                .foregroundColor(.black)
+                .font(.subheadline)
+                .buttonStyle(.plain)
+                .padding(.trailing, 12)
+                .padding(.bottom, 12)
+            }
+            .sheet(isPresented: $showConfigServer) {
+                ConfigServerView()
+                    .environmentObject(socketManager)
+            }
         }
     }
     
@@ -52,7 +76,7 @@ struct LoginView: View {
                 .foregroundColor(.accentColor)
             
             // 标题
-            Text("欢迎使用 Chat Storage")
+            Text("毒药网盘，您的信赖之举")
                 .font(.title)
                 .fontWeight(.bold)
             
@@ -126,6 +150,18 @@ struct LoginView: View {
             .buttonStyle(.plain)
             
             Spacer()
+            
+            // Socket 连接状态显示
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(socketManager.connectionState == .connected ? Color.green : Color.gray)
+                    .frame(width: 8, height: 8)
+                
+                Text("服务器: \(socketManager.connectionState.description)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding(.bottom, 10)
         }
         .frame(minWidth: 400, minHeight: 500)
         .padding()
@@ -214,5 +250,6 @@ struct LoginView: View {
 struct LoginView_Previews: PreviewProvider {
     static var previews: some View {
         LoginView()
+            .environmentObject(SocketManager.shared)
     }
 }
