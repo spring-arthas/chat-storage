@@ -28,6 +28,12 @@ class SocketManager: NSObject, ObservableObject {
     /// 接收到的消息（用于调试或日志）
     @Published var lastReceivedMessage: String?
     
+    /// 上行速率 (UI 显示)
+    @Published var uploadSpeedStr: String = "0 KB/s"
+    
+    /// 下行速率 (UI 显示)
+    @Published var downloadSpeedStr: String = "0 KB/s"
+    
     // MARK: - Private Properties
     
     /// 输入流（从服务器接收数据）
@@ -77,6 +83,15 @@ class SocketManager: NSObject, ObservableObject {
     
     /// 当前重连次数
     private var reconnectAttempts: Int = 0
+    
+    // MARK: - Speed Statistics
+    
+    private var totalBytesSent: Int64 = 0
+    private var totalBytesReceived: Int64 = 0
+    private var lastBytesSent: Int64 = 0
+    private var lastBytesReceived: Int64 = 0
+    private var speedTimer: Timer?
+    private let speedLock = NSLock()
     
     // MARK: - Initialization
     
@@ -266,6 +281,7 @@ class SocketManager: NSObject, ObservableObject {
         stopHeartbeat()
         stopReconnect()
         stopReceiveLoop()  // 停止接收循环
+        stopSpeedTimer()   // 停止测速
         
         inputStream?.close()
         outputStream?.close()
@@ -308,6 +324,10 @@ class SocketManager: NSObject, ObservableObject {
         }
         
         if bytesWritten > 0 {
+            speedLock.lock()
+            totalBytesSent += Int64(bytesWritten)
+            speedLock.unlock()
+            
             print("📤 发送数据成功: \(bytesWritten) 字节")
             return true
         } else {
@@ -421,6 +441,10 @@ class SocketManager: NSObject, ObservableObject {
             let bytesRead = inputStream.read(&buffer, maxLength: bufferSize)
             
             if bytesRead > 0 {
+                speedLock.lock()
+                totalBytesReceived += Int64(bytesRead)
+                speedLock.unlock()
+                
                 let data = Data(bytes: buffer, count: bytesRead)
                 
                 if let message = String(data: data, encoding: .utf8) {
@@ -451,6 +475,58 @@ class SocketManager: NSObject, ObservableObject {
             print("💓 收到心跳响应")
         }
     }
+    
+    // MARK: - Speed Calculation
+    
+    private func startSpeedTimer() {
+        stopSpeedTimer()
+        // 在主线程执行定时器
+        DispatchQueue.main.async {
+            self.speedTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+                self?.calculateSpeed()
+            }
+        }
+    }
+    
+    private func stopSpeedTimer() {
+        speedTimer?.invalidate()
+        speedTimer = nil
+    }
+    
+    private func calculateSpeed() {
+        speedLock.lock()
+        let currentSent = totalBytesSent
+        let currentReceived = totalBytesReceived
+        speedLock.unlock()
+        
+        let sentDelta = currentSent - lastBytesSent
+        let receivedDelta = currentReceived - lastBytesReceived
+        
+        lastBytesSent = currentSent
+        lastBytesReceived = currentReceived
+        
+        DispatchQueue.main.async {
+            self.uploadSpeedStr = self.formatSpeed(sentDelta)
+            self.downloadSpeedStr = self.formatSpeed(receivedDelta)
+        }
+    }
+    
+    private func formatSpeed(_ bytes: Int64) -> String {
+        if bytes < 1024 {
+            return "\(bytes) B/s"
+        } else if bytes < 1024 * 1024 {
+            return String(format: "%.1f KB/s", Double(bytes) / 1024.0)
+        } else {
+            return String(format: "%.1f MB/s", Double(bytes) / (1024.0 * 1024.0))
+        }
+    }
+    
+    /// 记录接收到的字节数 (供 Extension 使用)
+    internal func recordBytesReceived(_ count: Int64) {
+        speedLock.lock()
+        totalBytesReceived += count
+        speedLock.unlock()
+    }
 }
 
 // MARK: - StreamDelegate
@@ -468,6 +544,7 @@ extension SocketManager: StreamDelegate {
                 reconnectAttempts = 0  // 重置重连次数
                 startHeartbeat()
                 startReceiveLoop()  // 启动接收循环
+                startSpeedTimer()   // 启动测速
                 print("🎉 Socket 连接成功！")
             }
             
@@ -475,6 +552,13 @@ extension SocketManager: StreamDelegate {
             if aStream == inputStream {
                 // 调用帧处理方法（在 SocketManager+FrameHandling.swift 中定义）
                 receiveAndProcessFrames()
+                
+                // 也要尝试读取普通数据（如果不是用 Frame 处理的话）
+                // readAvailableData() 
+                // 注意：如果使用了 receiveAndProcessFrames (FrameHandling)，就不应该同时调用 readAvailableData，除非它们处理不同的协议或者有分发机制。
+                // 之前的代码中似乎是 readAvailableData 被删掉了调用，或者混用了。
+                // 这里我们保留 readAvailableData 作为备用，或者让 receiveAndProcessFrames 负责统计流量?
+                // FrameHandling extension 中应该也有读取数据的逻辑。让我们确保那里也做了统计。
             }
             
         case .hasSpaceAvailable:

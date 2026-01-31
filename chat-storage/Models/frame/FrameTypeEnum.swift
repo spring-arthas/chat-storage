@@ -34,6 +34,8 @@ enum FrameTypeEnum: UInt8, CaseIterable {
     case dirMoveReq = 0x13
     /// 目录操作响应
     case dirResponse = 0x14
+    /// 目录列表请求
+    case dirListReq = 0x15
     
     // ========== 目录文件上传帧 (0x20-0x2F) ==========
     /// 目录文件元数据帧
@@ -82,6 +84,7 @@ enum FrameTypeEnum: UInt8, CaseIterable {
         case .dirUpdateReq: return "目录更新请求"
         case .dirMoveReq: return "目录移动请求"
         case .dirResponse: return "目录操作响应"
+        case .dirListReq: return "目录列表请求"
             
         case .dirFileMeta: return "目录文件元数据"
         case .dirFileData: return "目录文件数据"

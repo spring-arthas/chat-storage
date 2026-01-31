@@ -30,6 +30,7 @@
 		4ED769CD2F2CB8F4006CFB2F /* FrameBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4ED769C62F2CB8F4006CFB2F /* FrameBuilder.swift */; };
 		4ED769CE2F2CB8F4006CFB2F /* UserRequest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4ED769C82F2CB8F4006CFB2F /* UserRequest.swift */; };
 		4ED769D12F2CB903006CFB2F /* AuthenticationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4ED769D02F2CB903006CFB2F /* AuthenticationService.swift */; };
+		767210272F2DADC20067C257 /* MainChatStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 767210262F2DADC20067C257 /* MainChatStorage.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -77,6 +78,7 @@
 		4ED769C62F2CB8F4006CFB2F /* FrameBuilder.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = FrameBuilder.swift; sourceTree = "<group>"; };
 		4ED769C82F2CB8F4006CFB2F /* UserRequest.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = UserRequest.swift; sourceTree = "<group>"; };
 		4ED769D02F2CB903006CFB2F /* AuthenticationService.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = AuthenticationService.swift; sourceTree = "<group>"; };
+		767210262F2DADC20067C257 /* MainChatStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainChatStorage.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -127,6 +129,7 @@
 		4E15EB1B2F2B48230093C805 /* chat-storage */ = {
 			isa = PBXGroup;
 			children = (
+				767210262F2DADC20067C257 /* MainChatStorage.swift */,
 				4ED769CF2F2CB903006CFB2F /* Services */,
 				4ED769BF2F2CB8F4006CFB2F /* Models */,
 				4ED769A12F2CB197006CFB2F /* SocketManager+FrameHandling.swift */,
@@ -348,6 +351,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				767210272F2DADC20067C257 /* MainChatStorage.swift in Sources */,
 				4ED7699E2F2C88DF006CFB2F /* ConfigServerView.swift in Sources */,
 				4ED769CA2F2CB8F4006CFB2F /* FrameTypeEnum.swift in Sources */,
 				4ED769982F2C4D6D006CFB2F /* InputValidator.swift in Sources */,

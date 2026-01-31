@@ -13,6 +13,10 @@ struct LoginView: View {
     /// 全局 Socket 连接管理器
     @EnvironmentObject var socketManager: SocketManager
     
+    // MARK: - Bindings
+    
+    @Binding var isLoggedIn: Bool
+    
     /// 认证服务
     @StateObject private var authService: AuthenticationService
     
@@ -38,7 +42,8 @@ struct LoginView: View {
     
     // MARK: - Initializer
     
-    init() {
+    init(isLoggedIn: Binding<Bool>) {
+        _isLoggedIn = isLoggedIn
         _authService = StateObject(wrappedValue: AuthenticationService(socketManager: SocketManager.shared))
     }
     
@@ -49,24 +54,12 @@ struct LoginView: View {
             // 显示注册界面
             RegisterView(showRegister: $showRegister)
         } else {
-            // 显示登录界面，带配置按钮
-            ZStack(alignment: .bottomTrailing) {
-                loginContent
-                
-                // 配置服务端地址按钮（右下角）
-                Button("配置服务端地址") {
-                    showConfigServer = true
+            // 显示登录界面
+            loginContent
+                .sheet(isPresented: $showConfigServer) {
+                    ConfigServerView()
+                        .environmentObject(socketManager)
                 }
-                .foregroundColor(.black)
-                .font(.subheadline)
-                .buttonStyle(.plain)
-                .padding(.trailing, 12)
-                .padding(.bottom, 12)
-            }
-            .sheet(isPresented: $showConfigServer) {
-                ConfigServerView()
-                    .environmentObject(socketManager)
-            }
         }
     }
     
@@ -78,16 +71,16 @@ struct LoginView: View {
             Spacer()
             
             // Logo 图标
-            Image(systemName: "person.crop.circle.fill")
+            Image(systemName: "person.circle.fill")
                 .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(width: 100, height: 100)
-                .foregroundColor(.accentColor)
+                .frame(width: 80, height: 80)
+                .foregroundStyle(.linearGradient(colors: [.blue, .cyan], startPoint: .topLeading, endPoint: .bottomTrailing))
+                .shadow(radius: 5)
             
-            // 标题
             Text("毒药网盘，您的信赖之举")
-                .font(.title)
+                .font(.title2)
                 .fontWeight(.bold)
+                .foregroundColor(.black.opacity(0.8))
             
             // 用户名输入框
             VStack(alignment: .leading, spacing: 8) {
@@ -95,19 +88,16 @@ struct LoginView: View {
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                 
-                TextField("手机号或邮箱", text: $username)
+                TextField("请输入用户名", text: $username)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 300)
                     .onSubmit {
-                        // 按下回车键时，如果密码已填写则登录，否则跳转到密码框
+                        // 如果密码和邮箱不为空，则尝试登录
                         if !password.isEmpty {
                             handleLogin()
-                        }
-                    }
-                    .onChange(of: username) { _ in
-                        // 清除错误信息（用户重新输入时）
-                        if !errorMessage.isEmpty {
-                            errorMessage = ""
+                        } else {
+                            // 否则聚焦到下一个输入框（这里假设密码框是下一个）
+                            // SwiftUI 原生焦点控制较为复杂，这里简化处理
                         }
                     }
             }
@@ -122,14 +112,7 @@ struct LoginView: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 300)
                     .onSubmit {
-                        // 按下回车键时触发登录
                         handleLogin()
-                    }
-                    .onChange(of: password) { _ in
-                        // 清除错误信息（用户重新输入时）
-                        if !errorMessage.isEmpty {
-                            errorMessage = ""
-                        }
                     }
             }
             
@@ -145,33 +128,37 @@ struct LoginView: View {
             Button(action: handleLogin) {
                 if isLoading {
                     ProgressView()
-                        .progressViewStyle(.circular)
-                        .frame(width: 280, height: 40)
+                        .controlSize(.small)
+                        .colorScheme(.dark)
                 } else {
                     Text("登录")
-                        .frame(width: 280, height: 40)
-                        .background(Color.blue)
-                        .foregroundColor(.white)
-                        .cornerRadius(8)
+                        .frame(maxWidth: .infinity)
                 }
             }
-            .buttonStyle(.plain)
-            .disabled(isLoading)
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .frame(width: 300)
+            .disabled(isLoading || username.isEmpty || password.isEmpty)
             
-            // 注册按钮
-            Button(action: {
+            // 注册链接
+            Button("还没有账号？立即注册") {
                 showRegister = true
-            }) {
-                Text("还没有账号？立即注册")
-                    .foregroundColor(.accentColor)
-                    .font(.subheadline)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.link)
+            .font(.footnote)
+            
+            // 错误信息
+            if !errorMessage.isEmpty {
+                Text(errorMessage)
+                    .foregroundColor(.red)
+                    .font(.caption)
+            }
             
             Spacer()
             
-            // Socket 连接状态显示
+            // 底部状态栏：连接状态 + 配置按钮
             HStack(spacing: 8) {
+                // 左侧：Socket 连接状态显示
                 Circle()
                     .fill(socketManager.connectionState == .connected ? Color.green : Color.gray)
                     .frame(width: 8, height: 8)
@@ -181,10 +168,19 @@ struct LoginView: View {
                 Text("服务器: \(server.host):\(server.port) \(socketManager.connectionState.description)")
                     .font(.caption)
                     .foregroundColor(.secondary)
+                
+                Spacer()  // 将右侧按钮推到最右边
+                
+                // 右侧：配置服务端地址按钮
+                Button("配置服务端地址") {
+                    showConfigServer = true
+                }
+                .foregroundColor(.black)
+                .font(.caption)
+                .buttonStyle(.plain)
             }
             .padding(.bottom, 10)
         }
-        .frame(minWidth: 400, minHeight: 500)
         .padding()
     }
     
@@ -222,7 +218,10 @@ struct LoginView: View {
                 await MainActor.run {
                     isLoading = false
                     print("✅ 登录成功！用户名: \(user.userName)")
-                    // TODO: 导航到主界面
+                    // 导航到主界面
+                    withAnimation {
+                        isLoggedIn = true
+                    }
                 }
                 
             } catch let error as AuthError {
@@ -254,7 +253,7 @@ struct LoginView: View {
 
 struct LoginView_Previews: PreviewProvider {
     static var previews: some View {
-        LoginView()
+        LoginView(isLoggedIn: .constant(false))
             .environmentObject(SocketManager.shared)
     }
 }

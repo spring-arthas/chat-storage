@@ -29,6 +29,22 @@ extension SocketManager {
         print("📤 发送帧: \(frame.type.description), 长度: \(bytes.count) 字节")
     }
     
+    /// 注册响应等待
+    private func registerContinuation(_ continuation: CheckedContinuation<Frame, Error>, for type: FrameTypeEnum) {
+        continuationLock.lock()
+        defer { continuationLock.unlock() }
+        responseContinuations[type] = continuation
+    }
+    
+    /// 移除并触发响应等待
+    private func removeAndResumeContinuation(for type: FrameTypeEnum, with error: Error) {
+        continuationLock.lock()
+        defer { continuationLock.unlock() }
+        if let continuation = responseContinuations.removeValue(forKey: type) {
+            continuation.resume(throwing: error)
+        }
+    }
+    
     /// 发送帧并等待响应
     /// - Parameters:
     ///   - frame: 要发送的帧
@@ -46,23 +62,15 @@ extension SocketManager {
         
         // 等待响应
         return try await withCheckedThrowingContinuation { continuation in
-            // 存储 continuation
-            continuationLock.lock()
-            responseContinuations[responseType] = continuation
-            continuationLock.unlock()
+            // 注册 continuation
+            registerContinuation(continuation, for: responseType)
             
             // 设置超时
             Task {
                 try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
                 
                 // 超时处理
-                continuationLock.lock()
-                if let storedContinuation = responseContinuations.removeValue(forKey: responseType) {
-                    continuationLock.unlock()
-                    storedContinuation.resume(throwing: SocketError.timeout)
-                } else {
-                    continuationLock.unlock()
-                }
+                removeAndResumeContinuation(for: responseType, with: SocketError.timeout)
             }
         }
     }
@@ -123,53 +131,45 @@ extension SocketManager {
             return
         }
         
-        do {
-            // 读取数据到缓冲区
-            let bufferSize = 4096
-            var buffer = [UInt8](repeating: 0, count: bufferSize)
+        // 读取数据到缓冲区
+        let bufferSize = 4096
+        var buffer = [UInt8](repeating: 0, count: bufferSize)
+        
+        let bytesRead = inputStream.read(&buffer, maxLength: bufferSize)
+        
+        if bytesRead > 0 {
+            // 记录接收流量
+            self.recordBytesReceived(Int64(bytesRead))
+        
+            // 成功读取数据
+            receiveBuffer.append(Data(bytes: buffer, count: bytesRead))
+            print("📥 读取到 \(bytesRead) 字节数据，缓冲区总大小: \(receiveBuffer.count) 字节")
             
-            let bytesRead = inputStream.read(&buffer, maxLength: bufferSize)
-            
-            if bytesRead > 0 {
-                // 成功读取数据
-                receiveBuffer.append(Data(bytes: buffer, count: bytesRead))
-                print("📥 读取到 \(bytesRead) 字节数据，缓冲区总大小: \(receiveBuffer.count) 字节")
+            // 尝试提取并处理完整的帧
+            var frameCount = 0
+            while let (frame, remaining) = FrameParser.extractFrame(from: receiveBuffer) {
+                receiveBuffer = remaining
+                frameCount += 1
                 
-                // 尝试提取并处理完整的帧
-                var frameCount = 0
-                while let (frame, remaining) = FrameParser.extractFrame(from: receiveBuffer) {
-                    receiveBuffer = remaining
-                    frameCount += 1
-                    
-                    do {
-                        // 处理帧时也需要异常保护
-                        handleReceivedFrame(frame)
-                    } catch {
-                        print("❌ 处理帧时发生异常: \(error)")
-                        // 继续处理下一个帧
-                    }
-                }
-                
-                if frameCount > 0 {
-                    print("✅ 本次共处理 \(frameCount) 个完整帧，剩余缓冲区: \(receiveBuffer.count) 字节")
-                }
-                
-            } else if bytesRead == 0 {
-                // 连接已关闭
-                print("⚠️ 读取到 0 字节，连接可能已关闭")
-                
-            } else {
-                // 读取错误
-                if let error = inputStream.streamError {
-                    print("❌ 读取数据时发生流错误: \(error.localizedDescription)")
-                } else {
-                    print("❌ 读取数据时发生未知错误")
-                }
+                // 处理帧 (handleReceivedFrame 不抛出错误，无需 do-catch)
+                handleReceivedFrame(frame)
             }
             
-        } catch {
-            print("❌ 接收数据时发生异常: \(error)")
-            print("   错误详情: \(error.localizedDescription)")
+            if frameCount > 0 {
+                print("✅ 本次共处理 \(frameCount) 个完整帧，剩余缓冲区: \(receiveBuffer.count) 字节")
+            }
+            
+        } else if bytesRead == 0 {
+            // 连接已关闭
+            print("⚠️ 读取到 0 字节，连接可能已关闭")
+            
+        } else {
+            // 读取错误
+            if let error = inputStream.streamError {
+                print("❌ 读取数据时发生流错误: \(error.localizedDescription)")
+            } else {
+                print("❌ 读取数据时发生未知错误")
+            }
         }
     }
     
@@ -184,16 +184,20 @@ extension SocketManager {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
-            // 查找对应的 continuation
-            self.continuationLock.lock()
-            if let continuation = self.responseContinuations.removeValue(forKey: frame.type) {
-                self.continuationLock.unlock()
-                continuation.resume(returning: frame)
-            } else {
-                self.continuationLock.unlock()
-                // 未找到对应的等待者，可能是主动推送的消息
-                print("⚠️ 收到未预期的帧类型: \(frame.type.description)")
-            }
+            self.resumeContinuation(for: frame)
+        }
+    }
+    
+    /// 恢复等待的 continuation
+    private func resumeContinuation(for frame: Frame) {
+        self.continuationLock.lock()
+        defer { self.continuationLock.unlock() }
+        
+        if let continuation = self.responseContinuations.removeValue(forKey: frame.type) {
+            continuation.resume(returning: frame)
+        } else {
+            // 未找到对应的等待者，可能是主动推送的消息
+            print("⚠️ 收到未预期的帧类型: \(frame.type.description)")
         }
     }
     
