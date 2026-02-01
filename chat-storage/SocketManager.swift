@@ -60,7 +60,10 @@ class SocketManager: NSObject, ObservableObject {
     internal var receiveBuffer = Data()
     
     /// 响应等待队列（用于同步等待响应）
-    internal var responseContinuations: [FrameTypeEnum: CheckedContinuation<Frame, Error>] = [:]
+    /// 响应等待映射 (帧类型 -> 请求ID)
+    internal var continuationTypeMap: [FrameTypeEnum: UUID] = [:]
+    /// 活动的 Continuation (请求ID -> Continuation)
+    internal var activeContinuations: [UUID: CheckedContinuation<Frame, Error>] = [:]
     
     /// 响应队列锁
     internal let continuationLock = NSLock()

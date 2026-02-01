@@ -30,31 +30,42 @@ extension SocketManager {
     }
     
     /// 注册响应等待
-    private func registerContinuation(_ continuation: CheckedContinuation<Frame, Error>, for type: FrameTypeEnum) {
+    private func registerContinuation(_ continuation: CheckedContinuation<Frame, Error>, for types: Set<FrameTypeEnum>) -> UUID {
         continuationLock.lock()
         defer { continuationLock.unlock() }
-        responseContinuations[type] = continuation
+        
+        let id = UUID()
+        activeContinuations[id] = continuation
+        for type in types {
+            continuationTypeMap[type] = id
+        }
+        return id
     }
     
-    /// 移除并触发响应等待
-    private func removeAndResumeContinuation(for type: FrameTypeEnum, with error: Error) {
+    /// 移除并触发响应等待 (用于超时或错误)
+    private func removeAndResumeContinuation(for id: UUID, with error: Error) {
         continuationLock.lock()
         defer { continuationLock.unlock() }
-        if let continuation = responseContinuations.removeValue(forKey: type) {
+        
+        if let continuation = activeContinuations.removeValue(forKey: id) {
+            // 清理类型映射
+            let keysToRemove = continuationTypeMap.filter { $0.value == id }.map { $0.key }
+            for key in keysToRemove {
+                continuationTypeMap.removeValue(forKey: key)
+            }
             continuation.resume(throwing: error)
         }
     }
     
-    /// 发送帧并等待响应
+    /// 发送帧并等待响应 (支持多种可能的响应类型)
     /// - Parameters:
     ///   - frame: 要发送的帧
-    ///   - responseType: 期望的响应帧类型
+    ///   - responseTypes: 期望的响应帧类型集合
     ///   - timeout: 超时时间（秒，默认10秒）
     /// - Returns: 响应帧
-    /// - Throws: 超时或其他错误
     func sendFrameAndWait(
         _ frame: Frame,
-        expecting responseType: FrameTypeEnum,
+        expectingOneOf responseTypes: Set<FrameTypeEnum>,
         timeout: TimeInterval = 10.0
     ) async throws -> Frame {
         // 发送帧
@@ -63,16 +74,25 @@ extension SocketManager {
         // 等待响应
         return try await withCheckedThrowingContinuation { continuation in
             // 注册 continuation
-            registerContinuation(continuation, for: responseType)
+            let id = registerContinuation(continuation, for: responseTypes)
             
             // 设置超时
             Task {
                 try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
                 
                 // 超时处理
-                removeAndResumeContinuation(for: responseType, with: SocketError.timeout)
+                removeAndResumeContinuation(for: id, with: SocketError.timeout)
             }
         }
+    }
+
+    /// 发送帧并等待响应 (单个类型便捷方法)
+    func sendFrameAndWait(
+        _ frame: Frame,
+        expecting responseType: FrameTypeEnum,
+        timeout: TimeInterval = 10.0
+    ) async throws -> Frame {
+        return try await sendFrameAndWait(frame, expectingOneOf: [responseType], timeout: timeout)
     }
     
     /// 启动接收循环（在独立线程中运行，通过 StreamDelegate 回调触发数据读取）
@@ -98,10 +118,11 @@ extension SocketManager {
         
         // 清理所有等待中的 continuation
         continuationLock.lock()
-        for (_, continuation) in responseContinuations {
+        for (_, continuation) in activeContinuations {
             continuation.resume(throwing: SocketError.connectionClosed)
         }
-        responseContinuations.removeAll()
+        activeContinuations.removeAll()
+        continuationTypeMap.removeAll()
         continuationLock.unlock()
         
         print("✅ 接收循环已完全停止")
@@ -193,11 +214,20 @@ extension SocketManager {
         self.continuationLock.lock()
         defer { self.continuationLock.unlock() }
         
-        if let continuation = self.responseContinuations.removeValue(forKey: frame.type) {
+        if let id = self.continuationTypeMap[frame.type],
+           let continuation = self.activeContinuations.removeValue(forKey: id) {
+            
+            // 清理该 ID 对应的所有类型映射
+            let keysToRemove = self.continuationTypeMap.filter { $0.value == id }.map { $0.key }
+            for key in keysToRemove {
+                self.continuationTypeMap.removeValue(forKey: key)
+            }
+            
             continuation.resume(returning: frame)
         } else {
             // 未找到对应的等待者，可能是主动推送的消息
-            print("⚠️ 收到未预期的帧类型: \(frame.type.description)")
+            print("⚠️ 收到未预期的帧类型: \(frame.type.description) (No waiter found)")
+            // 这里可以添加对未预期帧的全局处理逻辑
         }
     }
     

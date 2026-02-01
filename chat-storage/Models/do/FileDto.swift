@@ -55,6 +55,107 @@ struct FileDto: Codable {
     /// 子文件列表 (如果是目录且有子项，可能为空数组)
     let childFileList: [FileDto]?
     
+    // MARK: - Robust Decoding
+    
+    enum CodingKeys: String, CodingKey {
+        case id, pId
+        case fileName, filePath, fileSize
+        case fileType, isFile, isExist, hasChild
+        case userName
+        case gmtCreated, gmtModified
+        case del, delTime
+        case childFileList
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        
+        // Robust ID decoding (Int/String support)
+        if let idVal = try? container.decode(Int64.self, forKey: .id) {
+            self.id = idVal
+        } else if let idStr = try? container.decode(String.self, forKey: .id), let idVal = Int64(idStr) {
+            self.id = idVal
+        } else {
+             // Fallback or throw? ID is mandatory usually. Log error and default?
+             // Throwing allows catch block to see error.
+             self.id = try container.decode(Int64.self, forKey: .id)
+        }
+        
+        // Robust pId decoding
+        if let pIdVal = try? container.decode(Int64.self, forKey: .pId) {
+            self.pId = pIdVal
+        } else if let pIdStr = try? container.decode(String.self, forKey: .pId), let pIdVal = Int64(pIdStr) {
+            self.pId = pIdVal
+        } else {
+            self.pId = 0
+        }
+        
+        self.fileName = try container.decodeIfPresent(String.self, forKey: .fileName) ?? "未知文件"
+        self.filePath = try container.decodeIfPresent(String.self, forKey: .filePath) ?? ""
+        
+        // Robust fileSize decoding
+        if let sizeVal = try? container.decode(Int64.self, forKey: .fileSize) {
+            self.fileSize = sizeVal
+        } else if let sizeStr = try? container.decode(String.self, forKey: .fileSize), let sizeVal = Int64(sizeStr) {
+            self.fileSize = sizeVal
+        } else {
+            self.fileSize = nil
+        }
+        
+        self.fileType = try container.decodeIfPresent(String.self, forKey: .fileType) ?? ""
+        self.isFile = try container.decodeIfPresent(String.self, forKey: .isFile) ?? "N"
+        self.isExist = try container.decodeIfPresent(String.self, forKey: .isExist) ?? "Y"
+        self.hasChild = try container.decodeIfPresent(String.self, forKey: .hasChild) ?? "N"
+        
+        self.userName = try container.decodeIfPresent(String.self, forKey: .userName)
+        
+        self.gmtCreated = try container.decodeIfPresent(Int64.self, forKey: .gmtCreated)
+        self.gmtModified = try container.decodeIfPresent(Int64.self, forKey: .gmtModified)
+        
+        self.del = try container.decodeIfPresent(String.self, forKey: .del)
+        self.delTime = try container.decodeIfPresent(Int64.self, forKey: .delTime)
+        
+        self.childFileList = try container.decodeIfPresent([FileDto].self, forKey: .childFileList)
+    }
+    
+    // Default init for manual creation if needed
+    init(id: Int64, pId: Int64, fileName: String, filePath: String, fileSize: Int64?, fileType: String, isFile: String, isExist: String, hasChild: String, userName: String?, gmtCreated: Int64?, gmtModified: Int64?, del: String?, delTime: Int64?, childFileList: [FileDto]?) {
+        self.id = id
+        self.pId = pId
+        self.fileName = fileName
+        self.filePath = filePath
+        self.fileSize = fileSize
+        self.fileType = fileType
+        self.isFile = isFile
+        self.isExist = isExist
+        self.hasChild = hasChild
+        self.userName = userName
+        self.gmtCreated = gmtCreated
+        self.gmtModified = gmtModified
+        self.del = del
+        self.delTime = delTime
+        self.childFileList = childFileList
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(pId, forKey: .pId)
+        try container.encode(fileName, forKey: .fileName)
+        try container.encode(filePath, forKey: .filePath)
+        try container.encodeIfPresent(fileSize, forKey: .fileSize)
+        try container.encode(fileType, forKey: .fileType)
+        try container.encode(isFile, forKey: .isFile)
+        try container.encode(isExist, forKey: .isExist)
+        try container.encode(hasChild, forKey: .hasChild)
+        try container.encodeIfPresent(userName, forKey: .userName)
+        try container.encodeIfPresent(gmtCreated, forKey: .gmtCreated)
+        try container.encodeIfPresent(gmtModified, forKey: .gmtModified)
+        try container.encodeIfPresent(del, forKey: .del)
+        try container.encodeIfPresent(delTime, forKey: .delTime)
+        try container.encodeIfPresent(childFileList, forKey: .childFileList)
+    }
+    
     /// 是否是文件 (布尔值)
     var isFileBoolean: Bool {
         return isFile.uppercased() == "Y"

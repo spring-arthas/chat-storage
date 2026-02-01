@@ -45,9 +45,14 @@ struct MainChatStorage: View {
     @State private var currentPage: Int = 1
     
     /// 每页显示数量
-    @State private var itemsPerPage: Int = 20
+    @State private var itemsPerPage: Int = 10
     
-
+    /// 总页数
+    @State private var totalPages: Int = 1
+    
+    /// 总记录数
+    @State private var totalCount: Int64 = 0
+    
     /// 当前时间
     @State private var currentTime: String = ""
     
@@ -171,22 +176,26 @@ struct MainChatStorage: View {
         .onChange(of: selectedTab) { newTab in
             // 当切换到网盘存储标签页时，加载目录
             // 使用 DispatchQueue 延迟执行，避免在视图初始化时立即创建 Task
-            if newTab == 1 && directoryTree.isEmpty {
-                DispatchQueue.main.async {
-                    Task {
-                        await loadDirectoryFromServer()
+            if newTab == 1 {
+                if directoryTree.isEmpty {
+                    DispatchQueue.main.async {
+                        Task {
+                            await loadDirectoryFromServer()
+                        }
                     }
                 }
+                // 刷新文件列表
+                Task { loadCurrentFiles() }
             }
         }
-        // 监听目录选中变化，打印日志
+        // 监听目录选中变化，加载对应文件
         .onChange(of: selectedDirectoryId) { newId in
             if let id = newId {
                 printNodeInfo(id: id)
-                // Update file list to show children of selected directory
-                if let item = findDirectoryItem(id: id, nodes: directoryTree) {
-                    self.fileList = item.childFileList ?? []
-                }
+                // 重置搜索和页码
+                self.searchKeyword = ""
+                self.currentPage = 1
+                loadCurrentFiles()
             }
         }
         // 监听传输任务更新
@@ -363,13 +372,7 @@ struct MainChatStorage: View {
     
     // MARK: - Main Content (主内容区域)
     
-    @State private var isPresentingDirectoryPicker = false // Control directory picker popover
-    
-    // Computed property for selected Directory Name
-    private var selectedDirectoryNameForFilter: String {
-        guard let id = searchDirectoryId else { return "全部目录" }
-        return findDirectoryItem(id: id, nodes: directoryTree)?.fileName ?? "未知目录"
-    }
+
     
     private var mainContent: some View {
         VSplitView {
@@ -424,61 +427,6 @@ struct MainChatStorage: View {
             
             // 右侧：搜索区
             HStack(spacing: 8) {
-                // 目录筛选
-                // 目录筛选 (树形选择器)
-                Button(action: {
-                    isPresentingDirectoryPicker.toggle()
-                }) {
-                    HStack {
-                        Text(selectedDirectoryNameForFilter)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.system(size: 9))
-                    }
-                    .frame(width: 120, alignment: .leading)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .popover(isPresented: $isPresentingDirectoryPicker, arrowEdge: .bottom) {
-                    VStack(spacing: 0) {
-                        // "全部目录" Option
-                        Button(action: {
-                            searchDirectoryId = nil
-                            isPresentingDirectoryPicker = false
-                            handleSearch()
-                        }) {
-                            HStack {
-                                Image(systemName: "folder")
-                                Text("全部目录")
-                                Spacer()
-                                if searchDirectoryId == nil {
-                                    Image(systemName: "checkmark")
-                                        .foregroundColor(.blue)
-                                }
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 6)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        
-                        Divider()
-                        
-                        ScrollView {
-                            DirectoryTreeSelector(
-                                nodes: directoryTree,
-                                selectedId: $searchDirectoryId,
-                                onSelect: {
-                                    isPresentingDirectoryPicker = false
-                                    handleSearch()
-                                }
-                            )
-                            .padding(.vertical, 4)
-                        }
-                    }
-                    .frame(width: 250, height: 300)
-                }
                 
                 // 搜索输入框
                 TextField("搜索文件名称", text: $searchKeyword)
@@ -573,7 +521,7 @@ struct MainChatStorage: View {
     
     private var paginationBar: some View {
         HStack(spacing: 16) {
-            Text("共 \(fileList.count) 个文件")
+            Text("共 \(totalCount) 个文件")
                 .font(.system(size: 11))
                 .foregroundColor(.secondary)
             
@@ -581,7 +529,10 @@ struct MainChatStorage: View {
             
             HStack(spacing: 12) {
                 Button(action: {
-                    if currentPage > 1 { currentPage -= 1 }
+                    if currentPage > 1 {
+                        currentPage -= 1
+                        loadCurrentFiles()
+                    }
                 }) {
                     Image(systemName: "chevron.left")
                 }
@@ -589,19 +540,21 @@ struct MainChatStorage: View {
                 .controlSize(.small)
                 .disabled(currentPage <= 1)
                 
-                Text("\(currentPage) / \(max(1, (fileList.count + itemsPerPage - 1) / itemsPerPage))")
+                Text("\(currentPage) / \(max(1, totalPages))")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.secondary)
                 
                 Button(action: {
-                    let totalPages = (fileList.count + itemsPerPage - 1) / itemsPerPage
-                    if currentPage < totalPages { currentPage += 1 }
+                    if currentPage < totalPages {
+                        currentPage += 1
+                        loadCurrentFiles()
+                    }
                 }) {
                     Image(systemName: "chevron.right")
                 }
                 .buttonStyle(.borderless)
                 .controlSize(.small)
-                .disabled(currentPage >= (fileList.count + itemsPerPage - 1) / itemsPerPage)
+                .disabled(currentPage >= totalPages)
             }
         }
         .padding(.horizontal, 12)
@@ -1001,32 +954,8 @@ struct MainChatStorage: View {
     
     /// 当前页显示的文件列表 (经过搜索过滤)
     private var currentFiles: [DirectoryItem] {
-        // 1. 过滤
-        var filtered = fileList
-        
-        // 按名称过滤
-        if !searchKeyword.isEmpty {
-            filtered = filtered.filter { $0.fileName.localizedCaseInsensitiveContains(searchKeyword) }
-        }
-        
-        // 按目录过滤 (这里简单模拟，实际 FileItem 只有 directoryName 字符串，无法精确匹配 ID)
-        // 假设我们在 fake data 中 directoryName 与 Picker 显示的一致。
-        // 由于 FileItem 目前没有 directoryId 字段，只能模拟根据名称过滤
-        if let dirId = searchDirectoryId, let dirName = findDirectoryName(id: dirId, nodes: directoryTree) {
-             filtered = filtered.filter { $0.directoryName == dirName }
-        }
-        
-        // 2. 分页
-        let startIndex = (currentPage - 1) * itemsPerPage
-        let endIndex = min(startIndex + itemsPerPage, filtered.count)
-        if startIndex >= filtered.count { return [] }
-        return Array(filtered[startIndex..<endIndex])
-    }
-    
-    private func handleSearch() {
-        print("执行搜索: Keyword='\(searchKeyword)', DirectoryID=\(String(describing: searchDirectoryId))")
-        addLog("执行搜索: Keyword='\(searchKeyword)'")
-        currentPage = 1 // 搜索后重置页码
+        // 由于采用了服务端分页，fileList 已经是当前页的数据，且已经经过了关键字过滤
+        return fileList
     }
     
     private func flattenDirectories(nodes: [DirectoryItem]) -> [DirectoryItem] {
@@ -1609,6 +1538,54 @@ struct MainChatStorage: View {
             }
         }
         return nil
+    }
+    
+    // MARK: - File List Pagination Helpers
+    
+    /// 加载当前条件下的文件列表
+    private func loadCurrentFiles() {
+        Task {
+            guard let service = directoryService else { return }
+            
+            // 确定查询参数
+            // 如果选中了目录，使用 selectedDirectoryId，否则默认为 0 (根目录)
+            let dirId = selectedDirectoryId ?? 0
+            
+            let currentKeyword = searchKeyword
+            
+            do {
+                let result = try await service.fetchFileList(
+                    dirId: dirId,
+                    fileName: currentKeyword,
+                    pageNum: currentPage,
+                    pageSize: itemsPerPage
+                )
+                
+                // 更新 UI 状态
+                await MainActor.run {
+                    self.fileList = result.recordList.map { $0.toDirectoryItem() }
+                    self.totalPages = Int(result.totalPage)
+                    self.totalCount = result.totalCount
+                    // 如果当前页大于总页数（可能是删除后），且总页数不为0，重置为最后一页
+                    if self.currentPage > self.totalPages && self.totalPages > 0 {
+                        self.currentPage = self.totalPages
+                        // 简单重置，不再递归调用，下次交互会正常
+                    }
+                }
+            } catch {
+                print("❌ 加载文件列表失败: \(error)")
+                await MainActor.run {
+                    self.alertMessage = "加载文件列表失败: \(error.localizedDescription)"
+                    self.showingAlert = true
+                }
+            }
+        }
+    }
+    
+    private func handleSearch() {
+        // 重置页码并加载
+        self.currentPage = 1
+        loadCurrentFiles()
     }
 }
 

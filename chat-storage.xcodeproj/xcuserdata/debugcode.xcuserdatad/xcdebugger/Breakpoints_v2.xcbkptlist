@@ -16,7 +16,7 @@
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "94"
             endingLineNumber = "94"
-            landmarkName = "stopReceiveLoop()"
+            landmarkName = "sendFrameAndWait(_:expecting:timeout:)"
             landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>

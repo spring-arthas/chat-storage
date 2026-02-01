@@ -152,6 +152,101 @@ class DirectoryService: ObservableObject {
         print("✅ 目录删除成功")
     }
     
+    /// 分页获取文件列表 (0x40)
+    /// - Parameters:
+    ///   - dirId: 目录ID
+    ///   - fileName: 文件名关键字
+    ///   - pageNum: 页码
+    ///   - pageSize: 每页大小
+    /// - Returns: 分页结果
+    func fetchFileList(
+        dirId: Int64,
+        fileName: String = "",
+        pageNum: Int = 1,
+        pageSize: Int = 10
+    ) async throws -> PageResult<FileDto> {
+        print("📂 请求加载文件列表: dirId=\(dirId), fileName=\(fileName), page=\(pageNum)")
+        
+        let request = FileListRequest(
+            dirId: dirId,
+            fileName: fileName,
+            pageNum: pageNum,
+            pageSize: pageSize
+        )
+        let jsonData = try JSONEncoder().encode(request)
+        
+        let frame = Frame(
+            type: .fileListReq,
+            data: jsonData,
+            flags: 0x00
+        )
+        
+        // 发送并等待响应（仅等待文件响应，避免与其他并发请求（如目录树）冲突）
+        let responseFrame = try await socketManager.sendFrameAndWait(
+            frame,
+            expecting: .fileResponse,
+            timeout: 15.0
+        )
+        
+        // 解析响应
+        guard let dict = try? FrameParser.decodeAsDictionary(responseFrame) else {
+            throw DirectoryError.invalidResponse("无法解析响应为字典 [FrameType: \(responseFrame.type.description)]")
+        }
+        
+        // 检查业务状态码
+        if let code = dict["code"] as? Int, code != 200 {
+            let message = dict["message"] as? String ?? "未知错误"
+            throw DirectoryError.serverError(code: code, message: message)
+        }
+        
+        guard let data = dict["data"] else {
+             // 如果 data 为空，返回空的分页结果
+             return PageResult(
+                currentPage: pageNum,
+                pageSize: pageSize,
+                totalCount: 0,
+                totalPage: 0,
+                recordList: []
+             )
+        }
+        
+        // 解析 PageResult
+        let jsonDataResponse: Data
+        if let dataDict = data as? [String: Any] {
+            print("📦 收到分页数据 (Keys): \(dataDict.keys)")
+            if let list = dataDict["recordList"] as? [Any] {
+                 print("   recordList count: \(list.count)")
+            } else {
+                 print("   recordList is MISSING or invalid type: \(type(of: dataDict["recordList"] ?? "nil"))")
+            }
+            jsonDataResponse = try JSONSerialization.data(withJSONObject: dataDict)
+        } else {
+             return PageResult(
+                currentPage: pageNum,
+                pageSize: pageSize,
+                totalCount: 0,
+                totalPage: 0,
+                recordList: []
+             )
+        }
+        
+        do {
+            let pageResult = try JSONDecoder().decode(PageResult<FileDto>.self, from: jsonDataResponse)
+            print("✅ 文件列表加载成功，当前页 \(pageResult.currentPage)/\(pageResult.totalPage)，共 \(pageResult.totalCount) 条")
+            
+            return pageResult
+        } catch let DecodingError.keyNotFound(key, context) {
+            print("❌ JSON 解码缺少键: \(key.stringValue), 路径: \(context.codingPath.map { $0.stringValue })")
+            throw DirectoryError.invalidResponse("缺少字段: \(key.stringValue)")
+        } catch let DecodingError.valueNotFound(type, context) {
+             print("❌ JSON 解码缺少值: \(type), 路径: \(context.codingPath.map { $0.stringValue })")
+             throw DirectoryError.invalidResponse("缺少值: \(type)")
+        } catch {
+             print("❌ JSON 解码其它错误: \(error)")
+             throw error
+        }
+    }
+
     /// 解析目录响应帧
     /// - Parameter frame: 响应帧
     /// - Returns: 目录项数组
@@ -198,28 +293,100 @@ class DirectoryService: ObservableObject {
             jsonData = try JSONSerialization.data(withJSONObject: dataArray)
         } else {
             // data 既不是字典也不是数组，可能是字符串或其他，暂时视为无效格式或不需要解析
-           print("⚠️ data 字段格式不是字典或数组: \(type(of: data))")
-           return []
+            print("⚠️ data 字段格式不是字典或数组: \(type(of: data))")
+            return []
         }
         
         // 4. 解析为 FileDto
         let decoder = JSONDecoder()
         
-        // 尝试解析为单个 FileDto
-        if let fileDto = try? decoder.decode(FileDto.self, from: jsonData) {
-            print("✅ 成功解析为单个 FileDto: \(fileDto.fileName)")
-            return [fileDto.toDirectoryItem()]
+        do {
+            // 尝试解析为 FileDto 数组
+            if let dataArray = data as? [[String: Any]] {
+                let fileDtos = try decoder.decode([FileDto].self, from: jsonData)
+                print("✅ 成功解析为 FileDto 数组，共 \(fileDtos.count) 项")
+                return fileDtos.map { $0.toDirectoryItem() }
+            }
+            // 尝试解析为单个 FileDto
+            else if let dataDict = data as? [String: Any] {
+                 let fileDto = try decoder.decode(FileDto.self, from: jsonData)
+                 print("✅ 成功解析为单个 FileDto: \(fileDto.fileName)")
+                 return [fileDto.toDirectoryItem()]
+            }
+        } catch {
+            print("❌ FileDto 解析失败: \(error)")
         }
         
-        // 尝试解析为 FileDto 数组
-        if let fileDtos = try? decoder.decode([FileDto].self, from: jsonData) {
-            print("✅ 成功解析为 FileDto 数组，共 \(fileDtos.count) 项")
-            return fileDtos.map { $0.toDirectoryItem() }
-        }
-        
-        // 解析失败但不抛出错误，防止打断流程 (除非确实需要严格校验)
-        print("⚠️ 无法将 data 解析为 FileDto 或 [FileDto]，返回空数组")
+        print("⚠️ 无法将 data 解析为 FileDto 或 [FileDto] (Data Type: \(type(of: data)))")
+        print("🔍 JSON Data String: \(String(data: jsonData, encoding: .utf8) ?? "nil")")
         return []
+    }
+}
+
+// MARK: - Local Data Models
+
+struct FileListRequest: Codable {
+    let dirId: Int64
+    let fileName: String
+    let pageNum: Int
+    let pageSize: Int
+}
+
+struct PageResult<T: Codable>: Codable {
+    let currentPage: Int
+    let pageSize: Int
+    let totalCount: Int64
+    let totalPage: Int64
+    let recordList: [T]
+    
+    enum CodingKeys: String, CodingKey {
+        case currentPage, pageNum
+        case pageSize
+        case totalCount, total
+        case totalPage, pages, totalPages
+        case recordList, list, records, data
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        
+        self.currentPage = try container.decodeIfPresent(Int.self, forKey: .currentPage)
+                        ?? container.decodeIfPresent(Int.self, forKey: .pageNum)
+                        ?? 1
+        
+        self.pageSize = try container.decodeIfPresent(Int.self, forKey: .pageSize) ?? 10
+        
+        self.totalCount = try container.decodeIfPresent(Int64.self, forKey: .totalCount)
+                       ?? container.decodeIfPresent(Int64.self, forKey: .total)
+                       ?? 0
+        
+        self.totalPage = try container.decodeIfPresent(Int64.self, forKey: .totalPage)
+                      ?? container.decodeIfPresent(Int64.self, forKey: .pages)
+                      ?? container.decodeIfPresent(Int64.self, forKey: .totalPages)
+                      ?? 0
+        
+        self.recordList = try container.decodeIfPresent([T].self, forKey: .recordList)
+                       ?? container.decodeIfPresent([T].self, forKey: .list)
+                       ?? container.decodeIfPresent([T].self, forKey: .records)
+                       ?? container.decodeIfPresent([T].self, forKey: .data)
+                       ?? []
+    }
+    
+    init(currentPage: Int, pageSize: Int, totalCount: Int64, totalPage: Int64, recordList: [T]) {
+        self.currentPage = currentPage
+        self.pageSize = pageSize
+        self.totalCount = totalCount
+        self.totalPage = totalPage
+        self.recordList = recordList
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(currentPage, forKey: .currentPage)
+        try container.encode(pageSize, forKey: .pageSize)
+        try container.encode(totalCount, forKey: .totalCount)
+        try container.encode(totalPage, forKey: .totalPage)
+        try container.encode(recordList, forKey: .recordList)
     }
 }
 
