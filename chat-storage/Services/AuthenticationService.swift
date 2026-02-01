@@ -11,6 +11,10 @@ import Combine
 /// 认证服务（处理登录和注册）
 class AuthenticationService: ObservableObject {
     
+    // MARK: - Singleton
+    
+    static let shared = AuthenticationService(socketManager: SocketManager.shared)
+
     // MARK: - Published Properties
     
     /// 当前登录用户

@@ -49,7 +49,7 @@ class SocketManager: NSObject, ObservableObject {
     private var reconnectTimer: Timer?
     
     /// 服务器地址（可动态配置）
-    private var host: String = "192.168.2.104"  // 默认服务器地址  192.168.2.104  192.168.0.103
+    private var host: String = "192.168.0.103"  // 默认服务器地址  192.168.2.104  192.168.0.103
     
     /// 服务器端口（可动态配置）
     private var port: UInt32 = 10086
@@ -95,7 +95,7 @@ class SocketManager: NSObject, ObservableObject {
     
     // MARK: - Initialization
     
-    private override init() {
+    override init() {
         super.init()
         print("📱 SocketManager 初始化完成")
     }
@@ -275,7 +275,8 @@ class SocketManager: NSObject, ObservableObject {
     }
     
     /// 断开连接
-    func disconnect() {
+    /// - Parameter notifyUI: 是否通知 UI 更新状态 (deinit 时应为 false)
+    func disconnect(notifyUI: Bool = true) {
         print("🔌 主动断开 Socket 连接")
         
         stopHeartbeat()
@@ -295,7 +296,9 @@ class SocketManager: NSObject, ObservableObject {
         inputStream = nil
         outputStream = nil
         
-        updateState(.disconnected)
+        if notifyUI {
+            updateState(.disconnected)
+        }
         reconnectAttempts = 0
     }
     

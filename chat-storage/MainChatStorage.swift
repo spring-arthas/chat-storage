@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import Combine
 
 /// 主文件管理界面
 struct MainChatStorage: View {
@@ -13,6 +14,8 @@ struct MainChatStorage: View {
     // MARK: - Environment Objects
     
     @EnvironmentObject var socketManager: SocketManager
+    @EnvironmentObject var authService: AuthenticationService
+    @StateObject private var transferManager = TransferTaskManager.shared
     
     // MARK: - Bindings
     
@@ -114,50 +117,50 @@ struct MainChatStorage: View {
     // MARK: - Body
     
     var body: some View {
-            ZStack {
-                VStack(spacing: 0) {
-                    // 顶部工具栏
-                    topToolbar
-                    
-                    Divider()
-                    
-                    // TabView 内容区域
-                    TabView(selection: $selectedTab) {
-                        // 第一个标签页：好友列表
-                        friendsListView
-                            .tabItem {
-                                Label("好友列表", systemImage: "person.2.fill")
-                            }
-                            .tag(0)
-                        
-                        // 第二个标签页：网盘存储
-                        storageView
-                            .tabItem {
-                                Label("网盘存储", systemImage: "externaldrive.fill")
-                            }
-                            .tag(1)
-                    }
-                }
-                .disabled(showingCreateDirDialog || showingRenameDialog) // 弹窗时禁用主界面交互
+        ZStack {
+            VStack(spacing: 0) {
+                // 顶部工具栏
+                topToolbar
                 
-                // 新建目录弹窗
-                if showingCreateDirDialog {
-                    Color.black.opacity(0.3)
-                        .edgesIgnoringSafeArea(.all)
-                        .onTapGesture {}
-                    
-                    createDirectoryDialog
-                }
+                Divider()
                 
-                // 重命名目录弹窗
-                if showingRenameDialog {
-                   Color.black.opacity(0.3)
-                       .edgesIgnoringSafeArea(.all)
-                       .onTapGesture {}
-                   
-                   renameDirectoryUiDialog
+                // TabView 内容区域
+                TabView(selection: $selectedTab) {
+                    // 第一个标签页：好友列表
+                    friendsListView
+                        .tabItem {
+                            Label("好友列表", systemImage: "person.2.fill")
+                        }
+                        .tag(0)
+                    
+                    // 第二个标签页：网盘存储
+                    storageView
+                        .tabItem {
+                            Label("网盘存储", systemImage: "externaldrive.fill")
+                        }
+                        .tag(1)
                 }
             }
+            .disabled(showingCreateDirDialog || showingRenameDialog) // 弹窗时禁用主界面交互
+            
+            // 新建目录弹窗
+            if showingCreateDirDialog {
+                Color.black.opacity(0.3)
+                    .edgesIgnoringSafeArea(.all)
+                    .onTapGesture {}
+                
+                createDirectoryDialog
+            }
+            
+            // 重命名目录弹窗
+            if showingRenameDialog {
+                Color.black.opacity(0.3)
+                    .edgesIgnoringSafeArea(.all)
+                    .onTapGesture {}
+                
+                renameDirectoryUiDialog
+            }
+        }
         .onAppear {
             startTimer()
             loadServerAddress()
@@ -183,6 +186,19 @@ struct MainChatStorage: View {
                 // Update file list to show children of selected directory
                 if let item = findDirectoryItem(id: id, nodes: directoryTree) {
                     self.fileList = item.childFileList ?? []
+                }
+            }
+        }
+        // 监听传输任务更新
+        .onReceive(transferManager.$taskUpdates) { updates in
+            for (id, info) in updates {
+                if let index = self.transferList.firstIndex(where: { $0.id == id }) {
+                    // 更新状态
+                    self.transferList[index].status = info.0
+                    // 更新进度
+                    self.transferList[index].progress = info.1
+                    // 更新速度 (暂时未传递)
+                    // self.transferList[index].speed = info.2
                 }
             }
         }
@@ -231,16 +247,16 @@ struct MainChatStorage: View {
             HStack(spacing: 12) {
                 HStack(spacing: 4) {
                     Image(systemName: "arrow.up.circle.fill")
-                        .foregroundColor(.blue)
-                        .font(.system(size: 10))
+                    .foregroundColor(.blue)
+                    .font(.system(size: 10))
                     Text("上行: \(socketManager.uploadSpeedStr)")
                         .font(.system(size: 11, design: .monospaced))
                 }
                 
                 HStack(spacing: 4) {
                     Image(systemName: "arrow.down.circle.fill")
-                        .foregroundColor(.green)
-                        .font(.system(size: 10))
+                    .foregroundColor(.green)
+                    .font(.system(size: 10))
                     Text("下行: \(socketManager.downloadSpeedStr)")
                         .font(.system(size: 11, design: .monospaced))
                 }
@@ -466,9 +482,9 @@ struct MainChatStorage: View {
                 
                 // 搜索输入框
                 TextField("搜索文件名称", text: $searchKeyword)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 200)
-                    .controlSize(.small)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 200)
+                .controlSize(.small)
                 
                 // 搜索按钮
                 Button(action: {
@@ -526,8 +542,8 @@ struct MainChatStorage: View {
                 if fileList.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "folder")
-                            .font(.system(size: 48))
-                            .foregroundColor(.secondary)
+                        .font(.system(size: 48))
+                        .foregroundColor(.secondary)
                         
                         Text("暂无文件")
                             .font(.system(size: 14))
@@ -637,7 +653,7 @@ struct MainChatStorage: View {
                     handleFileAction(file, action: 1) // 1: 删除
                 }) {
                     Image(systemName: "trash")
-                        .foregroundColor(.red)
+                    .foregroundColor(.red)
                 }
                 .buttonStyle(.borderless)
                 .controlSize(.small)
@@ -647,7 +663,7 @@ struct MainChatStorage: View {
                     handleFileAction(file, action: 2) // 2: 下载
                 }) {
                     Image(systemName: "arrow.down.circle")
-                        .foregroundColor(.blue)
+                    .foregroundColor(.blue)
                 }
                 .buttonStyle(.borderless)
                 .controlSize(.small)
@@ -714,8 +730,8 @@ struct MainChatStorage: View {
                 if transferList.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "arrow.up.arrow.down.square")
-                            .font(.system(size: 40))
-                            .foregroundColor(.secondary.opacity(0.5))
+                        .font(.system(size: 40))
+                        .foregroundColor(.secondary.opacity(0.5))
                         
                         Text("无传输任务")
                             .font(.system(size: 13))
@@ -761,7 +777,7 @@ struct MainChatStorage: View {
             // 传输类型
             HStack(spacing: 4) {
                 Image(systemName: item.taskType == .upload ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
-                    .foregroundColor(item.taskType == .upload ? .blue : .green)
+                .foregroundColor(item.taskType == .upload ? .blue : .green)
                 Text(item.taskType.rawValue)
             }
             .font(.system(size: 11))
@@ -797,7 +813,7 @@ struct MainChatStorage: View {
                     // Start/Resume Button
                     Button(action: { handleTransferAction(id: item.id, action: "start") }) {
                         Image(systemName: "arrow.up.circle") // Upload icon for start
-                            .foregroundColor(.blue)
+                        .foregroundColor(.blue)
                     }
                     .buttonStyle(.borderless)
                     .help("开始上传")
@@ -805,7 +821,7 @@ struct MainChatStorage: View {
                     // Pause Button
                     Button(action: { handleTransferAction(id: item.id, action: "pause") }) {
                         Image(systemName: "pause.circle")
-                            .foregroundColor(.orange)
+                        .foregroundColor(.orange)
                     }
                     .buttonStyle(.borderless)
                     .help("暂停")
@@ -814,7 +830,7 @@ struct MainChatStorage: View {
                 // Cancel Button (Always visible)
                 Button(action: { handleTransferAction(id: item.id, action: "cancel") }) {
                     Image(systemName: "xmark.circle")
-                        .foregroundColor(.red)
+                    .foregroundColor(.red)
                 }
                 .buttonStyle(.borderless)
                 .help("取消")
@@ -919,17 +935,7 @@ struct MainChatStorage: View {
     }
     
     private func handleStartUpload() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = true
-        
-        if panel.runModal() == .OK {
-            for url in panel.urls {
-                addLog("准备上传: \(url.lastPathComponent)")
-                // TODO: 实现文件上传
-            }
-        }
+        // Not used, using handleSelectFiles via UI context
     }
     
     private func handleSelectFiles(targetDirectory: DirectoryItem? = nil) {
@@ -961,6 +967,8 @@ struct MainChatStorage: View {
                     name: name,
                     size: fileSize,
                     directoryName: targetName,
+                    fileUrl: url, // 保存 URL
+                    targetDirId: targetDirectory?.id ?? 0,
                     taskType: .upload, // Set as Upload
                     status: "等待上传",
                     progress: 0.0,
@@ -1532,23 +1540,47 @@ struct MainChatStorage: View {
     
     private func handleTransferAction(id: UUID, action: String) {
         guard let index = transferList.firstIndex(where: { $0.id == id }) else { return }
+        let item = transferList[index]
         
         switch action {
         case "start":
-            transferList[index].status = "上传中"
-            // TODO: Here you would call the actual upload logic
-            // For demo purposes, we'll just toggle the UI state
-            addLog("任务 [\(transferList[index].name)] 开始")
+            // 检查当前状态，决定是 submit 还是 resume
+            if item.status == "暂停" {
+                addLog("▶️ 恢复任务: \(item.name)")
+                transferManager.resume(id: id)
+            } else {
+                addLog("🚀 提交任务至队列: \(item.name)")
+                transferList[index].status = "等待上传" // 立即更新UI响应
+                
+                guard let fileUrl = item.fileUrl else {
+                    addLog("❌ 文件路径丢失: \(item.name)")
+                    transferList[index].status = "失败"
+                    return
+                }
+                
+                // 获取当前用户ID (从全局认证服务)
+                let currentUserId = Int64(authService.currentUser?.userId ?? 0)
+                
+                // 构建 TransferTask
+                let task = TransferTask(
+                    id: item.id,
+                    name: item.name,
+                    fileUrl: fileUrl,
+                    targetDirId: item.targetDirId,
+                    userId: currentUserId
+                )
+                
+                transferManager.submit(task: task)
+            }
             
         case "pause":
-            transferList[index].status = "暂停"
-            // TODO: Here you would call the actual pause logic
-            addLog("任务 [\(transferList[index].name)] 暂停")
+            addLog("⏸️ 暂停任务: \(item.name)")
+            transferManager.pause(id: id)
             
         case "cancel":
-            let name = transferList[index].name
+            addLog("❌ 取消任务: \(item.name)")
+            transferManager.cancel(id: id)
             transferList.remove(at: index)
-            addLog("任务 [\(name)] 已取消")
             
         default:
             break
@@ -1587,6 +1619,8 @@ struct TransferItem: Identifiable {
     let name: String
     let size: Int64
     let directoryName: String
+    let fileUrl: URL? // 新增：保存文件路径用于上传
+    let targetDirId: Int64 // 新增：目标目录ID
     enum TaskType: String {
         case upload = "上传"
         case download = "下载"

@@ -13,12 +13,12 @@ struct LoginView: View {
     /// 全局 Socket 连接管理器
     @EnvironmentObject var socketManager: SocketManager
     
+    /// 认证服务
+    @EnvironmentObject var authService: AuthenticationService
+    
     // MARK: - Bindings
     
     @Binding var isLoggedIn: Bool
-    
-    /// 认证服务
-    @StateObject private var authService: AuthenticationService
     
     // MARK: - State Variables (状态变量)
     
@@ -44,7 +44,6 @@ struct LoginView: View {
     
     init(isLoggedIn: Binding<Bool>) {
         _isLoggedIn = isLoggedIn
-        _authService = StateObject(wrappedValue: AuthenticationService(socketManager: SocketManager.shared))
     }
     
     // MARK: - Body (界面布局)
@@ -255,5 +254,6 @@ struct LoginView_Previews: PreviewProvider {
     static var previews: some View {
         LoginView(isLoggedIn: .constant(false))
             .environmentObject(SocketManager.shared)
+            .environmentObject(AuthenticationService.shared)
     }
 }

@@ -13,6 +13,9 @@ struct chat_storageApp: App {
     
     // 创建全局 Socket 管理器
     @StateObject private var socketManager = SocketManager.shared
+    
+    // 创建全局认证服务
+    @StateObject private var authService = AuthenticationService.shared
 
     // 登录状态
     @State private var isLoggedIn = false
@@ -24,12 +27,14 @@ struct chat_storageApp: App {
                 MainChatStorage(isLoggedIn: $isLoggedIn)
                     .environment(\.managedObjectContext, persistenceController.container.viewContext)
                     .environmentObject(socketManager)
+                    .environmentObject(authService)
                     .frame(minWidth: 1100, idealWidth: 2200, minHeight: 700, idealHeight: 1400) // 默认尺寸扩大一倍
             } else {
                 // 登录界面
                 LoginView(isLoggedIn: $isLoggedIn)
                     .environment(\.managedObjectContext, persistenceController.container.viewContext)
                     .environmentObject(socketManager)
+                    .environmentObject(authService)
                     .frame(width: 500, height: 550) // 登录界面固定尺寸
             }
         }
