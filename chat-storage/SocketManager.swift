@@ -71,6 +71,9 @@ class SocketManager: NSObject, ObservableObject {
     /// 是否正在接收
     internal var isReceiving = false
 
+    /// 写入流等待 Continuation
+    private var writeStreamContinuation: CheckedContinuation<Void, Never>?
+    private let writeLock = NSLock()
     
     /// 心跳间隔（秒）
     private let heartbeatInterval: TimeInterval = 30.0
@@ -101,7 +104,7 @@ class SocketManager: NSObject, ObservableObject {
     }
     
     deinit {
-        disconnect()
+        disconnect(notifyUI: false)
     }
     
     // MARK: - Connection Management
@@ -300,9 +303,47 @@ class SocketManager: NSObject, ObservableObject {
             updateState(.disconnected)
         }
         reconnectAttempts = 0
+        
+        // 唤醒所有等待写入的任务，避免死锁
+        writeLock.lock()
+        if let continuation = writeStreamContinuation {
+            writeStreamContinuation = nil
+            // 恢复以便任务可以继续执行（然后发现连接已断开并报错）
+            continuation.resume()
+        }
+        writeLock.unlock()
     }
     
     // MARK: - Data Transmission
+    
+    /// 等待输出流变为可写
+    func waitForWritable() async {
+        guard let outputStream = outputStream else { return }
+        
+        // 如果当前已经有空间，直接返回
+        if outputStream.hasSpaceAvailable {
+            return
+        }
+        
+        // 否则挂起等待
+        await withCheckedContinuation { continuation in
+            writeLock.lock()
+            // 双重检查
+            if outputStream.hasSpaceAvailable {
+                writeLock.unlock()
+                continuation.resume()
+                return
+            }
+            
+            // 如果已有等待者，唤醒旧的以避免死锁（虽然理想情况不应发生）
+            if let existing = writeStreamContinuation {
+                existing.resume()
+            }
+            
+            writeStreamContinuation = continuation
+            writeLock.unlock()
+        }
+    }
     
     /// 发送数据到服务器
     /// - Parameter data: 要发送的数据
@@ -319,24 +360,45 @@ class SocketManager: NSObject, ObservableObject {
             return false
         }
         
-        let bytesWritten = data.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) -> Int in
-            guard let baseAddress = buffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
-                return 0
+        var totalBytesWritten = 0
+        let totalBytes = data.count
+        
+        // 循环发送直到全部数据发送完毕
+        while totalBytesWritten < totalBytes {
+            let bytesToWrite = totalBytes - totalBytesWritten
+            
+            // 使用 withUnsafeBytes 访问数据
+            let bytesWritten = data.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) -> Int in
+                guard let baseAddress = buffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                    return 0
+                }
+                // 偏移地址
+                let currentAddress = baseAddress.advanced(by: totalBytesWritten)
+                return outputStream.write(currentAddress, maxLength: bytesToWrite)
             }
-            return outputStream.write(baseAddress, maxLength: buffer.count)
+            
+            if bytesWritten > 0 {
+                totalBytesWritten += bytesWritten
+            } else if bytesWritten == 0 {
+                // 缓冲区满，无法写入？由于是同步方法，这里其实很尴尬。
+                // 但如果外部正确使用了 waitForWritable，这里几率很小。
+                // 如果真的遇到0，可能需要稍作等待或返回失败（会断开连接）
+                // 简单处理：如果写不进去，认为失败，由上层重试或断开
+                print("❌ 发送数据受阻 (写入0字节)")
+                return false
+            } else {
+                print("❌ 发送数据失败 (Stream Error)")
+                return false
+            }
         }
         
-        if bytesWritten > 0 {
-            speedLock.lock()
-            totalBytesSent += Int64(bytesWritten)
-            speedLock.unlock()
-            
-            print("📤 发送数据成功: \(bytesWritten) 字节")
-            return true
-        } else {
-            print("❌ 发送数据失败")
-            return false
-        }
+        // 统计流量
+        speedLock.lock()
+        totalBytesSent += Int64(totalBytesWritten)
+        speedLock.unlock()
+        
+        // print("📤 发送数据成功: \(totalBytesWritten) 字节")
+        return true
     }
     
     /// 发送字符串消息
@@ -565,7 +627,17 @@ extension SocketManager: StreamDelegate {
             }
             
         case .hasSpaceAvailable:
-            print("📝 输出流有可用空间")
+            // print("📝 输出流有可用空间")
+            
+            // 唤醒等待写入的任务
+            writeLock.lock()
+            if let continuation = writeStreamContinuation {
+                writeStreamContinuation = nil
+                writeLock.unlock()
+                continuation.resume()
+            } else {
+                writeLock.unlock()
+            }
             
         case .errorOccurred:
             if let error = aStream.streamError {

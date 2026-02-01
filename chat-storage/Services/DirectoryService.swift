@@ -391,6 +391,20 @@ class FileTransferService: ObservableObject {
                 throw FileTransferError.connectionLost
             }
             
+            // --- 流控逻辑开始 ---
+            // 检查发送缓冲区是否有空间，避免阻塞式写入导致的主线程卡死
+            if let outputStream = socketManager.outputStream {
+                if !outputStream.hasSpaceAvailable {
+                    // 如果缓冲区已满，挂起等待直到可写 (基于事件驱动，不再使用 sleep)
+                    // 同时释放 MainActor，让 UI 和其他事件（如心跳、ACK）能被处理
+                    await socketManager.waitForWritable()
+                    
+                    // 唤醒后再次检查，如果还是满的（极少情况），下次循环会再次等待
+                    continue
+                }
+            }
+            // --- 流控逻辑结束 ---
+            
             let data = fileHandle.readData(ofLength: chunkSize)
             if data.isEmpty { break } // 文件读取完毕
             
@@ -398,6 +412,10 @@ class FileTransferService: ObservableObject {
             // 注意：Data Frame 的 payload 直接是 raw bytes，不是 JSON
             let dataFrame = Frame(type: .dataFrame, data: data)
             try socketManager.sendFrame(dataFrame)
+            
+            // 每次发送后主动交出控制权，确保 RunLoop 能处理 socket 输入事件（如 ACK）和 UI 更新
+            // 虽然 waitForWritable 已经提供了挂起机会，但在全速发送时仍需保证 responsiveness
+            await Task.yield()
             
             currentOffset += Int64(data.count)
             
