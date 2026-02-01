@@ -24,7 +24,7 @@ struct chat_storageApp: App {
                 MainChatStorage(isLoggedIn: $isLoggedIn)
                     .environment(\.managedObjectContext, persistenceController.container.viewContext)
                     .environmentObject(socketManager)
-                    .frame(minWidth: 1100, minHeight: 700) // 主界面最小尺寸增大以容纳进度条列
+                    .frame(minWidth: 1100, idealWidth: 2200, minHeight: 700, idealHeight: 1400) // 默认尺寸扩大一倍
             } else {
                 // 登录界面
                 LoginView(isLoggedIn: $isLoggedIn)

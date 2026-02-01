@@ -29,11 +29,14 @@ struct MainChatStorage: View {
     /// 下载路径
     @State private var downloadPath: String = ""
     
-    /// 文件列表
-    @State private var fileList: [FileItem] = []
+    /// 文件列表 (浏览)
+    @State private var fileList: [DirectoryItem] = []
+    
+    /// 传输任务列表 (上传/下载)
+    @State private var transferList: [TransferItem] = []
     
     /// 选中的文件
-    @State private var selectedFiles: Set<UUID> = []
+    @State private var selectedFiles: Set<Int64> = []
     
     /// 当前页码 (从 1 开始)
     @State private var currentPage: Int = 1
@@ -55,10 +58,18 @@ struct MainChatStorage: View {
     @State private var directoryTree: [DirectoryItem] = []
     
     /// 展开的目录节点 ID
-    @State private var expandedDirectoryIds: Set<UUID> = []
+    @State private var expandedDirectoryIds: Set<Int64> = []
     
     /// 当前选中的目录 ID
-    @State private var selectedDirectoryId: FileItem.ID?
+    @State private var selectedDirectoryId: Int64?
+    
+    // MARK: - Search State
+    
+    /// 搜索关键字
+    @State private var searchKeyword: String = ""
+    
+    /// 搜索选中的目录 ID (nil 表示全部)
+    @State private var searchDirectoryId: Int64? = nil
     
     /// 是否显示弹窗
     @State private var showingAlert = false
@@ -72,32 +83,81 @@ struct MainChatStorage: View {
     /// 目录服务
     @State private var directoryService: DirectoryService?
     
+    // MARK: - Create Directory State
+    
+    /// 是否显示新建目录弹窗
+    @State private var showingCreateDirDialog = false
+    
+    /// 新建目录名称
+    @State private var newDirName = ""
+    
+    /// 新建目录的父ID
+    @State private var createDirParentId: Int64 = -1
+    
+    /// 是否正在创建目录
+    @State private var isCreatingDirectory = false
+    
+    // MARK: - Rename & Delete Directory State
+    
+    /// 是否显示重命名弹窗
+    @State private var showingRenameDialog = false
+    @State private var renameTargetId: Int64?
+    @State private var renameValue = ""
+    @State private var isRenaming = false
+    
+    /// 是否显示删除确认弹窗
+    @State private var showingDeleteAlert = false
+    @State private var deleteTargetId: Int64?
+    @State private var deleteTargetName = ""
+    @State private var isDeleting = false
+    
     // MARK: - Body
     
     var body: some View {
-        VStack(spacing: 0) {
-            // 顶部工具栏
-            topToolbar
-            
-            Divider()
-            
-            // TabView 内容区域
-            TabView(selection: $selectedTab) {
-                // 第一个标签页：好友列表
-                friendsListView
-                    .tabItem {
-                        Label("好友列表", systemImage: "person.2.fill")
+            ZStack {
+                VStack(spacing: 0) {
+                    // 顶部工具栏
+                    topToolbar
+                    
+                    Divider()
+                    
+                    // TabView 内容区域
+                    TabView(selection: $selectedTab) {
+                        // 第一个标签页：好友列表
+                        friendsListView
+                            .tabItem {
+                                Label("好友列表", systemImage: "person.2.fill")
+                            }
+                            .tag(0)
+                        
+                        // 第二个标签页：网盘存储
+                        storageView
+                            .tabItem {
+                                Label("网盘存储", systemImage: "externaldrive.fill")
+                            }
+                            .tag(1)
                     }
-                    .tag(0)
+                }
+                .disabled(showingCreateDirDialog || showingRenameDialog) // 弹窗时禁用主界面交互
                 
-                // 第二个标签页：网盘存储
-                storageView
-                    .tabItem {
-                        Label("网盘存储", systemImage: "externaldrive.fill")
-                    }
-                    .tag(1)
+                // 新建目录弹窗
+                if showingCreateDirDialog {
+                    Color.black.opacity(0.3)
+                        .edgesIgnoringSafeArea(.all)
+                        .onTapGesture {}
+                    
+                    createDirectoryDialog
+                }
+                
+                // 重命名目录弹窗
+                if showingRenameDialog {
+                   Color.black.opacity(0.3)
+                       .edgesIgnoringSafeArea(.all)
+                       .onTapGesture {}
+                   
+                   renameDirectoryUiDialog
+                }
             }
-        }
         .onAppear {
             startTimer()
             loadServerAddress()
@@ -107,21 +167,36 @@ struct MainChatStorage: View {
         }
         .onChange(of: selectedTab) { newTab in
             // 当切换到网盘存储标签页时，加载目录
+            // 使用 DispatchQueue 延迟执行，避免在视图初始化时立即创建 Task
             if newTab == 1 && directoryTree.isEmpty {
-                Task {
-                    await loadDirectoryFromServer()
+                DispatchQueue.main.async {
+                    Task {
+                        await loadDirectoryFromServer()
+                    }
+                }
+            }
+        }
+        // 监听目录选中变化，打印日志
+        .onChange(of: selectedDirectoryId) { newId in
+            if let id = newId {
+                printNodeInfo(id: id)
+                // Update file list to show children of selected directory
+                if let item = findDirectoryItem(id: id, nodes: directoryTree) {
+                    self.fileList = item.childFileList ?? []
                 }
             }
         }
         .onDisappear {
             stopTimer()
         }
-        .alert("批量操作", isPresented: $showingAlert) {
+        .alert("提示", isPresented: $showingAlert) {
             Button("确定", role: .cancel) { }
         } message: {
             Text(alertMessage)
         }
     }
+
+
     
     // MARK: - Top Toolbar (顶部工具栏)
     
@@ -231,60 +306,82 @@ struct MainChatStorage: View {
             Divider()
             
             // 树形列表
-            List(directoryTree, children: \.children, selection: $selectedDirectoryId) { item in
-                HStack {
-                    Image(systemName: item.children == nil ? "folder" : "folder.fill")
-                        .foregroundColor(.blue)
-                        .font(.system(size: 14))
-                    
-                    Text(item.name)
-                        .font(.system(size: 13))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .help(item.name)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, 12)
-                .padding(.vertical, 2)
-                .tag(item.id)
-                .contextMenu {
-                    Button("新建") {
-                        addLog("在 [\(item.name)] 下新建")
+            // 树形列表 (使用自定义递归视图以支持展开控制)
+            List {
+                RecursiveDirectoryView(
+                    nodes: directoryTree,
+                    selectedId: $selectedDirectoryId,
+                    expandedIds: $expandedDirectoryIds,
+                    onCreate: { item in
+                        addLog("在 [\(item.fileName)] 下新建目录")
+                        self.createDirParentId = item.id
+                        self.newDirName = ""
+                        self.showingCreateDirDialog = true
+                    },
+                    onRename: { item in 
+                        self.renameTargetId = item.id
+                        self.renameValue = item.fileName
+                        self.showingRenameDialog = true
+                    },
+                    onDelete: { item in 
+                        self.deleteTargetId = item.id
+                        self.deleteTargetName = item.fileName
+                        self.showingDeleteAlert = true
+                    },
+                    onUpload: { item in
+                        handleSelectFiles(targetDirectory: item)
                     }
-                    Button("移动") {
-                        addLog("移动目录 [\(item.name)]")
-                    }
-                    Button("重命名") {
-                        addLog("重命名 [\(item.name)]")
-                    }
-                    Divider()
-                    Button("删除") {
-                        addLog("删除目录 [\(item.name)]")
-                    }
-                }
+                )
             }
             .listStyle(SidebarListStyle())
+            .alert("确认删除目录", isPresented: $showingDeleteAlert) {
+                Button("取消", role: .cancel) { }
+                Button("删除", role: .destructive) {
+                    handleDeleteDirectory()
+                }
+            } message: {
+                Text("确定要删除目录 [\(deleteTargetName)] 吗？此操作无法撤销。")
+            }
         }
     }
     
     // MARK: - Main Content (主内容区域)
     
+    @State private var isPresentingDirectoryPicker = false // Control directory picker popover
+    
+    // Computed property for selected Directory Name
+    private var selectedDirectoryNameForFilter: String {
+        guard let id = searchDirectoryId else { return "全部目录" }
+        return findDirectoryItem(id: id, nodes: directoryTree)?.fileName ?? "未知目录"
+    }
+    
     private var mainContent: some View {
-        VStack(spacing: 0) {
-            // 上传控制栏
-            uploadControlBar
+        VSplitView {
+            // 上半部分：文件浏览区
+            VStack(spacing: 0) {
+                // 上传控制栏
+                uploadControlBar
+                
+                Divider()
+                
+                // 文件列表
+                fileListView
+            }
+            .frame(minHeight: 300)
             
-            Divider()
-            
-            // 文件列表
-            fileListView
+            // 下半部分：文件传输区
+            transferListView
+                .frame(minHeight: 150)
         }
     }
     
     // MARK: - Upload Control Bar (工具栏：批量操作)
     
+    // MARK: - Upload Control Bar (工具栏：批量操作 + 搜索)
+    
     private var uploadControlBar: some View {
         HStack(spacing: 12) {
+            // 左侧：批量操作按钮
             Button(action: {
                 handleBatchDelete()
             }) {
@@ -304,15 +401,91 @@ struct MainChatStorage: View {
             .controlSize(.small)
             .tint(.blue)
             .disabled(selectedFiles.isEmpty)
+
+
             
             Spacer()
+            
+            // 右侧：搜索区
+            HStack(spacing: 8) {
+                // 目录筛选
+                // 目录筛选 (树形选择器)
+                Button(action: {
+                    isPresentingDirectoryPicker.toggle()
+                }) {
+                    HStack {
+                        Text(selectedDirectoryNameForFilter)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 9))
+                    }
+                    .frame(width: 120, alignment: .leading)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .popover(isPresented: $isPresentingDirectoryPicker, arrowEdge: .bottom) {
+                    VStack(spacing: 0) {
+                        // "全部目录" Option
+                        Button(action: {
+                            searchDirectoryId = nil
+                            isPresentingDirectoryPicker = false
+                            handleSearch()
+                        }) {
+                            HStack {
+                                Image(systemName: "folder")
+                                Text("全部目录")
+                                Spacer()
+                                if searchDirectoryId == nil {
+                                    Image(systemName: "checkmark")
+                                        .foregroundColor(.blue)
+                                }
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        
+                        Divider()
+                        
+                        ScrollView {
+                            DirectoryTreeSelector(
+                                nodes: directoryTree,
+                                selectedId: $searchDirectoryId,
+                                onSelect: {
+                                    isPresentingDirectoryPicker = false
+                                    handleSearch()
+                                }
+                            )
+                            .padding(.vertical, 4)
+                        }
+                    }
+                    .frame(width: 250, height: 300)
+                }
+                
+                // 搜索输入框
+                TextField("搜索文件名称", text: $searchKeyword)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 200)
+                    .controlSize(.small)
+                
+                // 搜索按钮
+                Button(action: {
+                    handleSearch()
+                }) {
+                    Image(systemName: "magnifyingglass")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(Color(NSColor.windowBackgroundColor))
     }
     
-    // MARK: - File List View (文件列表)
+    // MARK: - File List View (文件列表 - 浏览)
     
     private var fileListView: some View {
         VStack(spacing: 0) {
@@ -329,20 +502,17 @@ struct MainChatStorage: View {
                 Label("文件名称", systemImage: "doc")
                     .frame(minWidth: 200, maxWidth: .infinity, alignment: .leading)
                 
-                Label("上传状态", systemImage: "icloud.and.arrow.up")
-                    .frame(width: 80, alignment: .leading)
-                
                 Label("文件大小", systemImage: "externaldrive")
                     .frame(width: 80, alignment: .leading)
                 
-                Label("状态", systemImage: "waveform.path.ecg")
-                    .frame(width: 60, alignment: .leading)
+                Label("所属目录", systemImage: "folder")
+                    .frame(width: 100, alignment: .leading)
                 
-                Label("传输进度", systemImage: "timer")
-                    .frame(width: 160, alignment: .leading)
+                Label("上传时间", systemImage: "clock")
+                    .frame(width: 140, alignment: .leading)
                 
                 Text("操作")
-                    .frame(width: 120, alignment: .center)
+                    .frame(width: 80, alignment: .center)
             }
             .font(.system(size: 11, weight: .medium))
             .padding(.horizontal, 12)
@@ -378,10 +548,9 @@ struct MainChatStorage: View {
             
             Divider()
             
-            // 分页栏
+            // 分页栏 (绑定在文件浏览区)
             paginationBar
         }
-        .frame(minHeight: 300)
     }
     
     // MARK: - Pagination Bar (分页栏)
@@ -424,9 +593,9 @@ struct MainChatStorage: View {
         .background(Color(NSColor.controlBackgroundColor))
     }
     
-    // MARK: - File Row (文件行)
+    // MARK: - File Row (文件行 - 浏览)
     
-    private func fileRow(_ file: FileItem) -> some View {
+    private func fileRow(_ file: DirectoryItem) -> some View {
         HStack(spacing: 0) {
             // 复选框 (单选)
             Toggle("", isOn: Binding(
@@ -438,43 +607,29 @@ struct MainChatStorage: View {
             
             // 文件名
             HStack(spacing: 6) {
-                Image(systemName: file.isDirectory ? "folder.fill" : "doc.fill")
-                    .foregroundColor(file.isDirectory ? .blue : .gray)
-                Text(file.name)
+                Image(systemName: !file.isFile ? "folder.fill" : "doc.fill")
+                    .foregroundColor(!file.isFile ? .blue : .gray)
+                Text(file.fileName)
                     .font(.system(size: 11))
             }
             .frame(minWidth: 200, maxWidth: .infinity, alignment: .leading)
-            
-            // 上传状态
-            statusView(status: file.uploadStatus)
-                .frame(width: 80, alignment: .leading)
             
             // 文件大小
             Text(file.sizeString)
                 .font(.system(size: 11))
                 .frame(width: 80, alignment: .leading)
             
-            // 状态
-            Text(file.status)
+            // 所属目录
+            Text(file.directoryName ?? "-")
                 .font(.system(size: 11))
-                .foregroundColor(file.status == "正常" ? .green : .red)
-                .frame(width: 60, alignment: .leading)
+                .foregroundColor(.secondary)
+                .frame(width: 100, alignment: .leading)
             
-            // 传输进度 (进度条 + 速度)
-            HStack(spacing: 6) {
-                // 进度条
-                ProgressView(value: file.progress, total: 1.0)
-                    .progressViewStyle(.linear)
-                    .tint(.blue)
-                    .scaleEffect(x: 1, y: 0.8, anchor: .center)
-                
-                // 速度文本
-                Text(file.uploadSpeed)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(.secondary)
-                    .frame(width: 50, alignment: .trailing)
-            }
-            .frame(width: 160, alignment: .leading)
+            // 上传时间
+            Text(file.uploadTimeString)
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+                .frame(width: 140, alignment: .leading)
             
             // 操作按钮
             HStack(spacing: 4) {
@@ -498,13 +653,187 @@ struct MainChatStorage: View {
                 .controlSize(.small)
                 .help("下载")
             }
-            .frame(width: 120, alignment: .center)
+            .frame(width: 80, alignment: .center)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(selectedFiles.contains(file.id) ? Color.accentColor.opacity(0.1) : Color.clear)
         .onTapGesture {
             toggleSelection(file.id)
+        }
+    }
+    
+    // MARK: - Transfer List View (文件传输区)
+    
+    private var transferListView: some View {
+        VStack(spacing: 0) {
+            // 标题栏
+            HStack {
+                Label("传输列表", systemImage: "arrow.up.arrow.down")
+                    .font(.system(size: 12, weight: .bold))
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color(NSColor.windowBackgroundColor))
+            
+            Divider()
+            
+            // 表头
+            HStack(spacing: 0) {
+                Label("文件名称", systemImage: "doc")
+                    .frame(minWidth: 200, maxWidth: .infinity, alignment: .leading)
+                
+                Label("文件大小", systemImage: "externaldrive")
+                    .frame(width: 80, alignment: .leading)
+                
+                Label("所属目录", systemImage: "folder")
+                    .frame(width: 100, alignment: .leading)
+                
+                Label("传输类型", systemImage: "arrow.up.arrow.down") // New Column
+                    .frame(width: 80, alignment: .leading)
+                
+                Label("状态", systemImage: "waveform.path.ecg")
+                    .frame(width: 80, alignment: .leading)
+                
+                Label("传输进度", systemImage: "timer")
+                    .frame(width: 200, alignment: .leading)
+                
+                Text("操作")
+                    .frame(width: 80, alignment: .center)
+            }
+            .font(.system(size: 11, weight: .medium))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color(NSColor.controlBackgroundColor))
+            
+            Divider()
+            
+            // 列表内容
+            ScrollView {
+                if transferList.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "arrow.up.arrow.down.square")
+                            .font(.system(size: 40))
+                            .foregroundColor(.secondary.opacity(0.5))
+                        
+                        Text("无传输任务")
+                            .font(.system(size: 13))
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(40)
+                } else {
+                    LazyVStack(spacing: 0) {
+                        ForEach(transferList) { item in
+                            transferRow(item)
+                            Divider()
+                        }
+                    }
+                }
+            }
+            .background(Color(NSColor.textBackgroundColor).opacity(0.3))
+        }
+    }
+    
+    private func transferRow(_ item: TransferItem) -> some View {
+        HStack(spacing: 0) {
+            // 文件名
+            HStack(spacing: 6) {
+                Image(systemName: "doc.fill")
+                    .foregroundColor(.blue)
+                Text(item.name)
+                    .font(.system(size: 11))
+            }
+            .frame(minWidth: 200, maxWidth: .infinity, alignment: .leading)
+            
+            // 文件大小
+            Text(item.sizeString)
+                .font(.system(size: 11))
+                .frame(width: 80, alignment: .leading)
+            
+            // 所属目录
+            Text(item.directoryName)
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+                .frame(width: 100, alignment: .leading)
+            
+            // 传输类型
+            HStack(spacing: 4) {
+                Image(systemName: item.taskType == .upload ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
+                    .foregroundColor(item.taskType == .upload ? .blue : .green)
+                Text(item.taskType.rawValue)
+            }
+            .font(.system(size: 11))
+            .frame(width: 80, alignment: .leading)
+            
+            // 状态
+            Text(item.status)
+                .font(.system(size: 11))
+                .foregroundColor(statusColorForTransfer(item.status))
+                .frame(width: 80, alignment: .leading)
+            
+            // 传输进度
+            HStack(spacing: 8) {
+                ProgressView(value: item.progress, total: 1.0)
+                    .progressViewStyle(.linear)
+                    .tint(.blue)
+                    .scaleEffect(x: 1, y: 0.8, anchor: .center)
+                
+                VStack(alignment: .trailing, spacing: 0) {
+                    Text(item.progressPercent)
+                        .font(.system(size: 10))
+                    Text(item.speed)
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                }
+                .frame(width: 50, alignment: .trailing)
+            }
+            .frame(width: 200, alignment: .leading)
+            
+            // 操作按钮
+            HStack(spacing: 4) {
+                if item.status == "等待上传" || item.status == "暂停" || item.status == "失败" {
+                    // Start/Resume Button
+                    Button(action: { handleTransferAction(id: item.id, action: "start") }) {
+                        Image(systemName: "arrow.up.circle") // Upload icon for start
+                            .foregroundColor(.blue)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("开始上传")
+                } else if item.status == "上传中" {
+                    // Pause Button
+                    Button(action: { handleTransferAction(id: item.id, action: "pause") }) {
+                        Image(systemName: "pause.circle")
+                            .foregroundColor(.orange)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("暂停")
+                }
+                
+                // Cancel Button (Always visible)
+                Button(action: { handleTransferAction(id: item.id, action: "cancel") }) {
+                    Image(systemName: "xmark.circle")
+                        .foregroundColor(.red)
+                }
+                .buttonStyle(.borderless)
+                .help("取消")
+            }
+            .controlSize(.small)
+            .frame(width: 80, alignment: .center)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+    
+    private func statusColorForTransfer(_ status: String) -> Color {
+        switch status {
+        case "已完成": return .green
+        case "上传中": return .blue
+        case "等待上传": return .gray
+        case "失败": return .red
+        case "暂停": return .orange
+        default: return .primary
         }
     }
     
@@ -545,7 +874,7 @@ struct MainChatStorage: View {
         serverAddress = "\(server.host):\(server.port)"
     }
     
-    private func toggleSelection(_ id: UUID) {
+    private func toggleSelection(_ id: Int64) {
         if selectedFiles.contains(id) {
             selectedFiles.remove(id)
         } else {
@@ -568,7 +897,11 @@ struct MainChatStorage: View {
     private func handleRefresh() {
         print("刷新文件列表")
         addLog("刷新文件列表...")
-        // TODO: 实现刷新逻辑
+        Task {
+            // 重置加载状态以强制刷新
+            isLoadingDirectory = false
+            await loadDirectoryFromServer()
+        }
     }
     
     private func selectDownloadPath() {
@@ -599,26 +932,115 @@ struct MainChatStorage: View {
         }
     }
     
+    private func handleSelectFiles(targetDirectory: DirectoryItem? = nil) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "确定选择"
+        
+        if let target = targetDirectory {
+            panel.message = "选择文件上传到目录: \(target.fileName)"
+        }
+        
+        if panel.runModal() == .OK {
+            let urls = panel.urls
+            
+            // Generate transfer items from selected files
+            var newItems: [TransferItem] = []
+            for url in urls {
+                // Get file attributes
+                let resources = try? url.resourceValues(forKeys: [.fileSizeKey])
+                let fileSize = Int64(resources?.fileSize ?? 0)
+                let name = url.lastPathComponent
+                
+                // Determine target directory name
+                let targetName = targetDirectory?.fileName ?? "根目录"
+                
+                let item = TransferItem(
+                    name: name,
+                    size: fileSize,
+                    directoryName: targetName,
+                    taskType: .upload, // Set as Upload
+                    status: "等待上传",
+                    progress: 0.0,
+                    speed: "-"
+                )
+                newItems.append(item)
+            }
+            
+            // Add to transfer list (UI update)
+            self.transferList.append(contentsOf: newItems)
+            
+            let dirInfo = targetDirectory != nil ? " -> [\(targetDirectory!.fileName)]" : ""
+            addLog("用户选择了 \(urls.count) 个文件\(dirInfo)，已添加到传输列表")
+        }
+    }
+    
     private func handleVoiceUpload() {
         print("语音上传")
         addLog("语音上传功能暂未实现")
         // TODO: 实现语音上传
     }
     
-    private func handleFileAction(_ file: FileItem, action: Int) {
-        print("文件操作: \(file.name), 操作\(action)")
-        addLog("对文件 \(file.name) 执行操作\(action)")
+    private func handleFileAction(_ file: DirectoryItem, action: Int) {
+        print("文件操作: \(file.fileName), 操作\(action)")
+        addLog("对文件 \(file.fileName) 执行操作\(action)")
         // TODO: 实现文件操作
     }
     
     // MARK: - Batch Operations
     
-    /// 当前页显示的文件列表
-    private var currentFiles: [FileItem] {
+    /// 当前页显示的文件列表 (经过搜索过滤)
+    private var currentFiles: [DirectoryItem] {
+        // 1. 过滤
+        var filtered = fileList
+        
+        // 按名称过滤
+        if !searchKeyword.isEmpty {
+            filtered = filtered.filter { $0.fileName.localizedCaseInsensitiveContains(searchKeyword) }
+        }
+        
+        // 按目录过滤 (这里简单模拟，实际 FileItem 只有 directoryName 字符串，无法精确匹配 ID)
+        // 假设我们在 fake data 中 directoryName 与 Picker 显示的一致。
+        // 由于 FileItem 目前没有 directoryId 字段，只能模拟根据名称过滤
+        if let dirId = searchDirectoryId, let dirName = findDirectoryName(id: dirId, nodes: directoryTree) {
+             filtered = filtered.filter { $0.directoryName == dirName }
+        }
+        
+        // 2. 分页
         let startIndex = (currentPage - 1) * itemsPerPage
-        let endIndex = min(startIndex + itemsPerPage, fileList.count)
-        if startIndex >= fileList.count { return [] }
-        return Array(fileList[startIndex..<endIndex])
+        let endIndex = min(startIndex + itemsPerPage, filtered.count)
+        if startIndex >= filtered.count { return [] }
+        return Array(filtered[startIndex..<endIndex])
+    }
+    
+    private func handleSearch() {
+        print("执行搜索: Keyword='\(searchKeyword)', DirectoryID=\(String(describing: searchDirectoryId))")
+        addLog("执行搜索: Keyword='\(searchKeyword)'")
+        currentPage = 1 // 搜索后重置页码
+    }
+    
+    private func flattenDirectories(nodes: [DirectoryItem]) -> [DirectoryItem] {
+        var result: [DirectoryItem] = []
+        for node in nodes {
+            result.append(node)
+            if let children = node.childFileList {
+                result.append(contentsOf: flattenDirectories(nodes: children))
+            }
+        }
+        return result
+    }
+    
+    private func findDirectoryName(id: Int64, nodes: [DirectoryItem]?) -> String? {
+        guard let nodes = nodes else { return nil }
+        for node in nodes {
+            if node.id == id { return node.fileName }
+            if let found = findDirectoryName(id: id, nodes: node.childFileList) {
+                return found
+            }
+        }
+        return nil
     }
     
     private var isAllSelected: Bool {
@@ -668,45 +1090,35 @@ struct MainChatStorage: View {
     }
     
     private func generateFakeData() {
-        // 如果列表已有数据，则不生成（防止刷新时覆盖，除非显式指明）
+        // 如果列表已有数据，则不生成
         if !fileList.isEmpty { return }
         
-        let statuses = ["等待上传", "上传中", "已完成", "失败"]
         let fileTypes = ["doc", "pdf", "jpg", "mp4", "zip"]
         
-        var newFiles: [FileItem] = []
-        // 生成 55 条数据以测试分页
+        // 1. 生成文件浏览数据 (DirectoryItem)
+        var newFiles: [DirectoryItem] = []
         for i in 1...55 {
-            let isDir = Bool.random()
-            let name = isDir ? "文件夹 \(i)" : "文件 \(i).\(fileTypes.randomElement()!)"
-            let item = FileItem(
-                name: name,
-                isDirectory: isDir,
-                size: Int64.random(in: 1024...1024*1024*500),
-                uploadStatus: statuses.randomElement()!,
-                status: Bool.random() ? "正常" : "异常",
-                uploadSpeed: "\(Int.random(in: 0...5)) MB/s",
-                progress: statuses.randomElement()! == "已完成" ? 1.0 : Double.random(in: 0.1...0.9)
-            )
-            // 修正进度逻辑
-            var fakeProgress = 0.0
-            if item.uploadStatus == "已完成" { fakeProgress = 1.0 }
-            else if item.uploadStatus == "等待上传" { fakeProgress = 0.0 }
-            else if item.uploadStatus == "失败" { fakeProgress = Double.random(in: 0.0...0.5) }
-            else { fakeProgress = Double.random(in: 0.1...0.9) }
+            let isFile = Bool.random()
+            // 随机几个假类型
+            let fileTypes = ["doc", "pdf", "jpg", "mp4", "zip"]
+            let name = isFile ? "文件 \(i).\(fileTypes.randomElement()!)" : "文件夹 \(i)"
             
-            let finalItem = FileItem(
-                name: item.name,
-                isDirectory: item.isDirectory,
-                size: item.size,
-                uploadStatus: item.uploadStatus,
-                status: item.status,
-                uploadSpeed: item.uploadSpeed,
-                progress: fakeProgress
+            let item = DirectoryItem(
+                id: Int64(i + 1000), // Avoid collision with real IDs if possible
+                pId: -1,
+                fileName: name,
+                childFileList: nil,
+                fileSize: Int64.random(in: 1024...1024*1024*500),
+                isFile: isFile,
+                uploadTime: Int64(Date().timeIntervalSince1970 * 1000),
+                directoryName: isFile ? ["java基础", "数据库"].randomElement()! : "-"
             )
-            newFiles.append(finalItem)
+            newFiles.append(item)
         }
         fileList = newFiles
+        
+        // 2. 生成传输任务数据 (已清空测试数据)
+        // transferList = []
     }
     
     /// 从服务器加载目录树
@@ -732,6 +1144,13 @@ struct MainChatStorage: View {
             await MainActor.run {
                 self.directoryTree = items
                 self.isLoadingDirectory = false
+                self.directoryTree = items
+                self.isLoadingDirectory = false
+                
+                // 仅在首次加载（无展开项）时执行默认展开，否则保留用户当前的展开状态
+                if self.expandedDirectoryIds.isEmpty {
+                   self.expandDefaultLevels(items: items) // 默认展开两层
+                }
                 addLog("目录树加载成功，共 \(items.count) 个顶级项")
             }
         } catch {
@@ -742,6 +1161,30 @@ struct MainChatStorage: View {
                 print("❌ 加载目录失败: \(error)")
             }
         }
+    }
+    
+    /// 默认展开顶层和下一层 (共两层)
+    private func expandDefaultLevels(items: [DirectoryItem]) {
+        var ids: Set<Int64> = []
+        for root in items {
+            ids.insert(root.id) // 展开顶层
+            if let children = root.childFileList {
+                for child in children {
+                    // 如果第二层还有子节点，则展开第二层 (即展示第三层)
+                    // 用户要求：展示两个层级的目录数据。
+                    // 展开顶层 -> 可见第二层。
+                    // 展开第二层 -> 可见第三层。
+                    // 这里的理解是：默认看到 Root 和 Root 的 children。
+                    // 只要展开 Root 就可以看到 Root 的 children。
+                    // 用户说：默认展开最顶层和下一层级。
+                    // 意思是：Root 展开，Child 展开。
+                    if let grandChildren = child.childFileList, !grandChildren.isEmpty {
+                        ids.insert(child.id)
+                    }
+                }
+            }
+        }
+        self.expandedDirectoryIds = ids
     }
     
     private func addLog(_ message: String) {
@@ -835,13 +1278,17 @@ struct MainChatStorage: View {
     
     /// 网盘存储视图
     private var storageView: some View {
-        HSplitView {
-            // 左侧边栏
-            sidebar
-                .frame(minWidth: 150, idealWidth: 200)
-            
-            // 右侧主内容
-            mainContent
+        GeometryReader { geometry in
+            HSplitView {
+                // 左侧边栏 (18%)
+                sidebar
+                    .frame(minWidth: 150, maxWidth: .infinity)
+                    .frame(width: geometry.size.width * 0.18)
+                
+                // 右侧主内容 (75%)
+                mainContent
+                    .frame(minWidth: 300, maxWidth: .infinity)
+            }
         }
     }
 
@@ -871,29 +1318,481 @@ struct MainChatStorage: View {
                 .font(.system(size: 11))
         }
     }
-}
 
-// MARK: - File Item Model
-
-struct FileItem: Identifiable {
-    let id = UUID()
-    let name: String
-    let isDirectory: Bool
-    let size: Int64
-    let uploadStatus: String
-    let status: String
-    let uploadSpeed: String
-    let progress: Double // 0.0 - 1.0
+    // MARK: - Create Directory Dialog
     
-    var sizeString: String {
-        ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+    private var createDirectoryDialog: some View {
+        VStack(spacing: 20) {
+            Text("新建目录")
+                .font(.headline)
+            
+            VStack(alignment: .leading, spacing: 8) {
+                Text("目录名称:")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                TextField("请输入目录名称 (最多10字)", text: $newDirName)
+                    .textFieldStyle(.roundedBorder)
+                    .onChange(of: newDirName) { newValue in
+                        if newValue.count > 10 {
+                            newDirName = String(newValue.prefix(10))
+                        }
+                    }
+            }
+            
+            HStack(spacing: 20) {
+                Button("取消") {
+                    showingCreateDirDialog = false
+                    newDirName = ""
+                }
+                .keyboardShortcut(.cancelAction)
+                
+                Button("保存") {
+                    handleCreateDirectory()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(newDirName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isCreatingDirectory)
+                .keyboardShortcut(.defaultAction)
+            }
+            
+            if isCreatingDirectory {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .padding(20)
+        .frame(width: 300)
+        .background(Color(NSColor.windowBackgroundColor))
+        .cornerRadius(12)
+        .shadow(radius: 10)
+    }
+    
+    private func handleCreateDirectory() {
+        guard let service = directoryService else { return }
+        let name = newDirName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty { return }
+        
+        isCreatingDirectory = true
+        
+        Task {
+            do {
+                try await service.createDirectory(pId: createDirParentId, name: name)
+                
+                await MainActor.run {
+                    addLog("目录 [\(name)] 创建成功")
+                    isCreatingDirectory = false
+                    showingCreateDirDialog = false
+                    
+                    // 自动刷新目录
+                    addLog("自动刷新目录...")
+                    Task {
+                        await loadDirectoryFromServer()
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    addLog("目录创建失败: \(error.localizedDescription)")
+                    isCreatingDirectory = false
+                    // 失败时不关闭弹窗，允许重试
+                    print("❌ 创建目录失败: \(error)")
+                    
+                    showingAlert = true
+                    if let dirError = error as? DirectoryError, case .serverError(_, let msg) = dirError {
+                         alertMessage = msg
+                    } else {
+                         alertMessage = error.localizedDescription
+                    }
+                }
+            }
+        }
+    }
+    
+    // MARK: - Rename Directory Dialog
+    
+    private var renameDirectoryUiDialog: some View {
+        VStack(spacing: 20) {
+            Text("重命名目录")
+                .font(.headline)
+            
+            VStack(alignment: .leading, spacing: 8) {
+                Text("目录名称:")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                TextField("请输入新名称", text: $renameValue)
+                    .textFieldStyle(.roundedBorder)
+            }
+            
+            HStack(spacing: 20) {
+                Button("取消") {
+                    showingRenameDialog = false
+                    renameValue = ""
+                    renameTargetId = nil
+                }
+                .keyboardShortcut(.cancelAction)
+                
+                Button("保存") {
+                    handleRenameDirectory()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(renameValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isRenaming)
+                .keyboardShortcut(.defaultAction)
+            }
+            
+            if isRenaming {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .padding(20)
+        .frame(width: 300)
+        .background(Color(NSColor.windowBackgroundColor))
+        .cornerRadius(12)
+        .shadow(radius: 10)
+    }
+    
+    private func handleRenameDirectory() {
+        guard let service = directoryService, let id = renameTargetId else { return }
+        let name = renameValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty { return }
+        
+        isRenaming = true
+        
+        Task {
+            do {
+                try await service.renameDirectory(id: id, name: name)
+                
+                await MainActor.run {
+                    addLog("目录 [\(id)] 重命名为 [\(name)] 成功")
+                    isRenaming = false
+                    showingRenameDialog = false
+                    
+                    // 自动刷新目录
+                    addLog("自动刷新目录...")
+                    Task {
+                        await loadDirectoryFromServer()
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    addLog("重命名失败: \(error.localizedDescription)")
+                    isRenaming = false
+                    showingAlert = true
+                    
+                    // 提取更简洁的错误信息
+                    if let dirError = error as? DirectoryError, case .serverError(_, let msg) = dirError {
+                         alertMessage = msg
+                    } else {
+                         alertMessage = error.localizedDescription
+                    }
+                }
+            }
+        }
+    }
+    
+    // MARK: - Delete Directory
+    
+    private func handleDeleteDirectory() {
+        guard let service = directoryService, let id = deleteTargetId else { return }
+        
+        isDeleting = true
+        
+        Task {
+            do {
+                try await service.deleteDirectory(id: id)
+                
+                await MainActor.run {
+                    addLog("目录 [\(id)] 删除成功")
+                    isDeleting = false
+                    
+                    // 自动刷新目录
+                    addLog("自动刷新目录...")
+                    Task {
+                        await loadDirectoryFromServer()
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    addLog("删除失败: \(error.localizedDescription)")
+                    isDeleting = false
+                    showingAlert = true
+                    
+                    // 提取更简洁的错误信息
+                    if let dirError = error as? DirectoryError, case .serverError(_, let msg) = dirError {
+                         alertMessage = msg
+                    } else {
+                         alertMessage = error.localizedDescription
+                    }
+                }
+            }
+        }
+    }
+    
+    // MARK: - Transfer Logic
+    
+    private func handleTransferAction(id: UUID, action: String) {
+        guard let index = transferList.firstIndex(where: { $0.id == id }) else { return }
+        
+        switch action {
+        case "start":
+            transferList[index].status = "上传中"
+            // TODO: Here you would call the actual upload logic
+            // For demo purposes, we'll just toggle the UI state
+            addLog("任务 [\(transferList[index].name)] 开始")
+            
+        case "pause":
+            transferList[index].status = "暂停"
+            // TODO: Here you would call the actual pause logic
+            addLog("任务 [\(transferList[index].name)] 暂停")
+            
+        case "cancel":
+            let name = transferList[index].name
+            transferList.remove(at: index)
+            addLog("任务 [\(name)] 已取消")
+            
+        default:
+            break
+        }
+    }
+    
+    private func printNodeInfo(id: Int64) {
+        if let item = findDirectoryItem(id: id, nodes: directoryTree) {
+            print("📂 [选中节点详情] --------------------------------")
+            print("   ID       : \(item.id)")
+            print("   名称     : \(item.fileName)")
+            print("   子节点数 : \(item.childFileList?.count ?? 0)")
+            print("   完整信息 : \(item.debugDescription)")
+            print("------------------------------------------------")
+        }
+    }
+    
+    private func findDirectoryItem(id: Int64, nodes: [DirectoryItem]?) -> DirectoryItem? {
+        guard let nodes = nodes else { return nil }
+        for node in nodes {
+            if node.id == id {
+                return node
+            }
+            if let found = findDirectoryItem(id: id, nodes: node.childFileList) {
+                return found
+            }
+        }
+        return nil
     }
 }
 
-// MARK: - Directory Item Model
+// MARK: - Transfer Item Model
 
-struct DirectoryItem: Identifiable {
+struct TransferItem: Identifiable {
     let id = UUID()
     let name: String
-    let children: [DirectoryItem]?
+    let size: Int64
+    let directoryName: String
+    enum TaskType: String {
+        case upload = "上传"
+        case download = "下载"
+    }
+    let taskType: TaskType // New field
+    var status: String // 等待上传, 上传中, 已完成, 失败, 暂停
+    var progress: Double // 0.0 - 1.0
+    var speed: String
+    
+    var sizeString: String {
+        if size < 1024 {
+            return String(format: "%.1f KB", Double(size) / 1024.0)
+        }
+        let units = ["bytes", "KB", "MB", "GB", "TB"]
+        var index = 0
+        var value = Double(size)
+        while value >= 1024 && index < units.count - 1 {
+            value /= 1024
+            index += 1
+        }
+        return String(format: "%.1f %@", value, units[index])
+    }
+    
+    var progressPercent: String {
+        String(format: "%.1f%%", progress * 100)
+    }
+}
+
+// MARK: - Recursive Directory View Support
+
+struct RecursiveDirectoryView: View {
+    let nodes: [DirectoryItem]
+    @Binding var selectedId: Int64?
+    @Binding var expandedIds: Set<Int64>
+    
+    // Actions
+    var onCreate: (DirectoryItem) -> Void
+    var onRename: (DirectoryItem) -> Void
+    var onDelete: (DirectoryItem) -> Void
+    var onUpload: (DirectoryItem) -> Void
+    
+    var body: some View {
+        ForEach(nodes) { item in
+            DirectoryNodeView(
+                item: item,
+                selectedId: $selectedId,
+                expandedIds: $expandedIds,
+                onCreate: onCreate,
+                onRename: onRename,
+                onDelete: onDelete,
+                onUpload: onUpload
+            )
+        }
+    }
+}
+
+struct DirectoryNodeView: View {
+    let item: DirectoryItem
+    @Binding var selectedId: Int64?
+    @Binding var expandedIds: Set<Int64>
+    
+    // Actions
+    var onCreate: (DirectoryItem) -> Void
+    var onRename: (DirectoryItem) -> Void
+    var onDelete: (DirectoryItem) -> Void
+    var onUpload: (DirectoryItem) -> Void
+    
+    var isExpanded: Binding<Bool> {
+        Binding(
+            get: { expandedIds.contains(item.id) },
+            set: { isExp in
+                if isExp { expandedIds.insert(item.id) }
+                else { expandedIds.remove(item.id) }
+            }
+        )
+    }
+    
+    var body: some View {
+        Group {
+            if let children = item.childFileList, !children.isEmpty {
+                DisclosureGroup(isExpanded: isExpanded) {
+                    RecursiveDirectoryView(
+                        nodes: children,
+                        selectedId: $selectedId,
+                        expandedIds: $expandedIds,
+                        onCreate: onCreate,
+                        onRename: onRename,
+                        onDelete: onDelete,
+                        onUpload: onUpload
+                    )
+                } label: {
+                    nodeContent
+                }
+            } else {
+                nodeContent
+            }
+        }
+    }
+    
+    private var nodeContent: some View {
+        HStack {
+            Image(systemName: item.childFileList == nil && item.isFile ? "doc" : (item.childFileList == nil ? "folder" : "folder.fill"))
+                .foregroundColor(item.isFile ? .gray : .blue)
+                .font(.system(size: 14))
+            
+            Text(item.fileName)
+                .font(.system(size: 13))
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle()) // Make entire row tappable
+        .padding(.vertical, 4)
+        .background(selectedId == item.id ? Color.accentColor.opacity(0.2) : Color.clear) // Custom Selection Highlight
+        .cornerRadius(4)
+        .onTapGesture {
+            selectedId = item.id
+        }
+        .contextMenu {
+            if !item.isFile {
+                 Button("选择文件") { onUpload(item) }
+                 Button("新建") { onCreate(item) }
+            }
+            Button("重命名") { onRename(item) }
+            Divider()
+            Button("删除") { onDelete(item) }
+        }
+    }
+}
+
+// MARK: - Directory Tree Selector (用于筛选的树形组件)
+
+struct DirectoryTreeSelector: View {
+    let nodes: [DirectoryItem]
+    @Binding var selectedId: Int64?
+    let onSelect: () -> Void
+    @State private var collapsedIds: Set<Int64> = []
+    var level: Int = 0
+    
+    var body: some View {
+        LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(nodes) { node in
+                // Node Row
+                HStack(spacing: 4) {
+                    // Indentation
+                    if level > 0 {
+                        Spacer()
+                            .frame(width: CGFloat(level * 16))
+                    }
+                    
+                    // Expand/Collapse Button
+                    if let children = node.childFileList, !children.isEmpty {
+                        Image(systemName: collapsedIds.contains(node.id) ? "chevron.right" : "chevron.down")
+                            .font(.system(size: 9))
+                            .frame(width: 12, height: 12)
+                            .onTapGesture {
+                                toggleExpand(node.id)
+                            }
+                    } else {
+                        Spacer().frame(width: 12)
+                    }
+                    
+                    // Folder icon
+                    Image(systemName: "folder.fill")
+                        .foregroundColor(.blue)
+                    
+                    Text(node.fileName)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    
+                    Spacer()
+                    
+                    // Checkmark
+                    if selectedId == node.id {
+                        Image(systemName: "checkmark")
+                            .foregroundColor(.blue)
+                            .font(.system(size: 10))
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(selectedId == node.id ? Color.secondary.opacity(0.1) : Color.clear)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    selectedId = node.id
+                    onSelect()
+                }
+                
+                // Children (Show if NOT collapsed)
+                if let children = node.childFileList, !collapsedIds.contains(node.id) {
+                    DirectoryTreeSelector(
+                        nodes: children,
+                        selectedId: $selectedId,
+                        onSelect: onSelect,
+                        level: level + 1
+                    )
+                }
+            }
+        }
+    }
+    
+    private func toggleExpand(_ id: Int64) {
+        if collapsedIds.contains(id) {
+            collapsedIds.remove(id)
+        } else {
+            collapsedIds.insert(id)
+        }
+    }
 }

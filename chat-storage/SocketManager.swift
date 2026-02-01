@@ -49,7 +49,7 @@ class SocketManager: NSObject, ObservableObject {
     private var reconnectTimer: Timer?
     
     /// 服务器地址（可动态配置）
-    private var host: String = "192.168.0.103"  // 默认服务器地址
+    private var host: String = "192.168.2.104"  // 默认服务器地址  192.168.2.104  192.168.0.103
     
     /// 服务器端口（可动态配置）
     private var port: UInt32 = 10086
