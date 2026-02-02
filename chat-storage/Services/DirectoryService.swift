@@ -434,9 +434,10 @@ class FileTransferService: ObservableObject {
         fileUrl: URL,
         targetDirId: Int64,
         userId: Int64,
+        taskId: String,
         progressHandler: ((Double) -> Void)? = nil
     ) async throws {
-        print("🚀 开始上传文件: \(fileUrl.lastPathComponent)")
+        print("🚀 开始上传文件: \(fileUrl.lastPathComponent) (TaskID: \(taskId))")
         
         // 1. 准备文件信息
         guard FileManager.default.fileExists(atPath: fileUrl.path) else {
@@ -453,13 +454,15 @@ class FileTransferService: ObservableObject {
         print("✅ MD5 计算完成: \(md5)")
         
         // 3. 构建元数据请求体
+        // 3. 构建元数据请求体
         let metaRequest = FileMetaRequest(
             md5: md5,
             fileName: fileName,
             fileSize: fileSize,
             fileType: fileType,
             dirId: targetDirId,
-            userId: userId
+            userId: userId,
+            taskId: taskId
         )
         
         // 4. 发送断点检查帧 (0x05)
@@ -470,13 +473,19 @@ class FileTransferService: ObservableObject {
         let resumeInfo = try FrameParser.decodePayload(checkResponseFrame, as: ResumeAckResponse.self)
         
         var offset: Int64 = 0
-        var taskId: String = ""
+        // 本地变量用于跟踪最终使用的 TaskID (初始化为传入的 ID)
+        var finalTaskId: String = taskId
         
         if resumeInfo.status == "resume" {
             // === 断点续传 ===
-            taskId = resumeInfo.taskId ?? ""
+            let serverTaskId = resumeInfo.taskId ?? ""
+            // 如果服务端返回了不为空的 ID 且与我们的不同，优先使用服务端的
+            if !serverTaskId.isEmpty && serverTaskId != taskId {
+                print("⚠️ 服务端返回了不同的 TaskId: \(serverTaskId) vs \(taskId)。将优先使用服务端的。")
+                finalTaskId = serverTaskId
+            }
             offset = resumeInfo.uploadedSize ?? 0
-            print("🔄 发现断点记录，TaskId: \(taskId), 已上传: \(offset) 字节，继续上传...")
+            print("🔄 发现断点记录，TaskId: \(finalTaskId), 已上传: \(offset) 字节，继续上传...")
             
         } else if resumeInfo.status == "new" {
             // === 全新上传 ===
@@ -488,11 +497,14 @@ class FileTransferService: ObservableObject {
             
             let ack = try FrameParser.decodePayload(metaResponseFrame, as: StandardAckResponse.self)
             
-            guard ack.status == "ready", let newTaskId = ack.taskId else {
+            guard ack.status == "ready" else {
                 throw FileTransferError.serverError(ack.message ?? "服务端未就绪")
             }
-            taskId = newTaskId
-            print("✅ 元数据握手成功，获取 TaskId: \(taskId)")
+            
+            if let newId = ack.taskId, !newId.isEmpty {
+                finalTaskId = newId
+            }
+            print("✅ 元数据握手成功，获取 TaskId: \(finalTaskId)")
             
         } else {
             throw FileTransferError.serverError(resumeInfo.message ?? "未知状态")
@@ -503,7 +515,7 @@ class FileTransferService: ObservableObject {
             try await sendFileData(
                 fileUrl: fileUrl,
                 offset: offset,
-                taskId: taskId,
+                taskId: finalTaskId, // 使用 finalTaskId
                 fileSize: fileSize,
                 progressHandler: progressHandler
             )
@@ -514,9 +526,9 @@ class FileTransferService: ObservableObject {
         
         // 6. 发送结束帧 (0x03)
         print("🏁 发送结束帧...")
-        let endRequest = EndUploadRequest(taskId: taskId)
+        let endRequest = EndUploadRequest(taskId: finalTaskId) // 使用 finalTaskId
         let endFrame = try FrameBuilder.build(type: .endFrame, payload: endRequest)
-        let endResponseFrame = try await socketManager.sendFrameAndWait(endFrame, expecting: .ackFrame)
+        let endResponseFrame = try await socketManager.sendFrameAndWait(endFrame, expecting: .ackFrame, timeout: 60.0)
         
         let finalAck = try FrameParser.decodePayload(endResponseFrame, as: StandardAckResponse.self)
         
@@ -625,6 +637,7 @@ struct FileMetaRequest: Codable {
     let fileType: String
     let dirId: Int64
     let userId: Int64
+    let taskId: String // 新增: 客户端传递的任务ID
 }
 
 struct EndUploadRequest: Codable {
@@ -682,8 +695,8 @@ class TransferTaskManager: ObservableObject {
     
     // MARK: - Private Properties
     
-    /// 最大并发数
-    private let maxConcurrentTasks = 10
+    /// 最大并发数 (根据CPU核心数动态调整，最少4个)
+    private let maxConcurrentTasks = max(4, ProcessInfo.processInfo.processorCount)
     
     /// 正在执行的任务
     private var activeTasks: [UUID: Task<Void, Never>] = [:]
@@ -701,6 +714,12 @@ class TransferTaskManager: ObservableObject {
     /// 提交任务
     /// - Parameter task: 传输任务
     func submit(task: TransferTask) {
+        // 如果任务已存在，直接恢复
+        if tasks[task.id] != nil {
+            resume(id: task.id)
+            return
+        }
+        
         tasks[task.id] = task
         pendingQueue.append(task)
         
@@ -791,7 +810,7 @@ class TransferTaskManager: ObservableObject {
                 // 等待连接建立
                 var attempts = 0
                 while socketManager.connectionState != .connected {
-                    if attempts > 50 { throw TransferError.connectionFailed } // 5秒超时
+                    if attempts > 300 { throw TransferError.connectionFailed } // 30秒超时 (300 * 0.1s)
                     try await Task.sleep(nanoseconds: 100_000_000) // 0.1s
                     attempts += 1
                 }
@@ -803,6 +822,7 @@ class TransferTaskManager: ObservableObject {
                     fileUrl: task.fileUrl,
                     targetDirId: task.targetDirId,
                     userId: task.userId,
+                    taskId: task.id.uuidString,
                     progressHandler: { progress in
                         // 回到主线程更新进度
                         Task { @MainActor in

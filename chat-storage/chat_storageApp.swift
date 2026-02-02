@@ -22,24 +22,35 @@ struct chat_storageApp: App {
 
     var body: some Scene {
         WindowGroup {
-            if isLoggedIn {
-                // 主界面
-                MainChatStorage(isLoggedIn: $isLoggedIn)
-                    .environment(\.managedObjectContext, persistenceController.container.viewContext)
-                    .environmentObject(socketManager)
-                    .environmentObject(authService)
-                    .frame(minWidth: 1100, idealWidth: 2200, minHeight: 700, idealHeight: 1400) // 默认尺寸扩大一倍
-            } else {
-                // 登录界面
-                LoginView(isLoggedIn: $isLoggedIn)
-                    .environment(\.managedObjectContext, persistenceController.container.viewContext)
-                    .environmentObject(socketManager)
-                    .environmentObject(authService)
-                    .frame(width: 500, height: 550) // 登录界面固定尺寸
+            Group {
+                if isLoggedIn {
+                    // 主界面
+                    MainChatStorage(isLoggedIn: $isLoggedIn)
+                        .environment(\.managedObjectContext, persistenceController.container.viewContext)
+                        .environmentObject(socketManager)
+                        .environmentObject(authService)
+                        .frame(minWidth: 1100, idealWidth: 2200, minHeight: 700, idealHeight: 1400) // 默认尺寸 (已还原)
+                } else {
+                    // 登录界面
+                    LoginView(isLoggedIn: $isLoggedIn)
+                        .environment(\.managedObjectContext, persistenceController.container.viewContext)
+                        .environmentObject(socketManager)
+                        .environmentObject(authService)
+                        .frame(width: 500, height: 550) // 登录界面固定尺寸
+                }
+            }
+            .onAppear {
+                // 确保窗口在启动时居中显示
+                DispatchQueue.main.async {
+                    if let window = NSApplication.shared.windows.first {
+                        window.center()
+                        window.makeKeyAndOrderFront(nil)
+                    }
+                }
             }
         }
-        .windowStyle(isLoggedIn ? .hiddenTitleBar : .hiddenTitleBar) // 两者都隐藏标题栏，或根据需求调整
-        .windowResizability(isLoggedIn ? .contentMinSize : .contentSize) // 登录界面固定内容大小，主界面限制最小尺寸
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(isLoggedIn ? .contentMinSize : .contentSize)
         .commands {
             // 在应用菜单中添加连接控制（可选）
         }

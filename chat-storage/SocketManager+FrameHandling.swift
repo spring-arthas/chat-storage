@@ -26,7 +26,7 @@ extension SocketManager {
             throw SocketError.sendFailed
         }
         
-        print("📤 发送帧: \(frame.type.description), 长度: \(bytes.count) 字节")
+       // print("📤 发送帧: \(frame.type.description), 长度: \(bytes.count) 字节")
     }
     
     /// 注册响应等待
