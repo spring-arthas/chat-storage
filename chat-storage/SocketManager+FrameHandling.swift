@@ -215,12 +215,12 @@ extension SocketManager {
         // 打印可视化的帧数据
         printFrameVisualization(frame)
         
-        // 在主线程处理响应
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
+        // 直接在当前线程处理响应，避免因切换线程导致的竞态条件（例如：服务端发完ACK后立即关闭连接）
+        // DispatchQueue.main.async { [weak self] in
+        //    guard let self = self else { return }
             
             self.resumeContinuation(for: frame)
-        }
+        // }
     }
     
     /// 恢复等待的 continuation

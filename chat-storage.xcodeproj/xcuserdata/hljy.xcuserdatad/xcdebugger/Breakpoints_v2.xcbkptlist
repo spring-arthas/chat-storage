@@ -14,8 +14,8 @@
             filePath = "chat-storage/Services/DirectoryService.swift"
             startingColumnNumber = "9223372036854775807"
             endingColumnNumber = "9223372036854775807"
-            startingLineNumber = "632"
-            endingLineNumber = "632"
+            startingLineNumber = "624"
+            endingLineNumber = "624"
             landmarkName = "unknown"
             landmarkType = "0">
          </BreakpointContent>

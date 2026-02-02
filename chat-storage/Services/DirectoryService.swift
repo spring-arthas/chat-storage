@@ -465,17 +465,15 @@ class FileTransferService: ObservableObject {
             taskId: taskId
         )
         
-        // 4. 发送断点检查帧 (0x05)
+        // 4. 发送断点检查帧 (0x05)，发送完成后等待断电检查帧的解析
         print("🔍 发送断点检查请求...")
         let checkFrame = try FrameBuilder.build(type: .resumeCheck, payload: metaRequest)
-        let checkResponseFrame = try await socketManager.sendFrameAndWait(checkFrame, expecting: .resumeAck)
-        
+        let checkResponseFrame = try await socketManager.sendFrameAndWait(checkFrame, expecting: .resumeAck, timeout: 31536000.0)
         let resumeInfo = try FrameParser.decodePayload(checkResponseFrame, as: ResumeAckResponse.self)
         
         var offset: Int64 = 0
         // 本地变量用于跟踪最终使用的 TaskID (初始化为传入的 ID)
         var finalTaskId: String = taskId
-        
         if resumeInfo.status == "resume" {
             // === 断点续传 ===
             let serverTaskId = resumeInfo.taskId ?? ""
@@ -490,17 +488,13 @@ class FileTransferService: ObservableObject {
         } else if resumeInfo.status == "new" {
             // === 全新上传 ===
             print("🆕 无断点记录，开始全新上传...")
-            
-            // 发送元数据帧 (0x01)
+            // 发送元数据帧 (0x01)，发送元数据全新上传帧
             let metaFrame = try FrameBuilder.build(type: .metaFrame, payload: metaRequest)
-            let metaResponseFrame = try await socketManager.sendFrameAndWait(metaFrame, expecting: .ackFrame)
-            
+            let metaResponseFrame = try await socketManager.sendFrameAndWait(metaFrame, expecting: .ackFrame, timeout: 31536000.0)
             let ack = try FrameParser.decodePayload(metaResponseFrame, as: StandardAckResponse.self)
-            
             guard ack.status == "ready" else {
                 throw FileTransferError.serverError(ack.message ?? "服务端未就绪")
             }
-            
             if let newId = ack.taskId, !newId.isEmpty {
                 finalTaskId = newId
             }
@@ -528,10 +522,8 @@ class FileTransferService: ObservableObject {
         print("🏁 发送结束帧...")
         let endRequest = EndUploadRequest(taskId: finalTaskId) // 使用 finalTaskId
         let endFrame = try FrameBuilder.build(type: .endFrame, payload: endRequest)
-        let endResponseFrame = try await socketManager.sendFrameAndWait(endFrame, expecting: .ackFrame, timeout: 60.0)
-        
+        let endResponseFrame = try await socketManager.sendFrameAndWait(endFrame, expecting: .ackFrame, timeout: 31536000.0)
         let finalAck = try FrameParser.decodePayload(endResponseFrame, as: StandardAckResponse.self)
-        
         if finalAck.status == "success" {
             print("🎉 文件上传成功!")
         } else {
@@ -796,10 +788,11 @@ class TransferTaskManager: ObservableObject {
         updateTaskStatus(id: task.id, status: "上传中")
         
         let executionTask = Task {
+            // 创建新的 SocketManager 实例
+            // 注意：SocketManager 应该是线程安全的，或者我们需要确保它可以在后台线程使用
+            let socketManager = SocketManager()
+            
             do {
-                // 创建新的 SocketManager 实例
-                // 注意：SocketManager 应该是线程安全的，或者我们需要确保它可以在后台线程使用
-                let socketManager = SocketManager()
                 
                 // 获取当前主连接的 Host (从 SocketManager.shared 获取，假设它是线程安全的或我们只读)
                 let (currentHost, _) = SocketManager.shared.getCurrentServer()
@@ -810,7 +803,7 @@ class TransferTaskManager: ObservableObject {
                 // 等待连接建立
                 var attempts = 0
                 while socketManager.connectionState != .connected {
-                    if attempts > 300 { throw TransferError.connectionFailed } // 30秒超时 (300 * 0.1s)
+                    // if attempts > 300 { throw TransferError.connectionFailed } // 30秒超时 (300 * 0.1s)
                     try await Task.sleep(nanoseconds: 100_000_000) // 0.1s
                     attempts += 1
                 }
@@ -837,11 +830,26 @@ class TransferTaskManager: ObservableObject {
                 }
                 socketManager.disconnect()
                 
+            } catch is CancellationError {
+                print("⏸️ 任务已暂停 [\(task.name)]")
+                await MainActor.run {
+                    self.updateTaskStatus(id: task.id, status: "已暂停")
+                }
+                socketManager.disconnect()
+                
             } catch {
-                print("❌ 任务失败 [\(task.name)]: \(error)")
+                print("========== ❌ 任务处理异常 ==========")
+                print("📋 任务 ID: \(task.id)")
+                print("📄 文件名称: \(task.name)")
+                print("📂 目标路径: \(task.targetDirId)")
+                print("❌ 错误信息: \(error.localizedDescription)")
+                print("🔍 详细错误: \(error)")
+                print("📚 堆栈信息:\n\(Thread.callStackSymbols.joined(separator: "\n"))")
+                print("======================================")
                 await MainActor.run {
                     self.updateTaskStatus(id: task.id, status: "失败")
                 }
+                socketManager.disconnect()
             }
             
             // 任务结束清理 (回到主线程)

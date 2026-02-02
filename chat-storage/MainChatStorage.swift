@@ -796,7 +796,7 @@ struct MainChatStorage: View {
             
             // 操作按钮
             HStack(spacing: 4) {
-                if item.status == "等待上传" || item.status == "暂停" || item.status == "失败" {
+                if item.status == "等待上传" || item.status == "暂停" || item.status == "已暂停" || item.status == "失败" {
                     // Start/Resume Button
                     Button(action: { handleTransferAction(id: item.id, action: "start") }) {
                         Image(systemName: "arrow.up.circle") // Upload icon for start
@@ -835,7 +835,7 @@ struct MainChatStorage: View {
         case "上传中": return .blue
         case "等待上传": return .gray
         case "失败": return .red
-        case "暂停": return .orange
+        case "暂停", "已暂停": return .orange
         default: return .primary
         }
     }
