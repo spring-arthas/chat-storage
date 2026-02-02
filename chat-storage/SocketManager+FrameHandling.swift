@@ -68,19 +68,33 @@ extension SocketManager {
         expectingOneOf responseTypes: Set<FrameTypeEnum>,
         timeout: TimeInterval = 10.0
     ) async throws -> Frame {
-        // 发送帧
-        try sendFrame(frame)
-        
-        // 等待响应
+        // 使用 withCheckedThrowingContinuation 确保先注册监听，再发送数据
         return try await withCheckedThrowingContinuation { continuation in
-            // 注册 continuation
+            // 1. 先注册监听 (占位) - 这必须是同步的
             let id = registerContinuation(continuation, for: responseTypes)
             
-            // 设置超时
+            // 2. 异步发送帧 (关键修复)
+            // 将发送操作放入 Task 中，并增加极短的延迟
+            // 这确保了 withCheckedThrowingContinuation 闭包已经执行完毕，处于"挂起等待"状态
+            // 且监听器已完全注册到字典中，防止某些极端情况下的竞争
+            Task {
+                // 延迟 50ms 确保监听器准备就绪 (应对极速响应的小文件)
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                
+                do {
+                    try sendFrame(frame)
+                    // 发送成功，等待响应即可
+                } catch {
+                    // 如果发送本身失败，立即移除监听并报错
+                    removeAndResumeContinuation(for: id, with: error)
+                }
+            }
+            
+            // 3. 设置超时
             Task {
                 try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
                 
-                // 超时处理
+                // 超时处理：如果 id 还在 activeContinuations 中，说明超时了
                 removeAndResumeContinuation(for: id, with: SocketError.timeout)
             }
         }

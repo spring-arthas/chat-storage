@@ -81,46 +81,46 @@ struct LoginView: View {
                 .fontWeight(.bold)
                 .foregroundColor(.black.opacity(0.8))
             
-            // 用户名输入框
-            VStack(alignment: .leading, spacing: 8) {
-                Text("用户名")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-                
-                TextField("请输入用户名", text: $username)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 300)
-                    .onSubmit {
-                        // 如果密码和邮箱不为空，则尝试登录
-                        if !password.isEmpty {
-                            handleLogin()
-                        } else {
-                            // 否则聚焦到下一个输入框（这里假设密码框是下一个）
-                            // SwiftUI 原生焦点控制较为复杂，这里简化处理
+            // 输入区域组
+            Group {
+                // 用户名输入框
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("用户名")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    
+                    TextField("请输入用户名", text: $username)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 300)
+                        .onSubmit {
+                            // 如果密码和邮箱不为空，则尝试登录
+                            if !password.isEmpty {
+                                handleLogin()
+                            }
                         }
-                    }
-            }
-            
-            // 密码输入框
-            VStack(alignment: .leading, spacing: 8) {
-                Text("密码")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
+                }
                 
-                SecureField("请输入密码", text: $password)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 300)
-                    .onSubmit {
-                        handleLogin()
-                    }
-            }
-            
-            // 错误提示
-            if !errorMessage.isEmpty {
-                Text(errorMessage)
-                    .foregroundColor(.red)
-                    .font(.caption)
-                    .frame(width: 300, alignment: .leading)
+                // 密码输入框
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("密码")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    
+                    SecureField("请输入密码", text: $password)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 300)
+                        .onSubmit {
+                            handleLogin()
+                        }
+                }
+                
+                // 错误提示
+                if !errorMessage.isEmpty {
+                    Text(errorMessage)
+                        .foregroundColor(.red)
+                        .font(.caption)
+                        .frame(width: 300, alignment: .leading)
+                }
             }
             
             // 登录按钮

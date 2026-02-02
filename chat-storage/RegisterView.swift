@@ -62,99 +62,102 @@ struct RegisterView: View {
                 .font(.title)
                 .fontWeight(.bold)
             
-            // 用户名输入框
-            VStack(alignment: .leading, spacing: 8) {
-                Text("用户名")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
+            // 输入区域组
+            Group {
+                // 用户名输入框
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("用户名")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    
+                    TextField("手机号或邮箱", text: $username)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 300)
+                        .onSubmit {
+                            // 按回车跳转到下一个输入框或注册
+                            if !password.isEmpty && !confirmPassword.isEmpty && !email.isEmpty {
+                                handleRegister()
+                            }
+                        }
+                        .onChange(of: username) { _ in
+                            // 清除错误信息
+                            if !errorMessage.isEmpty {
+                                errorMessage = ""
+                            }
+                        }
+                }
                 
-                TextField("手机号或邮箱", text: $username)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 300)
-                    .onSubmit {
-                        // 按回车跳转到下一个输入框或注册
-                        if !password.isEmpty && !confirmPassword.isEmpty && !email.isEmpty {
+                // 密码输入框
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("密码")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    
+                    SecureField("至少6位字符", text: $password)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 300)
+                        .onSubmit {
+                            // 按回车跳转到下一个输入框或注册
+                            if !confirmPassword.isEmpty && !email.isEmpty {
+                                handleRegister()
+                            }
+                        }
+                        .onChange(of: password) { _ in
+                            if !errorMessage.isEmpty {
+                                errorMessage = ""
+                            }
+                        }
+                }
+                
+                // 确认密码输入框
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("确认密码")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    
+                    SecureField("再次输入密码", text: $confirmPassword)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 300)
+                        .onSubmit {
+                            // 按回车跳转到邮箱输入框或注册
+                            if !email.isEmpty {
+                                handleRegister()
+                            }
+                        }
+                        .onChange(of: confirmPassword) { _ in
+                            if !errorMessage.isEmpty {
+                                errorMessage = ""
+                            }
+                        }
+                }
+                
+                // 邮箱输入框
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("邮箱")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    
+                    TextField("请输入邮箱地址", text: $email)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 300)
+                        .onSubmit {
+                            // 按回车触发注册
                             handleRegister()
                         }
-                    }
-                    .onChange(of: username) { _ in
-                        // 清除错误信息
-                        if !errorMessage.isEmpty {
-                            errorMessage = ""
+                        .onChange(of: email) { _ in
+                            if !errorMessage.isEmpty {
+                                errorMessage = ""
+                            }
                         }
-                    }
-            }
-            
-            // 密码输入框
-            VStack(alignment: .leading, spacing: 8) {
-                Text("密码")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
+                }
                 
-                SecureField("至少6位字符", text: $password)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 300)
-                    .onSubmit {
-                        // 按回车跳转到下一个输入框或注册
-                        if !confirmPassword.isEmpty && !email.isEmpty {
-                            handleRegister()
-                        }
-                    }
-                    .onChange(of: password) { _ in
-                        if !errorMessage.isEmpty {
-                            errorMessage = ""
-                        }
-                    }
-            }
-            
-            // 确认密码输入框
-            VStack(alignment: .leading, spacing: 8) {
-                Text("确认密码")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-                
-                SecureField("再次输入密码", text: $confirmPassword)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 300)
-                    .onSubmit {
-                        // 按回车跳转到邮箱输入框或注册
-                        if !email.isEmpty {
-                            handleRegister()
-                        }
-                    }
-                    .onChange(of: confirmPassword) { _ in
-                        if !errorMessage.isEmpty {
-                            errorMessage = ""
-                        }
-                    }
-            }
-            
-            // 邮箱输入框
-            VStack(alignment: .leading, spacing: 8) {
-                Text("邮箱")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-                
-                TextField("请输入邮箱地址", text: $email)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 300)
-                    .onSubmit {
-                        // 按回车触发注册
-                        handleRegister()
-                    }
-                    .onChange(of: email) { _ in
-                        if !errorMessage.isEmpty {
-                            errorMessage = ""
-                        }
-                    }
-            }
-            
-            // 错误提示
-            if !errorMessage.isEmpty {
-                Text(errorMessage)
-                    .foregroundColor(.red)
-                    .font(.caption)
-                    .frame(width: 300, alignment: .leading)
+                // 错误提示
+                if !errorMessage.isEmpty {
+                    Text(errorMessage)
+                        .foregroundColor(.red)
+                        .font(.caption)
+                        .frame(width: 300, alignment: .leading)
+                }
             }
             
             // 注册按钮
