@@ -29,7 +29,7 @@ struct chat_storageApp: App {
                         .environment(\.managedObjectContext, persistenceController.container.viewContext)
                         .environmentObject(socketManager)
                         .environmentObject(authService)
-                        .frame(minWidth: 1100, idealWidth: 2200, minHeight: 700, idealHeight: 1400) // 默认尺寸 (已还原)
+                        .frame(minWidth: 1650, idealWidth: 3300, minHeight: 1050, idealHeight: 2100) // 尺寸扩大 0.5 倍
                 } else {
                     // 登录界面
                     LoginView(isLoggedIn: $isLoggedIn)

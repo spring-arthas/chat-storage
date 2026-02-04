@@ -433,9 +433,9 @@ class FileTransferService: ObservableObject {
     func uploadFile(
         fileUrl: URL,
         targetDirId: Int64,
-        userId: Int64,
+        userId: Int32,
         taskId: String,
-        progressHandler: ((Double) -> Void)? = nil
+        progressHandler: ((Double, String) -> Void)? = nil
     ) async throws {
         print("🚀 开始上传文件: \(fileUrl.lastPathComponent) (TaskID: \(taskId))")
         
@@ -465,79 +465,100 @@ class FileTransferService: ObservableObject {
             taskId: taskId
         )
         
-        // 4. 发送断点检查帧 (0x05)，发送完成后等待断电检查帧的解析
+        // 4. 发送断点检查帧 (0x05)
         print("🔍 发送断点检查请求...")
-        let checkFrame = try FrameBuilder.build(type: .resumeCheck, payload: metaRequest)
-        let checkResponseFrame = try await socketManager.sendFrameAndWait(checkFrame, expecting: .resumeAck, timeout: 31536000.0)
-        let resumeInfo = try FrameParser.decodePayload(checkResponseFrame, as: ResumeAckResponse.self)
         
-        var offset: Int64 = 0
-        // 本地变量用于跟踪最终使用的 TaskID (初始化为传入的 ID)
-        var finalTaskId: String = taskId
-        if resumeInfo.status == "resume" {
-            // === 断点续传 ===
-            let serverTaskId = resumeInfo.taskId ?? ""
-            // 如果服务端返回了不为空的 ID 且与我们的不同，优先使用服务端的
-            if !serverTaskId.isEmpty && serverTaskId != taskId {
-                print("⚠️ 服务端返回了不同的 TaskId: \(serverTaskId) vs \(taskId)。将优先使用服务端的。")
-                finalTaskId = serverTaskId
-            }
-            offset = resumeInfo.uploadedSize ?? 0
-            print("🔄 发现断点记录，TaskId: \(finalTaskId), 已上传: \(offset) 字节，继续上传...")
+        // 构建字典类型的请求体，确保 userId 是数字，且可以在此处去掉 taskId 如果服务端不需要
+        let metaRequestDict: [String: Any] = [
+            "md5": md5,
+            "fileName": fileName,
+            "fileSize": fileSize,
+            "fileType": fileType,
+            "dirId": targetDirId,
+            "userId": userId,
+            "taskId": taskId
+        ]
+        
+        // --- DEBUG LOG START ---
+        if let jsonData = try? JSONSerialization.data(withJSONObject: metaRequestDict), let jsonString = String(data: jsonData, encoding: .utf8) {
+            print("📤 [DEBUG] Meta Request JSON (Dict): \(jsonString)")
             
-        } else if resumeInfo.status == "new" {
-            // === 全新上传 ===
-            print("🆕 无断点记录，开始全新上传...")
-            // 发送元数据帧 (0x01)，发送元数据全新上传帧
-            let metaFrame = try FrameBuilder.build(type: .metaFrame, payload: metaRequest)
-            let metaResponseFrame = try await socketManager.sendFrameAndWait(metaFrame, expecting: .ackFrame, timeout: 31536000.0)
-            let ack = try FrameParser.decodePayload(metaResponseFrame, as: StandardAckResponse.self)
-            guard ack.status == "ready" else {
-                throw FileTransferError.serverError(ack.message ?? "服务端未就绪")
-            }
-            if let newId = ack.taskId, !newId.isEmpty {
-                finalTaskId = newId
-            }
-            print("✅ 元数据握手成功，获取 TaskId: \(finalTaskId)")
+            // 使用字典构建 Frame
+            let checkFrame = Frame(type: .resumeCheck, data: jsonData, flags: 0x00)
+            let checkResponseFrame = try await socketManager.sendFrameAndWait(checkFrame, expecting: .resumeAck, timeout: 31536000.0)
+            let resumeInfo = try FrameParser.decodePayload(checkResponseFrame, as: ResumeAckResponse.self)
             
+            var offset: Int64 = 0
+            // 本地变量用于跟踪最终使用的 TaskID (初始化为传入的 ID)
+            var finalTaskId: String = taskId
+            if resumeInfo.status == "resume" {
+                // === 断点续传 ===
+                let serverTaskId = resumeInfo.taskId ?? ""
+                // 如果服务端返回了不为空的 ID 且与我们的不同，优先使用服务端的
+                if !serverTaskId.isEmpty && serverTaskId != taskId {
+                    print("⚠️ 服务端返回了不同的 TaskId: \(serverTaskId) vs \(taskId)。将优先使用服务端的。")
+                    finalTaskId = serverTaskId
+                }
+                offset = resumeInfo.uploadedSize ?? 0
+                print("🔄 发现断点记录，TaskId: \(finalTaskId), 已上传: \(offset) 字节，继续上传...")
+                
+            } else if resumeInfo.status == "new" {
+                // === 全新上传 ===
+                print("🆕 无断点记录，开始全新上传...")
+                // 发送元数据帧 (0x01)，发送元数据全新上传帧
+                let metaFrame = try FrameBuilder.build(type: .metaFrame, payload: metaRequest)
+                let metaResponseFrame = try await socketManager.sendFrameAndWait(metaFrame, expecting: .ackFrame, timeout: 31536000.0)
+                let ack = try FrameParser.decodePayload(metaResponseFrame, as: StandardAckResponse.self)
+                guard ack.status == "ready" else {
+                    throw FileTransferError.serverError(ack.message ?? "服务端未就绪")
+                }
+                if let newId = ack.taskId, !newId.isEmpty {
+                    finalTaskId = newId
+                }
+                print("✅ 元数据握手成功，获取 TaskId: \(finalTaskId)")
+                
+            } else {
+                throw FileTransferError.serverError(resumeInfo.message ?? "未知状态")
+            }
+            
+            // 5. 发送文件数据 (0x02)
+            if offset < fileSize {
+                try await sendFileData(
+                    fileUrl: fileUrl,
+                    offset: offset,
+                    taskId: finalTaskId, // 使用 finalTaskId
+                    fileSize: fileSize,
+                    progressHandler: progressHandler
+                )
+            } else {
+                print("✅ 文件已完整，跳过数据发送")
+                progressHandler?(1.0, "0 KB/s")
+            }
+            
+            // 6. 发送结束帧 (0x03)
+            print("🏁 发送结束帧...")
+            let endRequest = EndUploadRequest(taskId: finalTaskId) // 使用 finalTaskId
+            let endFrame = try FrameBuilder.build(type: .endFrame, payload: endRequest)
+            let endResponseFrame = try await socketManager.sendFrameAndWait(endFrame, expecting: .ackFrame, timeout: 31536000.0)
+            let finalAck = try FrameParser.decodePayload(endResponseFrame, as: StandardAckResponse.self)
+            if finalAck.status == "success" {
+                print("🎉 文件上传成功!")
+            } else {
+                throw FileTransferError.serverError(finalAck.message ?? "上传最终确认失败")
+            }
         } else {
-            throw FileTransferError.serverError(resumeInfo.message ?? "未知状态")
-        }
-        
-        // 5. 发送文件数据 (0x02)
-        if offset < fileSize {
-            try await sendFileData(
-                fileUrl: fileUrl,
-                offset: offset,
-                taskId: finalTaskId, // 使用 finalTaskId
-                fileSize: fileSize,
-                progressHandler: progressHandler
-            )
-        } else {
-            print("✅ 文件已完整，跳过数据发送")
-            progressHandler?(1.0)
-        }
-        
-        // 6. 发送结束帧 (0x03)
-        print("🏁 发送结束帧...")
-        let endRequest = EndUploadRequest(taskId: finalTaskId) // 使用 finalTaskId
-        let endFrame = try FrameBuilder.build(type: .endFrame, payload: endRequest)
-        let endResponseFrame = try await socketManager.sendFrameAndWait(endFrame, expecting: .ackFrame, timeout: 31536000.0)
-        let finalAck = try FrameParser.decodePayload(endResponseFrame, as: StandardAckResponse.self)
-        if finalAck.status == "success" {
-            print("🎉 文件上传成功!")
-        } else {
-            throw FileTransferError.serverError(finalAck.message ?? "上传最终确认失败")
+             throw FileTransferError.invalidResponse // Replace with appropriate error if serialization fails
         }
     }
     
+    /// 发送文件数据分块
     /// 发送文件数据分块
     private func sendFileData(
         fileUrl: URL,
         offset: Int64,
         taskId: String,
         fileSize: Int64,
-        progressHandler: ((Double) -> Void)?
+        progressHandler: ((Double, String) -> Void)?
     ) async throws {
         let fileHandle = try FileHandle(forReadingFrom: fileUrl)
         defer { try? fileHandle.close() }
@@ -549,6 +570,7 @@ class FileTransferService: ObservableObject {
         
         var currentOffset = offset
         var lastLogTime = Date()
+        var lastOffsetForSpeed = offset // 用于计算速率的上一周期 offset
         
         // 循环读取并发送
         // 注意：这里是一个简单的循环，实际生产中可能需要流控，
@@ -590,14 +612,35 @@ class FileTransferService: ObservableObject {
             
             currentOffset += Int64(data.count)
             
-            // 更新进度 (每 500ms 回调一次，避免 UI 刷新过频)
+            // 更新进度 (每 0.5 秒回调一次，避免 UI 刷新过频)
             let now = Date()
-            if now.timeIntervalSince(lastLogTime) > 0.5 || currentOffset == fileSize {
+            let timeDelta = now.timeIntervalSince(lastLogTime)
+            
+            if timeDelta >= 0.5 || currentOffset == fileSize {
+                // 计算本周期内的增量
+                let bytesSinceLastLog = currentOffset - lastOffsetForSpeed
+                
+                // 计算速率 (Bytes/s)
+                let speedBytesPerSec = Double(bytesSinceLastLog) / timeDelta
+                let speedStr = formatSpeed(speedBytesPerSec)
+                
                 let progress = Double(currentOffset) / Double(fileSize)
-                progressHandler?(progress)
+                progressHandler?(progress, speedStr)
+                
                 lastLogTime = now
-                // print("📤 上传进度: \(String(format: "%.1f", progress * 100))%")
+                lastOffsetForSpeed = currentOffset
             }
+        }
+    }
+    
+    // 格式化速率字符串 helper
+    private func formatSpeed(_ bytesPerSec: Double) -> String {
+        if bytesPerSec < 1024 {
+            return String(format: "%.0f B/s", bytesPerSec)
+        } else if bytesPerSec < 1024 * 1024 {
+            return String(format: "%.1f KB/s", bytesPerSec / 1024)
+        } else {
+            return String(format: "%.1f MB/s", bytesPerSec / (1024 * 1024))
         }
     }
     
@@ -628,7 +671,7 @@ struct FileMetaRequest: Codable {
     let fileSize: Int64
     let fileType: String
     let dirId: Int64
-    let userId: Int64
+    let userId: Int32
     let taskId: String // 新增: 客户端传递的任务ID
 }
 
@@ -816,10 +859,10 @@ class TransferTaskManager: ObservableObject {
                     targetDirId: task.targetDirId,
                     userId: task.userId,
                     taskId: task.id.uuidString,
-                    progressHandler: { progress in
+                    progressHandler: { progress, speed in
                         // 回到主线程更新进度
                         Task { @MainActor in
-                            self.updateTaskProgress(id: task.id, progress: progress)
+                            self.updateTaskProgress(id: task.id, progress: progress, speed: speed)
                         }
                     }
                 )
@@ -873,10 +916,12 @@ class TransferTaskManager: ObservableObject {
         self.taskUpdates[id] = current
     }
     
-    private func updateTaskProgress(id: UUID, progress: Double) {
+    private func updateTaskProgress(id: UUID, progress: Double, speed: String = "") {
         var current = self.taskUpdates[id] ?? ("", 0.0, "")
         current.1 = progress
-        // 这里可以简单计算速度，或者由 Service 计算传递过来
+        if !speed.isEmpty {
+            current.2 = speed
+        }
         self.taskUpdates[id] = current
     }
 }
@@ -887,7 +932,7 @@ struct TransferTask {
     let name: String
     let fileUrl: URL
     let targetDirId: Int64
-    let userId: Int64
+    let userId: Int32
 }
 
 enum TransferError: Error {

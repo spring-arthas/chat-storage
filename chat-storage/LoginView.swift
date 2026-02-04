@@ -23,10 +23,10 @@ struct LoginView: View {
     // MARK: - State Variables (状态变量)
     
     /// 用户名输入（手机号或邮箱）
-    @State private var username: String = "18806504525"
+    @State private var username: String = ""
     
     /// 密码输入
-    @State private var password: String = "spring"
+    @State private var password: String = ""
     
     /// 错误提示信息
     @State private var errorMessage: String = ""

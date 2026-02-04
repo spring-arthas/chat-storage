@@ -1,0 +1,220 @@
+{
+  "source": "/Users/hljy/macProjects/chat-storage/chat-storage/MainChatStorage.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "提示"
+      },
+      {
+        "comment": "",
+        "key": "好友列表"
+      },
+      {
+        "comment": "",
+        "key": "网盘存储"
+      },
+      {
+        "comment": "",
+        "key": "确定"
+      },
+      {
+        "comment": "",
+        "key": "切换到浅色模式"
+      },
+      {
+        "comment": "",
+        "key": "切换到深色模式"
+      },
+      {
+        "comment": "",
+        "key": "退出登录"
+      },
+      {
+        "comment": "",
+        "key": "服务地址:"
+      },
+      {
+        "comment": "",
+        "key": "上行: %@"
+      },
+      {
+        "comment": "",
+        "key": "下行: %@"
+      },
+      {
+        "comment": "",
+        "key": "确认删除目录"
+      },
+      {
+        "comment": "",
+        "key": "目录导航"
+      },
+      {
+        "comment": "",
+        "key": "刷新目录"
+      },
+      {
+        "comment": "",
+        "key": "取消"
+      },
+      {
+        "comment": "",
+        "key": "删除"
+      },
+      {
+        "comment": "",
+        "key": "确定要删除目录 [%@] 吗？此操作无法撤销。"
+      },
+      {
+        "comment": "",
+        "key": "批量删除"
+      },
+      {
+        "comment": "",
+        "key": "批量下载"
+      },
+      {
+        "comment": "",
+        "key": "搜索文件名称"
+      },
+      {
+        "comment": "",
+        "key": "操作"
+      },
+      {
+        "comment": "",
+        "key": ""
+      },
+      {
+        "comment": "",
+        "key": "文件名称"
+      },
+      {
+        "comment": "",
+        "key": "文件大小"
+      },
+      {
+        "comment": "",
+        "key": "所属目录"
+      },
+      {
+        "comment": "",
+        "key": "上传时间"
+      },
+      {
+        "comment": "",
+        "key": "暂无文件"
+      },
+      {
+        "comment": "",
+        "key": "共 %lld 个文件"
+      },
+      {
+        "comment": "",
+        "key": "%lld / %lld"
+      },
+      {
+        "comment": "",
+        "key": "下载"
+      },
+      {
+        "comment": "",
+        "key": "传输列表"
+      },
+      {
+        "comment": "",
+        "key": "启动列表中所有待处理任务"
+      },
+      {
+        "comment": "",
+        "key": "清除所有已完成的任务记录"
+      },
+      {
+        "comment": "",
+        "key": "自动排序"
+      },
+      {
+        "comment": "",
+        "key": "开启后，进行中的任务将自动排在前面"
+      },
+      {
+        "comment": "",
+        "key": "批量启动"
+      },
+      {
+        "comment": "",
+        "key": "清除已完成"
+      },
+      {
+        "comment": "",
+        "key": "传输类型"
+      },
+      {
+        "comment": "",
+        "key": "状态"
+      },
+      {
+        "comment": "",
+        "key": "传输进度"
+      },
+      {
+        "comment": "",
+        "key": "无传输任务"
+      },
+      {
+        "comment": "",
+        "key": "开始上传"
+      },
+      {
+        "comment": "",
+        "key": "暂停"
+      },
+      {
+        "comment": "",
+        "key": "搜索好友"
+      },
+      {
+        "comment": "",
+        "key": "添加好友"
+      },
+      {
+        "comment": "",
+        "key": "新建目录"
+      },
+      {
+        "comment": "",
+        "key": "目录名称:"
+      },
+      {
+        "comment": "",
+        "key": "请输入目录名称 (最多10字)"
+      },
+      {
+        "comment": "",
+        "key": "保存"
+      },
+      {
+        "comment": "",
+        "key": "重命名目录"
+      },
+      {
+        "comment": "",
+        "key": "请输入新名称"
+      },
+      {
+        "comment": "",
+        "key": "选择文件"
+      },
+      {
+        "comment": "",
+        "key": "新建"
+      },
+      {
+        "comment": "",
+        "key": "重命名"
+      }
+    ]
+  },
+  "version": 1
+}

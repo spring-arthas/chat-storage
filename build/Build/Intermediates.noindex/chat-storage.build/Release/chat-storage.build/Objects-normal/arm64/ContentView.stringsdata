@@ -1,0 +1,20 @@
+{
+  "source": "/Users/hljy/macProjects/chat-storage/chat-storage/ContentView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "点击次数: %lld"
+      },
+      {
+        "comment": "",
+        "key": "重置"
+      },
+      {
+        "comment": "",
+        "key": "点击我 (Click Me)"
+      }
+    ]
+  },
+  "version": 1
+}

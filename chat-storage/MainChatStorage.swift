@@ -122,6 +122,9 @@ struct MainChatStorage: View {
     /// 批量上传选择器状态
     @State private var showingBatchUpload = false
 
+    /// 是否开启自动排序
+    @State private var isAutoSortEnabled = true
+
     /// 主题模式状态 (持久化)
     @AppStorage("isDarkMode") private var isDarkMode = true
     
@@ -175,7 +178,7 @@ struct MainChatStorage: View {
         .onAppear {
             startTimer()
             loadServerAddress()
-            generateFakeData()
+            // generateFakeData() // Removed demo data generation
             // 初始化目录服务
             directoryService = DirectoryService(socketManager: socketManager)
         }
@@ -208,12 +211,23 @@ struct MainChatStorage: View {
         .onReceive(transferManager.$taskUpdates) { updates in
             for (id, info) in updates {
                 if let index = self.transferList.firstIndex(where: { $0.id == id }) {
+                    let oldStatus = self.transferList[index].status
                     // 更新状态
                     self.transferList[index].status = info.0
                     // 更新进度
                     self.transferList[index].progress = info.1
-                    // 更新速度 (暂时未传递)
-                    // self.transferList[index].speed = info.2
+                    // 更新速度
+                    self.transferList[index].speed = info.2
+                    
+                    // 如果开启了自动排序且状态变为已完成，触发排序
+                    if self.isAutoSortEnabled && info.0 == "已完成" && oldStatus != "已完成" {
+                        // 使用 DispatchQueue.main.async 避免在视图更新周期内修改引起警告
+                        // 使用 DispatchQueue.main.async 避免在视图更新周期内修改引起警告
+                        DispatchQueue.main.async {
+                            self.sortTransferList()
+                            // 移除自动刷新 logic to improve performance
+                        }
+                    }
                 }
             }
         }
@@ -675,6 +689,29 @@ struct MainChatStorage: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .help("启动列表中所有待处理任务")
+                
+                // 清除已完成按钮
+                Button(action: {
+                    // 清除已完成的任务
+                    transferList.removeAll { $0.status == "已完成" }
+                    // 重新排序剩余任务 (保持规则一致)
+                    sortTransferList()
+                }) {
+                    Label("清除已完成", systemImage: "trash.circle")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("清除所有已完成的任务记录")
+                
+                // 自动排序开关
+                Toggle("自动排序", isOn: $isAutoSortEnabled)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .help("开启后，进行中的任务将自动排在前面")
+                    .onChange(of: isAutoSortEnabled) { enabled in
+                        if enabled { sortTransferList() }
+                    }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -1061,35 +1098,7 @@ struct MainChatStorage: View {
     }
     
     private func generateFakeData() {
-        // 如果列表已有数据，则不生成
-        if !fileList.isEmpty { return }
-        
-        let fileTypes = ["doc", "pdf", "jpg", "mp4", "zip"]
-        
-        // 1. 生成文件浏览数据 (DirectoryItem)
-        var newFiles: [DirectoryItem] = []
-        for i in 1...55 {
-            let isFile = Bool.random()
-            // 随机几个假类型
-            let fileTypes = ["doc", "pdf", "jpg", "mp4", "zip"]
-            let name = isFile ? "文件 \(i).\(fileTypes.randomElement()!)" : "文件夹 \(i)"
-            
-            let item = DirectoryItem(
-                id: Int64(i + 1000), // Avoid collision with real IDs if possible
-                pId: -1,
-                fileName: name,
-                childFileList: nil,
-                fileSize: Int64.random(in: 1024...1024*1024*500),
-                isFile: isFile,
-                uploadTime: Int64(Date().timeIntervalSince1970 * 1000),
-                directoryName: isFile ? ["java基础", "数据库"].randomElement()! : "-"
-            )
-            newFiles.append(item)
-        }
-        fileList = newFiles
-        
-        // 2. 生成传输任务数据 (已清空测试数据)
-        // transferList = []
+        // Disabled demo data generation
     }
     
     /// 从服务器加载目录树
@@ -1519,7 +1528,7 @@ struct MainChatStorage: View {
         
         // 2. 遍历列表，提交待处理任务
         var count = 0
-        let currentUserId = Int64(authService.currentUser?.userId ?? 0)
+        let currentUserId = Int32(authService.currentUser?.userId ?? 0)
         
         for item in transferList {
             // 只处理非“上传中”和非“已完成”的任务
@@ -1572,7 +1581,7 @@ struct MainChatStorage: View {
                 }
                 
                 // 获取当前用户ID (从全局认证服务)
-                let currentUserId = Int64(authService.currentUser?.userId ?? 0)
+                let currentUserId = Int32(authService.currentUser?.userId ?? 0)
                 
                 // 构建 TransferTask
                 let task = TransferTask(
@@ -1659,6 +1668,11 @@ struct MainChatStorage: View {
             } catch {
                 print("❌ 加载文件列表失败: \(error)")
                 await MainActor.run {
+                    // 发生错误时清空列表，避免误导用户
+                    self.fileList = []
+                    self.totalCount = 0
+                    self.totalPages = 1
+                    
                     self.alertMessage = "加载文件列表失败: \(error.localizedDescription)"
                     self.showingAlert = true
                 }
@@ -1670,6 +1684,29 @@ struct MainChatStorage: View {
         // 重置页码并加载
         self.currentPage = 1
         loadCurrentFiles()
+    }
+    
+    // MARK: - Sorting Logic
+    
+    private func sortTransferList() {
+        self.transferList.sort { (item1, item2) -> Bool in
+            let score1 = statusScore(item1.status)
+            let score2 = statusScore(item2.status)
+            if score1 != score2 {
+                return score1 > score2 // 分数高的排前面
+            }
+            return item1.name < item2.name // 同状态按名称排
+        }
+    }
+    
+    private func statusScore(_ status: String) -> Int {
+        switch status {
+        case "上传中", "下载中": return 100
+        case "等待上传", "等待下载": return 80
+        case "暂停", "已暂停", "失败": return 60
+        case "已完成": return 10
+        default: return 0
+        }
     }
 }
 
