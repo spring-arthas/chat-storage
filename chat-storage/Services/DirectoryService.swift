@@ -20,6 +20,10 @@ class DirectoryService: ObservableObject {
         self.socketManager = socketManager
     }
     
+    var transferManager: TransferTaskManager {
+        TransferTaskManager.shared
+    }
+    
     /// 加载目录树
     /// - Returns: 目录项数组
     /// - Throws: 网络或解析错误
@@ -321,6 +325,78 @@ class DirectoryService: ObservableObject {
         print("🔍 JSON Data String: \(String(data: jsonData, encoding: .utf8) ?? "nil")")
         return []
     }
+    
+    /// 恢复挂起的任务 (应用启动调用)
+    func resumePendingTasks() {
+        let entities = PersistenceManager.shared.fetchPendingTasks()
+        print("🔄 正在恢复未完成的任务... (Total entities: \(entities.count))")
+        var count = 0
+        
+        for entity in entities {
+            // Debug info
+            let debugName = entity.fileName ?? "Unknown"
+            let debugId = entity.taskId ?? "No ID"
+            
+            guard let taskIdStr = entity.taskId,
+                  let uuid = UUID(uuidString: taskIdStr) else {
+                print("⚠️ 跳过恢复 [\(debugName)]: 无效的 UUID string: \(debugId)")
+                continue
+            }
+            
+            guard let bookmark = entity.fileUrl else {
+                print("⚠️ 跳过恢复 [\(debugName)]: 缺少文件 Bookmark (Security Scope Data)")
+                continue
+            }
+            
+            guard let fileName = entity.fileName else {
+                print("⚠️ 跳过恢复 [\(debugId)]: 缺少文件名")
+                continue
+            }
+            
+            // 解析 Bookmark
+            guard let url = PersistenceManager.shared.resolveBookmark(data: bookmark) else {
+                print("❌ 无法解析文件 Bookmark [\(fileName)]:这可能是因为文件被移动或权限已失效")
+                continue
+            }
+            
+            // 重新计算进度，确保数据一致性
+            var progress = entity.progress
+            if entity.fileSize > 0 {
+                let calculatedParams = Double(entity.uploadedBytes) / Double(entity.fileSize)
+                // 如果数据库存的 progress 为 0 但有上传字节，或者偏差较大，优先使用计算值
+                if progress == 0 || abs(progress - calculatedParams) > 0.01 {
+                    progress = calculatedParams
+                }
+            }
+            
+            print("🔄 恢复任务 [\(fileName)]: Progress DB=\(entity.progress), Bytes=\(entity.uploadedBytes)/\(entity.fileSize) -> Final=\(progress)")
+            
+            let task = StorageTransferTask(
+                id: uuid,
+                name: fileName,
+                fileUrl: url,
+                targetDirId: entity.targetDirId,
+                userId: Int64(entity.userId),
+                fileSize: entity.fileSize,
+                directoryName: "/", // 暂时无法获取目录名，或者需要存库
+                progress: progress
+            )
+            
+            // 调用 Manager 恢复
+
+
+            // 使用 MainActor 确保 UI 更新
+            Task { @MainActor in
+                TransferTaskManager.shared.restore(
+                    task: task,
+                    status: entity.status ?? "Paused",
+                    progress: progress
+                )
+            }
+            count += 1
+        }
+        print("✅ 已恢复 \(count) 个挂起任务")
+    }
 }
 
 // MARK: - Local Data Models
@@ -440,6 +516,10 @@ class FileTransferService: ObservableObject {
         print("🚀 开始上传文件: \(fileUrl.lastPathComponent) (TaskID: \(taskId))")
         
         // 1. 准备文件信息
+        // 开启安全访问 (针对 Bookmark 恢复的 URL)
+        let isSecurityScoped = fileUrl.startAccessingSecurityScopedResource()
+        defer { if isSecurityScoped { fileUrl.stopAccessingSecurityScopedResource() } }
+        
         guard FileManager.default.fileExists(atPath: fileUrl.path) else {
             throw FileTransferError.fileNotFound
         }
@@ -448,10 +528,30 @@ class FileTransferService: ObservableObject {
         let fileName = fileUrl.lastPathComponent
         let fileType = fileUrl.pathExtension
         
+        // --- Persistence Integration Start ---
+        // 初始化/更新本地数据库任务
+        PersistenceManager.shared.saveTask(
+            taskId: taskId,
+            fileUrl: fileUrl,
+            fileName: fileName,
+            fileSize: fileSize,
+            targetDirId: targetDirId,
+            userId: userId,
+            status: "Waiting",
+            progress: 0.0,
+            uploadedBytes: 0,
+            md5: nil // MD5 计算后再更新
+        )
+        // --- Persistence Integration End ---
+        
         // 2. 计算 MD5
         print("⏳ 正在计算 MD5...")
         let md5 = try calculateMD5(for: fileUrl)
         print("✅ MD5 计算完成: \(md5)")
+        
+        // --- Persistence Update MD5 ---
+        PersistenceManager.shared.saveTask(taskId: taskId, md5: md5)
+        // --- Persistence Update End ---
         
         // 3. 构建元数据请求体
         // 3. 构建元数据请求体
@@ -521,6 +621,10 @@ class FileTransferService: ObservableObject {
                 throw FileTransferError.serverError(resumeInfo.message ?? "未知状态")
             }
             
+            // --- Persistence Update Status ---
+            PersistenceManager.shared.updateStatus(taskId: finalTaskId, status: "Uploading")
+            // --- Persistence Update End ---
+            
             // 5. 发送文件数据 (0x02)
             if offset < fileSize {
                 try await sendFileData(
@@ -546,6 +650,13 @@ class FileTransferService: ObservableObject {
             } else {
                 throw FileTransferError.serverError(finalAck.message ?? "上传最终确认失败")
             }
+            
+            // --- Persistence Complete ---
+            // 任务完成，可以选择删除或标记为完成。 根据需求保留记录。
+            PersistenceManager.shared.updateStatus(taskId: finalTaskId, status: "Completed")
+            // PersistenceManager.shared.deleteTask(taskId: finalTaskId) // 暂时保留
+            // --- Persistence End ---
+            
         } else {
              throw FileTransferError.invalidResponse // Replace with appropriate error if serialization fails
         }
@@ -626,6 +737,14 @@ class FileTransferService: ObservableObject {
                 
                 let progress = Double(currentOffset) / Double(fileSize)
                 progressHandler?(progress, speedStr)
+                
+                // --- Persistence Update Progress ---
+                PersistenceManager.shared.updateProgress(
+                    taskId: taskId,
+                    progress: progress,
+                    uploadedBytes: currentOffset
+                )
+                // --- Persistence End ---
                 
                 lastLogTime = now
                 lastOffsetForSpeed = currentOffset
@@ -737,10 +856,10 @@ class TransferTaskManager: ObservableObject {
     private var activeTasks: [UUID: Task<Void, Never>] = [:]
     
     /// 等待队列
-    private var pendingQueue: [TransferTask] = []
+    private var pendingQueue: [StorageTransferTask] = []
     
     /// 任务映射表 (存储任务详情)
-    private var tasks: [UUID: TransferTask] = [:]
+    private var tasks: [UUID: StorageTransferTask] = [:]
     
     private init() {}
     
@@ -748,7 +867,7 @@ class TransferTaskManager: ObservableObject {
     
     /// 提交任务
     /// - Parameter task: 传输任务
-    func submit(task: TransferTask) {
+    func submit(task: StorageTransferTask) {
         // 如果任务已存在，直接恢复
         if tasks[task.id] != nil {
             resume(id: task.id)
@@ -769,12 +888,16 @@ class TransferTaskManager: ObservableObject {
             runningTask.cancel()
             activeTasks.removeValue(forKey: id)
             updateTaskStatus(id: id, status: "暂停")
+            // --- Persistence Pause ---
+            PersistenceManager.shared.updateStatus(taskId: id.uuidString, status: "Paused")
         }
         
         // 2. 如果在等待队列中，移除
         if let index = pendingQueue.firstIndex(where: { $0.id == id }) {
             pendingQueue.remove(at: index)
             updateTaskStatus(id: id, status: "暂停")
+            // --- Persistence Pause ---
+            PersistenceManager.shared.updateStatus(taskId: id.uuidString, status: "Paused")
         }
         
         // 调度下一个
@@ -826,7 +949,7 @@ class TransferTaskManager: ObservableObject {
     }
     
     /// 启动单个任务
-    private func startTask(_ task: TransferTask) {
+    private func startTask(_ task: StorageTransferTask) {
         print("🚀 启动任务: \(task.name)")
         updateTaskStatus(id: task.id, status: "上传中")
         
@@ -857,7 +980,7 @@ class TransferTaskManager: ObservableObject {
                 try await service.uploadFile(
                     fileUrl: task.fileUrl,
                     targetDirId: task.targetDirId,
-                    userId: task.userId,
+                    userId: Int32(task.userId),
                     taskId: task.id.uuidString,
                     progressHandler: { progress, speed in
                         // 回到主线程更新进度
@@ -924,17 +1047,44 @@ class TransferTaskManager: ObservableObject {
         }
         self.taskUpdates[id] = current
     }
+    
+    /// 恢复(还原)任务 - 用于从持久化存储加载
+    func restore(task: StorageTransferTask, status: String, progress: Double) {
+        // 存入任务表
+        tasks[task.id] = task
+        
+        // 恢复状态 display logic
+        let displayStatus = (status == "Uploading" || status == "Waiting") ? "已暂停" : status
+        
+        updateTaskStatus(id: task.id, status: displayStatus, progress: progress)
+        
+        // 如果是 Paused/Failed，不需要放入 active/pending，因为已经在 tasks 里了
+        // 如果要自动开始，可以在这里 append to pendingQueue 并 call scheduleNext()
+        // 目前策略：只恢复显示，不自动开始
+    }
+    
+    /// 获取所有任务 (用于 UI 同步)
+    func getAllTasks() -> [StorageTransferTask] {
+        return Array(self.tasks.values)
+    }
 }
 
-/// 传输任务模型 (内部使用)
-struct TransferTask {
+// MARK: - Shared Models
+
+/// 传输任务模型
+struct StorageTransferTask {
     let id: UUID
     let name: String
     let fileUrl: URL
     let targetDirId: Int64
-    let userId: Int32
+    let userId: Int64
+    let fileSize: Int64
+    let directoryName: String
+    let progress: Double
 }
 
 enum TransferError: Error {
     case connectionFailed
 }
+
+

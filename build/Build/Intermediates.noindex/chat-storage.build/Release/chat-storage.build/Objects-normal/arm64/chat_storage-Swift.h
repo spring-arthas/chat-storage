@@ -312,6 +312,30 @@ SWIFT_CLASS("_TtC12chat_storage13SocketManager")
 @end
 
 
+
+SWIFT_CLASS_NAMED("TransferTaskEntity")
+@interface TransferTaskEntity : NSManagedObject
+- (nonnull instancetype)initWithEntity:(NSEntityDescription * _Nonnull)entity insertIntoManagedObjectContext:(NSManagedObjectContext * _Nullable)context OBJC_DESIGNATED_INITIALIZER;
+@end
+
+
+@class NSString;
+@class NSData;
+
+@interface TransferTaskEntity (SWIFT_EXTENSION(chat_storage))
+@property (nonatomic, copy) NSString * _Nullable fileName;
+@property (nonatomic) int64_t fileSize;
+@property (nonatomic, copy) NSData * _Nullable fileUrl;
+@property (nonatomic, copy) NSString * _Nullable md5;
+@property (nonatomic) double progress;
+@property (nonatomic, copy) NSString * _Nullable status;
+@property (nonatomic) int64_t targetDirId;
+@property (nonatomic, copy) NSString * _Nullable taskId;
+@property (nonatomic, copy) NSDate * _Nullable timestamp;
+@property (nonatomic) int64_t uploadedBytes;
+@property (nonatomic) int32_t userId;
+@end
+
 #endif
 #if defined(__cplusplus)
 #endif

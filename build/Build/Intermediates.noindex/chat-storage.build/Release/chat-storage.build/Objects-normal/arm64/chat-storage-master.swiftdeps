@@ -1,19 +1,23 @@
 version: "Apple Swift version 5.8.1 (swiftlang-5.8.0.124.5 clang-1403.0.22.11.100)"
 options: "518c5605f427912310347c86fff426c76b6dad9fe4410f838505d60badd3d51f"
-build_start_time: [1770187238, 69415000]
-build_end_time: [1770187280, 744806000]
+build_start_time: [1770201608, 288539000]
+build_end_time: [1770201619, 865637000]
 inputs:
   ? "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/DerivedSources/CoreDataGenerated/chat_storage/Item+CoreDataClass.swift"
-  : [1770171379, 994293320]
+  : [1770193607, 433723081]
   ? "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/DerivedSources/CoreDataGenerated/chat_storage/Item+CoreDataProperties.swift"
-  : [1770171379, 994874323]
+  : [1770193607, 438324176]
+  ? "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/DerivedSources/CoreDataGenerated/chat_storage/TransferTaskEntity+CoreDataClass.swift"
+  : [1770193607, 437529875]
+  ? "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/DerivedSources/CoreDataGenerated/chat_storage/TransferTaskEntity+CoreDataProperties.swift"
+  : [1770193607, 438136549]
   ? "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/DerivedSources/CoreDataGenerated/chat_storage/chat_storage+CoreDataModel.swift"
-  : [1770171379, 986554446]
+  : [1770193607, 431508763]
   "/Users/hljy/macProjects/chat-storage/chat-storage/ConfigServerView.swift": [1769758689, 583456842]
   "/Users/hljy/macProjects/chat-storage/chat-storage/ContentView.swift": [1769737062, 848460871]
   "/Users/hljy/macProjects/chat-storage/chat-storage/InputValidator.swift": [1769992419, 216388216]
-  "/Users/hljy/macProjects/chat-storage/chat-storage/LoginView.swift": [1770172043, 519594750]
-  "/Users/hljy/macProjects/chat-storage/chat-storage/MainChatStorage.swift": [1770187171, 384951243]
+  "/Users/hljy/macProjects/chat-storage/chat-storage/LoginView.swift": [1770194168, 303511629]
+  "/Users/hljy/macProjects/chat-storage/chat-storage/MainChatStorage.swift": [1770198236, 880659496]
   "/Users/hljy/macProjects/chat-storage/chat-storage/Models/do/FileDto.swift": [1769992419, 217705098]
   "/Users/hljy/macProjects/chat-storage/chat-storage/Models/do/UserDO.swift": [1769992419, 218253018]
   "/Users/hljy/macProjects/chat-storage/chat-storage/Models/frame/Frame.swift": [1769764495, 228173300]
@@ -21,10 +25,10 @@ inputs:
   "/Users/hljy/macProjects/chat-storage/chat-storage/Models/frame/FrameParser.swift": [1769764499, 256706304]
   "/Users/hljy/macProjects/chat-storage/chat-storage/Models/frame/FrameTypeEnum.swift": [1769992419, 218531895]
   "/Users/hljy/macProjects/chat-storage/chat-storage/Models/request/UserRequest.swift": [1769764527, 316598846]
-  "/Users/hljy/macProjects/chat-storage/chat-storage/Persistence.swift": [1769738386, 797738947]
+  "/Users/hljy/macProjects/chat-storage/chat-storage/Persistence.swift": [1770195980, 449543614]
   "/Users/hljy/macProjects/chat-storage/chat-storage/RegisterView.swift": [1769993025, 926165154]
   "/Users/hljy/macProjects/chat-storage/chat-storage/Services/AuthenticationService.swift": [1769992419, 219262649]
-  "/Users/hljy/macProjects/chat-storage/chat-storage/Services/DirectoryService.swift": [1770170262, 653050797]
+  "/Users/hljy/macProjects/chat-storage/chat-storage/Services/DirectoryService.swift": [1770201414, 577819579]
   "/Users/hljy/macProjects/chat-storage/chat-storage/SocketManager+FrameHandling.swift": [1770020061, 66847268]
   "/Users/hljy/macProjects/chat-storage/chat-storage/SocketManager.swift": [1770080909, 508065406]
   "/Users/hljy/macProjects/chat-storage/chat-storage/chat_storageApp.swift": [1770168233, 142474044]

@@ -181,6 +181,14 @@ struct MainChatStorage: View {
             // generateFakeData() // Removed demo data generation
             // 初始化目录服务
             directoryService = DirectoryService(socketManager: socketManager)
+            // 恢复挂起的任务 (Persistent Resumable Transfer)
+            directoryService?.resumePendingTasks()
+            
+            // 延迟加载恢复的任务到 UI (等待 restore 完成)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                print("🔄 Syncing restored tasks to UI...")
+                loadRestoredTasks()
+            }
         }
         .onChange(of: selectedTab) { newTab in
             // 当切换到网盘存储标签页时，加载目录
@@ -208,7 +216,9 @@ struct MainChatStorage: View {
             }
         }
         // 监听传输任务更新
-        .onReceive(transferManager.$taskUpdates) { updates in
+        .onReceive(TransferTaskManager.shared.$taskUpdates) { updates in
+            var needReload = false
+            
             for (id, info) in updates {
                 if let index = self.transferList.firstIndex(where: { $0.id == id }) {
                     let oldStatus = self.transferList[index].status
@@ -221,14 +231,19 @@ struct MainChatStorage: View {
                     
                     // 如果开启了自动排序且状态变为已完成，触发排序
                     if self.isAutoSortEnabled && info.0 == "已完成" && oldStatus != "已完成" {
-                        // 使用 DispatchQueue.main.async 避免在视图更新周期内修改引起警告
-                        // 使用 DispatchQueue.main.async 避免在视图更新周期内修改引起警告
                         DispatchQueue.main.async {
                             self.sortTransferList()
-                            // 移除自动刷新 logic to improve performance
                         }
                     }
+                } else {
+                    // 发现未知任务ID (可能是恢复的任务)，标记需要重载
+                    needReload = true
                 }
+            }
+            
+            if needReload {
+                // 有新任务，加载它们
+                self.loadRestoredTasks()
             }
         }
         .onDisappear {
@@ -693,6 +708,11 @@ struct MainChatStorage: View {
                 // 清除已完成按钮
                 Button(action: {
                     // 清除已完成的任务
+                    let completedTasks = transferList.filter { $0.status == "已完成" }
+                    for task in completedTasks {
+                        PersistenceManager.shared.deleteTask(taskId: task.id.uuidString)
+                    }
+                    
                     transferList.removeAll { $0.status == "已完成" }
                     // 重新排序剩余任务 (保持规则一致)
                     sortTransferList()
@@ -823,9 +843,12 @@ struct MainChatStorage: View {
                 VStack(alignment: .trailing, spacing: 0) {
                     Text(item.progressPercent)
                         .font(.system(size: 10))
-                    Text(item.speed)
-                        .font(.system(size: 9))
-                        .foregroundColor(.secondary)
+                    
+                    if item.status == "上传中" || item.status == "下载中" {
+                        Text(item.speed)
+                            .font(.system(size: 9))
+                            .foregroundColor(.secondary)
+                    }
                 }
                 .frame(width: 50, alignment: .trailing)
             }
@@ -1528,7 +1551,7 @@ struct MainChatStorage: View {
         
         // 2. 遍历列表，提交待处理任务
         var count = 0
-        let currentUserId = Int32(authService.currentUser?.userId ?? 0)
+        let currentUserId = Int64(authService.currentUser?.userId ?? 0)
         
         for item in transferList {
             // 只处理非“上传中”和非“已完成”的任务
@@ -1536,12 +1559,15 @@ struct MainChatStorage: View {
                 
                 // 确保有文件路径
                 if let fileUrl = item.fileUrl {
-                    let task = TransferTask(
+                    let task = StorageTransferTask(
                         id: item.id, // 使用 TransferItem 现有的 ID
                         name: item.name,
                         fileUrl: fileUrl,
                         targetDirId: item.targetDirId,
-                        userId: currentUserId
+                        userId: currentUserId,
+                        fileSize: item.size,
+                        directoryName: item.directoryName,
+                        progress: 0.0
                     )
                     
                     // 提交任务 (submit 会自动处理：存在则resume，不存在则add)
@@ -1581,15 +1607,20 @@ struct MainChatStorage: View {
                 }
                 
                 // 获取当前用户ID (从全局认证服务)
-                let currentUserId = Int32(authService.currentUser?.userId ?? 0)
+                let currentUserId = Int64(authService.currentUser?.userId ?? 0)
+                
                 
                 // 构建 TransferTask
-                let task = TransferTask(
+                // 构建 TransferTask
+                let task = StorageTransferTask(
                     id: item.id,
                     name: item.name,
                     fileUrl: fileUrl,
                     targetDirId: item.targetDirId,
-                    userId: currentUserId
+                    userId: currentUserId,
+                    fileSize: item.size,
+                    directoryName: item.directoryName,
+                    progress: 0.0
                 )
                 
                 transferManager.submit(task: task)
@@ -1699,6 +1730,45 @@ struct MainChatStorage: View {
         }
     }
     
+    // MARK: - Recovery Logic
+    
+    // MARK: - Recovery Logic
+    
+    private func loadRestoredTasks() {
+        let tasks = TransferTaskManager.shared.getAllTasks()
+        if tasks.isEmpty { return }
+        
+        print("📥 Loading \(tasks.count) tasks from service to UI")
+        
+        for task in tasks {
+            // Check if already exists in UI
+            if !transferList.contains(where: { $0.id == task.id }) {
+                // Get current status and progress from manager updates
+                // If update is missing, use task.progress (restored value) instead of 0.0
+                let (status, progress, speed) = TransferTaskManager.shared.taskUpdates[task.id] ?? ("已暂停", task.progress, "")
+                
+                let newItem = TransferItem(
+                    id: task.id, // Explicitly set restored ID
+                    name: task.name,
+                    size: task.fileSize,
+                    directoryName: task.directoryName,
+                    fileUrl: task.fileUrl,
+                    targetDirId: task.targetDirId,
+                    taskType: .upload, // Defaulting to upload
+                    status: status,
+                    progress: progress,
+                    speed: speed
+                )
+                transferList.append(newItem)
+            }
+        }
+        
+        // Trigger sort
+        if isAutoSortEnabled {
+            sortTransferList()
+        }
+    }
+        
     private func statusScore(_ status: String) -> Int {
         switch status {
         case "上传中", "下载中": return 100
@@ -1713,7 +1783,20 @@ struct MainChatStorage: View {
 // MARK: - Transfer Item Model
 
 struct TransferItem: Identifiable {
-    let id = UUID()
+    let id: UUID
+    
+    init(id: UUID = UUID(), name: String, size: Int64, directoryName: String, fileUrl: URL?, targetDirId: Int64, taskType: TaskType, status: String, progress: Double, speed: String) {
+        self.id = id
+        self.name = name
+        self.size = size
+        self.directoryName = directoryName
+        self.fileUrl = fileUrl
+        self.targetDirId = targetDirId
+        self.taskType = taskType
+        self.status = status
+        self.progress = progress
+        self.speed = speed
+    }
     let name: String
     let size: Int64
     let directoryName: String

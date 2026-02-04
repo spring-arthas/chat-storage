@@ -5,6 +5,7 @@
 //  Created by TraeAI on 2026/2/1.
 //
 
+/*
 import Foundation
 import Combine
 
@@ -109,6 +110,22 @@ class TransferTaskManager: ObservableObject {
         taskUpdates.removeValue(forKey: id)
         lock.unlock()
     }
+
+    /// 恢复任务 (仅用于从持久化恢复，不立即执行)
+    func restore(task: TransferTask, status: String) {
+        lock.lock()
+        tasks[task.id] = task
+        // 初始化状态
+        taskUpdates[task.id] = (status, task.progress, "")
+        lock.unlock()
+    }
+    
+    /// 获取所有任务详情 (用于 UI 恢复)
+    func getAllTasks() -> [TransferTask] {
+        lock.lock()
+        defer { lock.unlock() }
+        return Array(tasks.values)
+    }
     
     // MARK: - Private Methods
     
@@ -179,7 +196,7 @@ class TransferTaskManager: ObservableObject {
                 self.updateTaskStatus(id: task.id, status: "已完成", progress: 1.0)
                 socketManager.disconnect()
                 
-            } catch {
+                } catch {
                 print("❌ 任务失败 [\(task.name)]: \(error)")
                 self.updateTaskStatus(id: task.id, status: "失败")
             }
@@ -218,16 +235,6 @@ class TransferTaskManager: ObservableObject {
         }
     }
 }
+*/
 
-/// 传输任务模型 (内部使用)
-struct TransferTask {
-    let id: UUID
-    let name: String
-    let fileUrl: URL
-    let targetDirId: Int64
-    let userId: Int64
-}
 
-enum TransferError: Error {
-    case connectionFailed
-}

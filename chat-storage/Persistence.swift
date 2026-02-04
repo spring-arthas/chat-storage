@@ -32,6 +32,12 @@ struct PersistenceController {
 
     init(inMemory: Bool = false) {
         container = NSPersistentCloudKitContainer(name: "chat_storage")
+        
+        // 打印数据库位置
+        if let url = container.persistentStoreDescriptions.first?.url {
+            print("💾 SQLite Database Path: \(url.path)")
+        }
+        
         if inMemory {
             container.persistentStoreDescriptions.first!.url = URL(fileURLWithPath: "/dev/null")
         }
@@ -52,5 +58,165 @@ struct PersistenceController {
             }
         })
         container.viewContext.automaticallyMergesChangesFromParent = true
+    }
+}
+
+// MARK: - PersistenceManager (Merged)
+
+import Foundation
+
+class PersistenceManager {
+    static let shared = PersistenceManager()
+    
+    private let context: NSManagedObjectContext
+    
+    private init() {
+        self.context = PersistenceController.shared.container.viewContext
+    }
+    
+    // MARK: - Task Management
+    
+    /// Create or Update a Transfer Task
+    func saveTask(
+        taskId: String,
+        fileUrl: URL? = nil,
+        fileName: String? = nil,
+        fileSize: Int64? = nil,
+        targetDirId: Int64? = nil,
+        userId: Int32? = nil,
+        status: String? = nil,
+        progress: Double? = nil,
+        uploadedBytes: Int64? = nil,
+        md5: String? = nil
+    ) {
+        context.perform {
+            let entity = self.fetchEntity(taskId: taskId) ?? TransferTaskEntity(context: self.context)
+            entity.taskId = taskId
+            
+            if let fileUrl = fileUrl {
+                print("💾 Persistence: Attempting to create bookmark for \(fileUrl.path)")
+                // Save Security-Scoped Bookmark
+                do {
+                    let bookmark = try fileUrl.bookmarkData(
+                        options: .withSecurityScope,
+                        includingResourceValuesForKeys: nil,
+                        relativeTo: nil
+                    )
+                    entity.fileUrl = bookmark
+                    print("✅ Persistence: Bookmark created successfully (\(bookmark.count) bytes)")
+                } catch {
+                    print("❌ Failed to create bookmark for \(fileUrl): \(error)")
+                }
+            } else {
+                 if entity.fileUrl == nil {
+                     print("⚠️ Persistence: saveTask called without fileUrl and entity has no existing bookmark.")
+                 }
+            }
+            if let fileName = fileName { entity.fileName = fileName }
+            if let fileSize = fileSize { entity.fileSize = fileSize }
+            if let targetDirId = targetDirId { entity.targetDirId = targetDirId }
+            if let userId = userId { entity.userId = userId }
+            if let status = status { entity.status = status }
+            if let progress = progress { entity.progress = progress }
+            if let uploadedBytes = uploadedBytes { entity.uploadedBytes = uploadedBytes }
+            if let md5 = md5 { entity.md5 = md5 }
+            
+            if entity.timestamp == nil {
+                entity.timestamp = Date()
+            }
+            
+            self.saveContext()
+        }
+    }
+    
+    /// Update progress lightly to avoid overhead
+    func updateProgress(taskId: String, progress: Double, uploadedBytes: Int64, status: String = "Uploading") {
+        context.perform {
+            if let entity = self.fetchEntity(taskId: taskId) {
+                entity.progress = progress
+                entity.uploadedBytes = uploadedBytes
+                entity.status = status
+                self.saveContext()
+            }
+        }
+    }
+    
+    /// Update status only
+    func updateStatus(taskId: String, status: String) {
+        context.perform {
+            if let entity = self.fetchEntity(taskId: taskId) {
+                entity.status = status
+                self.saveContext()
+            }
+        }
+    }
+    
+    /// Fetch pending tasks (Waiting, Uploading, Paused, Failed)
+    func fetchPendingTasks() -> [TransferTaskEntity] {
+        let request: NSFetchRequest<TransferTaskEntity> = TransferTaskEntity.fetchRequest()
+        // Fetch all except Completed
+        request.predicate = NSPredicate(format: "status != %@", "Completed")
+        request.sortDescriptors = [NSSortDescriptor(key: "timestamp", ascending: true)]
+        
+        do {
+            return try context.fetch(request)
+        } catch {
+            print("❌ Failed to fetch pending tasks: \(error)")
+            return []
+        }
+    }
+    
+    func deleteTask(taskId: String) {
+        context.perform {
+            if let entity = self.fetchEntity(taskId: taskId) {
+                self.context.delete(entity)
+                self.saveContext()
+            }
+        }
+    }
+    
+    // MARK: - Helpers
+    
+    private func fetchEntity(taskId: String) -> TransferTaskEntity? {
+        let request: NSFetchRequest<TransferTaskEntity> = TransferTaskEntity.fetchRequest()
+        request.predicate = NSPredicate(format: "taskId == %@", taskId)
+        request.fetchLimit = 1
+        
+        do {
+            return try context.fetch(request).first
+        } catch {
+            print("❌ Error fetching task \(taskId): \(error)")
+            return nil
+        }
+    }
+    
+    private func saveContext() {
+        if context.hasChanges {
+            do {
+                try context.save()
+            } catch {
+                print("❌ Core Data Save Error: \(error)")
+            }
+        }
+    }
+    
+    /// Resolve Bookmark to URL
+    func resolveBookmark(data: Data) -> URL? {
+        var isStale = false
+        do {
+            let url = try URL(
+                resolvingBookmarkData: data,
+                options: .withSecurityScope,
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            )
+            if isStale {
+                print("⚠️ Bookmark data is stale")
+            }
+            return url
+        } catch {
+            print("❌ Failed to resolve bookmark: \(error)")
+            return nil
+        }
     }
 }
