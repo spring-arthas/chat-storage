@@ -1039,9 +1039,30 @@ struct MainChatStorage: View {
     }
     
     private func handleFileAction(_ file: DirectoryItem, action: Int) {
-        print("文件操作: \(file.fileName), 操作\(action)")
-        addLog("对文件 \(file.fileName) 执行操作\(action)")
-        // TODO: 实现文件操作
+        if action == 1 {
+            // 删除操作
+            Task {
+                do {
+                    addLog("🗑️ 正在删除文件: \(file.fileName)")
+                    try await directoryService?.deleteFile(fileId: file.id)
+                    
+                    await MainActor.run {
+                        addLog("✅ 文件删除成功: \(file.fileName)")
+                        loadCurrentFiles() // 刷新列表
+                    }
+                } catch {
+                    await MainActor.run {
+                        addLog("❌ 文件删除失败: \(error.localizedDescription)")
+                        alertMessage = "删除失败: \(error.localizedDescription)"
+                        showingAlert = true
+                    }
+                }
+            }
+        } else if action == 2 {
+            // 下载操作
+            print("📥 准备下载文件: \(file.fileName)")
+            // TODO: 调用下载逻辑 (如果已有 downloadFile 方法)
+        }
     }
     
     // MARK: - Batch Operations

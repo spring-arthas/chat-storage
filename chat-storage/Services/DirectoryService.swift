@@ -251,6 +251,45 @@ class DirectoryService: ObservableObject {
         }
     }
 
+    /// 删除文件 (0x41)
+    /// - Parameter fileId: 文件ID
+    /// - Throws: 网络或服务端错误
+    func deleteFile(fileId: Int64) async throws {
+        print("🗑️ 请求删除文件: fileId=\(fileId)")
+        
+        struct DeleteFileRequest: Codable {
+            let fileId: Int64
+        }
+        
+        let request = DeleteFileRequest(fileId: fileId)
+        let jsonData = try JSONEncoder().encode(request)
+        
+        let frame = Frame(
+            type: .fileDeleteReq,
+            data: jsonData,
+            flags: 0x00
+        )
+        
+        // 发送帧并等待响应 (0x43 fileResponse)
+        let responseFrame = try await socketManager.sendFrameAndWait(
+            frame,
+            expecting: .fileResponse,
+            timeout: 10.0
+        )
+        
+        // 解析通用响应
+        guard let dict = try? FrameParser.decodeAsDictionary(responseFrame) else {
+            throw DirectoryError.invalidResponse("无法解析删除响应")
+        }
+        
+        if let code = dict["code"] as? Int, code != 200 {
+            let message = dict["message"] as? String ?? "未知错误"
+            throw DirectoryError.serverError(code: code, message: message)
+        }
+        
+        print("✅ 文件删除成功")
+    }
+
     /// 解析目录响应帧
     /// - Parameter frame: 响应帧
     /// - Returns: 目录项数组

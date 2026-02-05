@@ -62,10 +62,10 @@ enum FrameTypeEnum: UInt8, CaseIterable {
     // ========== 文件操作帧 (0x40-0x4F) ==========
     /// 文件列表分页请求
     case fileListReq = 0x40
-    /// 文件详情请求
-    case fileDetailReq = 0x41
-    /// 文件删除请求
-    case fileDeleteReq = 0x42
+    /// 文件删除请求 (0x41)
+    case fileDeleteReq = 0x41
+    /// 文件详情请求 (0x42)
+    case fileDetailReq = 0x42
     /// 文件操作响应
     case fileResponse = 0x43
     
