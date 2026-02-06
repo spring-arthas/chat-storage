@@ -1110,19 +1110,56 @@ struct MainChatStorage: View {
     }
     
     private func handleBatchDelete() {
-        let count = selectedFiles.count
-        print("批量删除: \(count) 个文件")
+        // 1. 如果没有选中的文件，直接返回，不做任何事情
+        if selectedFiles.isEmpty {
+            return
+        }
         
-        // 获取选中的行号 (index + 1)
-        let selectedIndices = fileList.enumerated()
-            .filter { selectedFiles.contains($0.element.id) }
-            .map { String($0.offset + 1) }
-            .joined(separator: ", ")
+        // 获取实际的对象列表
+        let filesToDelete = fileList.filter { selectedFiles.contains($0.id) }
+        let count = filesToDelete.count
+        if count == 0 { return }
+        
+        let service = directoryService
+        
+        Task {
+            await MainActor.run {
+                addLog("🗑️ 开始批量删除 \(count) 个文件...")
+            }
             
-        alertMessage = "选择了以下行进行删除：\(selectedIndices)"
-        showingAlert = true
-        
-        addLog("批量删除 \(count) 个文件")
+            var successCount = 0
+            var failCount = 0
+            
+            // 2. 循环单个删除
+            for file in filesToDelete {
+                do {
+                    // 调用单个文件删除接口 (Frame Type 0x41)
+                    try await service?.deleteFile(fileId: file.id)
+                    successCount += 1
+                } catch {
+                    failCount += 1
+                    let errorMsg = error.localizedDescription
+                    await MainActor.run {
+                        addLog("❌ 删除失败 [\(file.fileName)]: \(errorMsg)")
+                    }
+                }
+            }
+            
+            // 3. 完成后更新 UI
+            await MainActor.run {
+                addLog("✅ 批量删除结束: 成功 \(successCount), 失败 \(failCount)")
+                
+                // 清空选中状态
+                selectedFiles.removeAll()
+                
+                // 刷新列表
+                loadCurrentFiles()
+                
+                // 提示结果
+                //alertMessage = "批量删除完成\n成功: \(successCount) 个\n失败: \(failCount) 个"
+                //showingAlert = true
+            }
+        }
     }
     
     private func handleBatchDownload() {
@@ -1573,6 +1610,7 @@ struct MainChatStorage: View {
         // 2. 遍历列表，提交待处理任务
         var count = 0
         let currentUserId = Int64(authService.currentUser?.userId ?? 0)
+        let currentUserName = String(authService.currentUser?.userName ?? "default")
         
         for item in transferList {
             // 只处理非“上传中”和非“已完成”的任务
@@ -1586,6 +1624,7 @@ struct MainChatStorage: View {
                         fileUrl: fileUrl,
                         targetDirId: item.targetDirId,
                         userId: currentUserId,
+                        userName: currentUserName,
                         fileSize: item.size,
                         directoryName: item.directoryName,
                         progress: 0.0
@@ -1629,9 +1668,10 @@ struct MainChatStorage: View {
                 
                 // 获取当前用户ID (从全局认证服务)
                 let currentUserId = Int64(authService.currentUser?.userId ?? 0)
+                let currentUserName = String(authService.currentUser?.userName ?? "default")
                 
                 
-                // 构建 TransferTask
+                // 构建 TransferTaskd
                 // 构建 TransferTask
                 let task = StorageTransferTask(
                     id: item.id,
@@ -1639,6 +1679,7 @@ struct MainChatStorage: View {
                     fileUrl: fileUrl,
                     targetDirId: item.targetDirId,
                     userId: currentUserId,
+                    userName: currentUserName,
                     fileSize: item.size,
                     directoryName: item.directoryName,
                     progress: 0.0

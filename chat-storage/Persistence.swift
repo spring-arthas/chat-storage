@@ -84,6 +84,7 @@ class PersistenceManager {
         fileSize: Int64? = nil,
         targetDirId: Int64? = nil,
         userId: Int32? = nil,
+        userName: String? = "default",
         status: String? = nil,
         progress: Double? = nil,
         uploadedBytes: Int64? = nil,
@@ -116,6 +117,7 @@ class PersistenceManager {
             if let fileSize = fileSize { entity.fileSize = fileSize }
             if let targetDirId = targetDirId { entity.targetDirId = targetDirId }
             if let userId = userId { entity.userId = userId }
+            if let userName = userName { entity.userName = userName }
             if let status = status { entity.status = status }
             if let progress = progress { entity.progress = progress }
             if let uploadedBytes = uploadedBytes { entity.uploadedBytes = uploadedBytes }

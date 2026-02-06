@@ -416,6 +416,7 @@ class DirectoryService: ObservableObject {
                 fileUrl: url,
                 targetDirId: entity.targetDirId,
                 userId: Int64(entity.userId),
+                userName: entity.userName ?? "",
                 fileSize: entity.fileSize,
                 directoryName: "/", // 暂时无法获取目录名，或者需要存库
                 progress: progress
@@ -549,6 +550,7 @@ class FileTransferService: ObservableObject {
         fileUrl: URL,
         targetDirId: Int64,
         userId: Int32,
+        userName: String,
         taskId: String,
         progressHandler: ((Double, String) -> Void)? = nil
     ) async throws {
@@ -576,6 +578,7 @@ class FileTransferService: ObservableObject {
             fileSize: fileSize,
             targetDirId: targetDirId,
             userId: userId,
+            userName: userName,
             status: "Waiting",
             progress: 0.0,
             uploadedBytes: 0,
@@ -601,6 +604,7 @@ class FileTransferService: ObservableObject {
             fileType: fileType,
             dirId: targetDirId,
             userId: userId,
+            userName: userName,
             taskId: taskId
         )
         
@@ -615,6 +619,7 @@ class FileTransferService: ObservableObject {
             "fileType": fileType,
             "dirId": targetDirId,
             "userId": userId,
+            "userName": userName,
             "taskId": taskId
         ]
         
@@ -830,6 +835,7 @@ struct FileMetaRequest: Codable {
     let fileType: String
     let dirId: Int64
     let userId: Int32
+    let userName: String
     let taskId: String // 新增: 客户端传递的任务ID
 }
 
@@ -1020,6 +1026,7 @@ class TransferTaskManager: ObservableObject {
                     fileUrl: task.fileUrl,
                     targetDirId: task.targetDirId,
                     userId: Int32(task.userId),
+                    userName: task.userName,
                     taskId: task.id.uuidString,
                     progressHandler: { progress, speed in
                         // 回到主线程更新进度
@@ -1117,6 +1124,7 @@ struct StorageTransferTask {
     let fileUrl: URL
     let targetDirId: Int64
     let userId: Int64
+    let userName: String
     let fileSize: Int64
     let directoryName: String
     let progress: Double

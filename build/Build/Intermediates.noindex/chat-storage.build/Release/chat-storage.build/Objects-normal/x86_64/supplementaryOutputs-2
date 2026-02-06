@@ -1,16 +1,8 @@
 "/Users/hljy/macProjects/chat-storage/chat-storage/MainChatStorage.swift":
-<<<<<<< HEAD
-  swiftsourceinfo: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/chat_storage.swiftsourceinfo"
-  dependencies: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/chat-storage-master.d"
-  swiftmodule: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/chat_storage.swiftmodule"
-=======
-  abi-baseline-json: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/chat_storage.abi.json"
-  swiftsourceinfo: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/chat_storage.swiftsourceinfo"
-  swiftmodule: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/chat_storage.swiftmodule"
   diagnostics: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/chat-storage-master.dia"
-  dependencies: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/chat-storage-master.d"
->>>>>>> 20d54ff2774bce71f16ba7bf75bf934607403edb
-  objc-header: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/chat_storage-Swift.h"
+  swiftsourceinfo: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/chat_storage.swiftsourceinfo"
+  swiftmodule: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/chat_storage.swiftmodule"
   swiftdoc: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/chat_storage.swiftdoc"
+  dependencies: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/chat-storage-master.d"
   abi-baseline-json: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/chat_storage.abi.json"
-  diagnostics: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/chat-storage-master.dia"
+  objc-header: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/chat_storage-Swift.h"

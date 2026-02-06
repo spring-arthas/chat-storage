@@ -5,63 +5,6 @@
 	<key>logFormatVersion</key>
 	<integer>10</integer>
 	<key>logs</key>
-	<dict>
-<<<<<<< HEAD
-		<key>68E7550D-9DFD-4CF2-97D8-01A0A7B89481</key>
-=======
-		<key>77ECE4EE-B095-4224-968C-C62BD90BEECD</key>
->>>>>>> 20d54ff2774bce71f16ba7bf75bf934607403edb
-		<dict>
-			<key>className</key>
-			<string>IDECommandLineBuildLog</string>
-			<key>documentTypeString</key>
-			<string>&lt;nil&gt;</string>
-			<key>domainType</key>
-			<string>Xcode.IDEActivityLogDomainType.BuildLog</string>
-			<key>fileName</key>
-<<<<<<< HEAD
-			<string>68E7550D-9DFD-4CF2-97D8-01A0A7B89481.xcactivitylog</string>
-=======
-			<string>77ECE4EE-B095-4224-968C-C62BD90BEECD.xcactivitylog</string>
->>>>>>> 20d54ff2774bce71f16ba7bf75bf934607403edb
-			<key>hasPrimaryLog</key>
-			<true/>
-			<key>primaryObservable</key>
-			<dict>
-				<key>highLevelStatus</key>
-<<<<<<< HEAD
-				<string>E</string>
-=======
-				<string>W</string>
->>>>>>> 20d54ff2774bce71f16ba7bf75bf934607403edb
-			</dict>
-			<key>schemeIdentifier-containerName</key>
-			<string>chat-storage project</string>
-			<key>schemeIdentifier-schemeName</key>
-			<string>chat-storage</string>
-			<key>schemeIdentifier-sharedScheme</key>
-			<integer>1</integer>
-			<key>signature</key>
-			<string>Building project chat-storage with scheme chat-storage and configuration Release</string>
-			<key>timeStartedRecording</key>
-<<<<<<< HEAD
-			<real>791887866.38204396</real>
-			<key>timeStoppedRecording</key>
-			<real>791887871.59384406</real>
-			<key>title</key>
-			<string>Building project chat-storage with scheme chat-storage and configuration Release</string>
-			<key>uniqueIdentifier</key>
-			<string>68E7550D-9DFD-4CF2-97D8-01A0A7B89481</string>
-=======
-			<real>791880037.68724406</real>
-			<key>timeStoppedRecording</key>
-			<real>791880080.97685099</real>
-			<key>title</key>
-			<string>Building project chat-storage with scheme chat-storage and configuration Release</string>
-			<key>uniqueIdentifier</key>
-			<string>77ECE4EE-B095-4224-968C-C62BD90BEECD</string>
->>>>>>> 20d54ff2774bce71f16ba7bf75bf934607403edb
-		</dict>
-	</dict>
+	<dict/>
 </dict>
 </plist>

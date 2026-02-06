@@ -48,6 +48,17 @@ struct chat_storageApp: App {
                     }
                 }
             }
+            .onChange(of: isLoggedIn) { newValue in
+                if newValue {
+                    // 登录成功后，延迟执行居中，确保窗口尺寸调整已完成
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        if let window = NSApplication.shared.windows.first {
+                            window.center()
+                            window.makeKeyAndOrderFront(nil)
+                        }
+                    }
+                }
+            }
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(isLoggedIn ? .contentMinSize : .contentSize)

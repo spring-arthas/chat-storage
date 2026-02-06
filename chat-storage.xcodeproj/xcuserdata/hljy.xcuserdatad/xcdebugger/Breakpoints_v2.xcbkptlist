@@ -14,9 +14,25 @@
             filePath = "chat-storage/Services/DirectoryService.swift"
             startingColumnNumber = "9223372036854775807"
             endingColumnNumber = "9223372036854775807"
-            startingLineNumber = "624"
-            endingLineNumber = "624"
-            landmarkName = "uploadFile(fileUrl:targetDirId:userId:taskId:progressHandler:)"
+            startingLineNumber = "629"
+            endingLineNumber = "629"
+            landmarkName = "uploadFile(fileUrl:targetDirId:userId:userName:taskId:progressHandler:)"
+            landmarkType = "7">
+         </BreakpointContent>
+      </BreakpointProxy>
+      <BreakpointProxy
+         BreakpointExtensionID = "Xcode.Breakpoint.FileBreakpoint">
+         <BreakpointContent
+            uuid = "2A854C18-1BB5-4386-8448-589BC306F0FF"
+            shouldBeEnabled = "No"
+            ignoreCount = "0"
+            continueAfterRunningActions = "No"
+            filePath = "chat-storage/Services/DirectoryService.swift"
+            startingColumnNumber = "9223372036854775807"
+            endingColumnNumber = "9223372036854775807"
+            startingLineNumber = "717"
+            endingLineNumber = "717"
+            landmarkName = "sendFileData(fileUrl:offset:taskId:fileSize:progressHandler:)"
             landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>

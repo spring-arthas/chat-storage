@@ -2,7 +2,7 @@
 //  TransferTaskEntity+CoreDataProperties.swift
 //  
 //
-//  Created by HLJY on 2026/2/4.
+//  Created by HLJY on 2026/2/6.
 //
 //  This file was automatically generated and should not be edited.
 //
@@ -28,6 +28,7 @@ extension TransferTaskEntity {
     @NSManaged public var timestamp: Date?
     @NSManaged public var uploadedBytes: Int64
     @NSManaged public var userId: Int32
+    @NSManaged public var userName: String?
 
 }
 

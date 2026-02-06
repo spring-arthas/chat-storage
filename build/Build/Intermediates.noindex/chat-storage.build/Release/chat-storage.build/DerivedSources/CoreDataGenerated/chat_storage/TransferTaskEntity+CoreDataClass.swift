@@ -2,7 +2,7 @@
 //  TransferTaskEntity+CoreDataClass.swift
 //  
 //
-//  Created by HLJY on 2026/2/4.
+//  Created by HLJY on 2026/2/6.
 //
 //  This file was automatically generated and should not be edited.
 //

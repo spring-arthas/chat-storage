@@ -334,6 +334,7 @@ SWIFT_CLASS_NAMED("TransferTaskEntity")
 @property (nonatomic, copy) NSDate * _Nullable timestamp;
 @property (nonatomic) int64_t uploadedBytes;
 @property (nonatomic) int32_t userId;
+@property (nonatomic, copy) NSString * _Nullable userName;
 @end
 
 #endif
