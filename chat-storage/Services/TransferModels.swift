@@ -89,7 +89,7 @@ public class TransferTaskManager: ObservableObject {
     // MARK: - Private Properties
     
     /// 最大并发数 (根据CPU核心数动态调整，最少4个)
-    private let maxConcurrentTasks = max(4, ProcessInfo.processInfo.processorCount)
+    private let maxConcurrentTasks = 5 // max(4, ProcessInfo.processInfo.processorCount)
     
     /// 正在执行的任务
     private var activeTasks: [UUID: Task<Void, Never>] = [:]

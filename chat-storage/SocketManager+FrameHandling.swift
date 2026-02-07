@@ -109,6 +109,19 @@ extension SocketManager {
         return try await sendFrameAndWait(frame, expectingOneOf: [responseType], timeout: timeout)
     }
     
+    /// 注册流式帧处理器
+    /// - Parameters:
+    ///   - types: 关注的帧类型集合
+    ///   - handler: 处理回调，返回 true 继续监听，返回 false 停止监听当前类型
+    func registerStreamHandler(for types: Set<FrameTypeEnum>, handler: @escaping (Frame) -> Bool) {
+        continuationLock.lock()
+        defer { continuationLock.unlock() }
+        
+        for type in types {
+            streamHandlers[type] = handler
+        }
+    }
+    
     /// 启动接收循环（在独立线程中运行，通过 StreamDelegate 回调触发数据读取）
     func startReceiveLoop() {
         guard !isReceiving else { 
@@ -223,11 +236,14 @@ extension SocketManager {
         // }
     }
     
-    /// 恢复等待的 continuation
+    /// 恢复等待的 continuation 或调用流式处理器
     private func resumeContinuation(for frame: Frame) {
-        self.continuationLock.lock()
-        defer { self.continuationLock.unlock() }
+        // 先取出 Handler (避免锁内执行回调)
+        var streamHandler: ((Frame) -> Bool)? = nil
         
+        self.continuationLock.lock()
+        
+        // 1. 优先检查一次性等待 (Request-Response)
         if let id = self.continuationTypeMap[frame.type],
            let continuation = self.activeContinuations.removeValue(forKey: id) {
             
@@ -237,12 +253,32 @@ extension SocketManager {
                 self.continuationTypeMap.removeValue(forKey: key)
             }
             
+            self.continuationLock.unlock()
             continuation.resume(returning: frame)
-        } else {
-            // 未找到对应的等待者，可能是主动推送的消息
-            print("⚠️ 收到未预期的帧类型: \(frame.type.description) (No waiter found)")
-            // 这里可以添加对未预期帧的全局处理逻辑
+            return
         }
+        
+        // 2. 检查流式处理器
+        if let handler = self.streamHandlers[frame.type] {
+            streamHandler = handler
+        }
+        
+        self.continuationLock.unlock()
+        
+        // 执行流式处理
+        if let handler = streamHandler {
+            let shouldContinue = handler(frame)
+            if !shouldContinue {
+                self.continuationLock.lock()
+                self.streamHandlers.removeValue(forKey: frame.type)
+                self.continuationLock.unlock()
+            }
+            return
+        }
+        
+        // 3. 未找到对应的等待者
+        // 可能是主动推送的消息，或者之前的 wait 已经超时被移除了
+        print("⚠️ 收到未预期的帧类型: \(frame.type.description) (No waiter found)")
     }
     
     /// 打印帧的可视化数据（用于调试）

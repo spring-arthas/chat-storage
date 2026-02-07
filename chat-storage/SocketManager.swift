@@ -65,6 +65,10 @@ class SocketManager: NSObject, ObservableObject {
     /// 活动的 Continuation (请求ID -> Continuation)
     internal var activeContinuations: [UUID: CheckedContinuation<Frame, Error>] = [:]
     
+    /// 流式处理回调 (帧类型 -> 处理闭包)
+    /// 用于处理如下载时的连续数据帧，闭包返回 true 表示继续处理，false 表示结束
+    internal var streamHandlers: [FrameTypeEnum: (Frame) -> Bool] = [:]
+    
     /// 响应队列锁
     internal let continuationLock = NSLock()
     
