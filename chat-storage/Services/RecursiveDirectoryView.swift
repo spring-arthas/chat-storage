@@ -11,6 +11,7 @@ struct RecursiveDirectoryView: View {
     var onMove: (DirectoryItem) -> Void
     var onRename: (DirectoryItem) -> Void
     var onDelete: (DirectoryItem) -> Void
+    var onUpload: (DirectoryItem) -> Void
     
     var body: some View {
         ForEach(nodes) { item in
@@ -21,7 +22,8 @@ struct RecursiveDirectoryView: View {
                 onCreate: onCreate,
                 onMove: onMove,
                 onRename: onRename,
-                onDelete: onDelete
+                onDelete: onDelete,
+                onUpload: onUpload
             )
         }
     }
@@ -37,6 +39,7 @@ struct DirectoryNodeView: View {
     var onMove: (DirectoryItem) -> Void
     var onRename: (DirectoryItem) -> Void
     var onDelete: (DirectoryItem) -> Void
+    var onUpload: (DirectoryItem) -> Void
     
     var isExpanded: Binding<Bool> {
         Binding(
@@ -59,7 +62,8 @@ struct DirectoryNodeView: View {
                         onCreate: onCreate,
                         onMove: onMove,
                         onRename: onRename,
-                        onDelete: onDelete
+                        onDelete: onDelete,
+                        onUpload: onUpload
                     )
                 } label: {
                     nodeContent
@@ -91,8 +95,9 @@ struct DirectoryNodeView: View {
         }
         .contextMenu {
             Button("新建") { onCreate(item) }
-            Button("移动") { onMove(item) }
+            Button("选择") { selectedId = item.id }
             Button("重命名") { onRename(item) }
+            Button("上传") { onUpload(item) }
             Divider()
             Button("删除") { onDelete(item) }
         }

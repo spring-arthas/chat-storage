@@ -43,6 +43,13 @@ public class FileDownloadService {
         
         print("⬇️ [下载] 开始下载文件 ID: \(fileId), TaskID: \(taskId), Offset: \(startOffset)")
         
+        // 0.以此确保有权限写入（针对自定义目录）
+        let accessGranted = DownloadDirectoryManager.shared.startAccess()
+        // 无论成功与否，任务结束时都要停止访问
+        defer {
+            DownloadDirectoryManager.shared.stopAccess()
+        }
+        
         // 1. 准备本地文件写入
         let fileManager = FileManager.default
         let fileDir = localUrl.deletingLastPathComponent()

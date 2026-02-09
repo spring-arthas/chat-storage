@@ -10,7 +10,7 @@ import Combine
 
 /// 全局 Socket 连接管理器
 /// 负责维护与服务器的 TCP Socket 长连接
-class SocketManager: NSObject, ObservableObject {
+public class SocketManager: NSObject, ObservableObject {
     
     // MARK: - Singleton
     
@@ -605,7 +605,7 @@ class SocketManager: NSObject, ObservableObject {
 
 extension SocketManager: StreamDelegate {
     
-    func stream(_ aStream: Stream, handle eventCode: Stream.Event) {
+    public func stream(_ aStream: Stream, handle eventCode: Stream.Event) {
         switch eventCode {
         case .openCompleted:
             print("✅ Stream 打开完成")

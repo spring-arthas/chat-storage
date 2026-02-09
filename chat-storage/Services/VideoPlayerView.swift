@@ -225,7 +225,8 @@ class VideoResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
         
         downloadTask = Task {
             do {
-                _ = try await directoryService.startStreamDownload(fileId: fileId, delegate: self)
+                //directoryService.test()
+                //_ = try await directoryService.startVideoStreaming(fileId: fileId, delegate: self)
                 print("✅ [Loader] 任务正常结束")
             } catch {
                 print("❌ [Loader] 任务失败: \(error)")
@@ -362,4 +363,19 @@ extension VideoResourceLoader: VideoStreamLoaderDelegate {
             self?.pendingRequests.removeAll()
         }
     }
+}
+
+class MockDelegate: VideoStreamLoaderDelegate {
+    func didReceiveContentInfo(totalSize: Int64, mimeType: String) {}
+    func didReceiveVideoData(_ data: Data, range: Range<Int64>) {}
+    func didFinishLoading() {}
+    func didFail(with error: Error) {}
+}
+
+func testCompile(ds: DirectoryService) async {
+//    let delegate = MockDelegate()
+//    try? await ds.startVideoStreaming(fileId: 123, delegate: delegate)
+//    await ds.test()
+//    await ds.test2(id: 123)
+//    await ds.test3(delegate: delegate)
 }

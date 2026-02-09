@@ -8,10 +8,14 @@
 import Foundation
 import Combine
 import CommonCrypto
+import AppKit
 
 /// 目录服务 - 处理目录加载和解析
 @MainActor
 class DirectoryService: ObservableObject {
+    func test() { print("Test") }
+    func test2(id: Int64) {}
+    func test3(delegate: VideoStreamLoaderDelegate) {}
     
     private let socketManager: SocketManager
     
@@ -251,6 +255,61 @@ class DirectoryService: ObservableObject {
         }
     }
 
+    // MARK: - File Detail (Merged)
+
+    /// 获取文件详情 (0x42)
+    /// - Parameter fileId: 文件ID
+    /// - Returns: 文件详情对象
+    /// - Throws: 网络或服务端错误
+    func fetchFileDetail(fileId: Int64) async throws -> FileDto {
+        print("🔍 请求文件详情: fileId=\(fileId)")
+        
+        // 构造请求字典
+        let requestDict: [String: Any] = ["fileId": fileId]
+        let jsonData = try JSONSerialization.data(withJSONObject: requestDict)
+        
+        // 构造请求帧 (0x42)
+        let frame = Frame(
+            type: .fileDetailReq,
+            data: jsonData,
+            flags: 0x00
+        )
+        
+        // 发送并等待响应 (0x43)
+        let responseFrame = try await socketManager.sendFrameAndWait(
+            frame,
+            expecting: .fileResponse,
+            timeout: 10.0
+        )
+        
+        // 解析响应
+        guard let dict = try? FrameParser.decodeAsDictionary(responseFrame) else {
+            throw DirectoryError.invalidResponse("无法解析响应为字典")
+        }
+        
+        if let code = dict["code"] as? Int, code != 200 {
+            let message = dict["message"] as? String ?? "未知错误"
+            throw DirectoryError.serverError(code: code, message: message)
+        }
+        
+        guard let data = dict["data"] else {
+             throw DirectoryError.invalidResponse("响应数据为空")
+        }
+        
+        return try parseFileDto(data)
+    }
+
+    /// 辅助解析 FileDto
+    private func parseFileDto(_ data: Any) throws -> FileDto {
+        let jsonData: Data
+        if let dataDict = data as? [String: Any] {
+            jsonData = try JSONSerialization.data(withJSONObject: dataDict)
+        } else {
+             throw DirectoryError.invalidResponse("数据格式错误")
+        }
+        
+        return try JSONDecoder().decode(FileDto.self, from: jsonData)
+    }
     /// 删除文件 (0x41)
     /// - Parameter fileId: 文件ID
     /// - Throws: 网络或服务端错误
@@ -410,8 +469,22 @@ class DirectoryService: ObservableObject {
             
             print("🔄 恢复任务 [\(fileName)]: Progress DB=\(entity.progress), Bytes=\(entity.uploadedBytes)/\(entity.fileSize) -> Final=\(progress)")
             
+            
+            // Determine Task Type based on MD5 prefix (Trick used in FileDownloadService)
+            var taskType: TransferTaskType = .upload
+            var remoteFileId: Int64 = 0
+            
+            if let md5 = entity.md5, md5.hasPrefix("DOWNLOAD_FILE_ID_") {
+                taskType = .download
+                let prefix = "DOWNLOAD_FILE_ID_"
+                if let idSnippet = md5.split(separator: "_").last, let id = Int64(idSnippet) {
+                   remoteFileId = id
+                }
+            }
+
             let task = StorageTransferTask(
                 id: uuid,
+                taskType: taskType,
                 name: fileName,
                 fileUrl: url,
                 targetDirId: entity.targetDirId,
@@ -419,6 +492,7 @@ class DirectoryService: ObservableObject {
                 userName: entity.userName ?? "",
                 fileSize: entity.fileSize,
                 directoryName: "/", // 暂时无法获取目录名，或者需要存库
+                remoteFileId: remoteFileId,
                 progress: progress
             )
             
@@ -510,6 +584,7 @@ struct PageResult<T: Codable>: Codable {
 enum DirectoryError: LocalizedError {
     case invalidResponse(String)
     case serverError(code: Int, message: String)
+    case invalidData // New case
     
     var errorDescription: String? {
         switch self {
@@ -517,6 +592,8 @@ enum DirectoryError: LocalizedError {
             return "响应数据无效: \(detail)"
         case .serverError(let code, let message):
             return "服务器错误 (\(code)): \(message)"
+        case .invalidData:
+            return "无效的数据"
         }
     }
 }
@@ -824,6 +901,101 @@ class FileTransferService: ObservableObject {
         
         return digest.map { String(format: "%02x", $0) }.joined()
     }
+    
+    // MARK: - Video Streaming
+    
+    /// 开始流式下载 (用于视频播放)
+    /// - Parameters:
+    ///   - fileId: 文件ID
+    ///   - delegate: 代理
+    public func startVideoStreaming(fileId: Int64, delegate: VideoStreamLoaderDelegate) async throws {
+        print("🎥 [Stream] 请求视频流: \(fileId)")
+        
+        let fileIdInt = Int64(fileId)
+        let taskId = UUID().uuidString
+        
+        // 1. 发送下载请求 (MetaFrame)
+        // 注意：视频流通常需要全量请求或者Range请求，这里简单起见请求从0开始
+        let request: [String: Any] = [
+            "fileId": fileIdInt,
+            "taskId": taskId,
+            "startOffset": 0
+        ]
+        
+        guard let requestData = try? JSONSerialization.data(withJSONObject: request) else {
+            throw DirectoryError.invalidData
+        }
+        
+        let requestFrame = Frame(type: .metaFrame, data: requestData, flags: 0x00)
+        try socketManager.sendFrame(requestFrame)
+        
+        // 2. 监听数据端
+        return try await withCheckedThrowingContinuation { continuation in
+            var receivedSize: Int64 = 0
+            
+            // 监听类型
+            let types: Set<FrameTypeEnum> = [.metaFrame, .dataFrame, .endFrame, .fileResponse, .ackFrame]
+            
+            socketManager.registerStreamHandler(for: types) { frame in
+                switch frame.type {
+                case .ackFrame, .metaFrame:
+                    if let jsonString = String(data: frame.data, encoding: .utf8),
+                       let data = jsonString.data(using: .utf8),
+                       let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        
+                        // 检查错误
+                        if let status = dict["status"] as? String, (status == "error" || status == "fail") {
+                             let msg = dict["message"] as? String ?? "未知错误"
+                             let err = DirectoryError.serverError(code: -1, message: msg)
+                             delegate.didFail(with: err)
+                             continuation.resume(throwing: err)
+                             return false
+                        }
+                        
+                        // 文件信息
+                        if let size = dict["fileSize"] as? Int64 {
+                            delegate.didReceiveContentInfo(totalSize: size, mimeType: "video/mp4")
+                            
+                            // 发送 Ready
+                            let readyAck: [String: Any] = ["taskId": taskId, "status": "ready"]
+                            if let readyData = try? JSONSerialization.data(withJSONObject: readyAck) {
+                                let readyFrame = Frame(type: .ackFrame, data: readyData, flags: 0x00)
+                                _ = self.socketManager.send(data: readyFrame.toBytes())
+                            }
+                        }
+                    }
+                    return true
+                    
+                case .dataFrame:
+                    let data = frame.data
+                    let range = receivedSize..<receivedSize + Int64(data.count)
+                    delegate.didReceiveVideoData(data, range: range)
+                    receivedSize += Int64(data.count)
+                    return true
+                    
+                case .endFrame:
+                    print("✅ [Stream] 视频流结束")
+                    delegate.didFinishLoading()
+                    continuation.resume()
+                    return false
+                    
+                case .fileResponse:
+                     if let dict = try? FrameParser.decodeAsDictionary(frame),
+                        let code = dict["code"] as? Int, code != 200 {
+                         let msg = dict["message"] as? String ?? "Stream Fail"
+                         let error = DirectoryError.serverError(code: code, message: msg)
+                         delegate.didFail(with: error)
+                         continuation.resume(throwing: error)
+                         return false
+                     }
+                     return true
+                     
+                default:
+                    return true
+                }
+            }
+        }
+    }
 }
 
 // MARK: - Data Models (Request/Response)
@@ -874,264 +1046,124 @@ enum FileTransferError: LocalizedError {
     }
 }
 
-// MARK: - TransferTaskManager (Merged)
-// Merged to resolve scope visibility issues.
 
-/// 传输任务管理器
-/// 负责管理文件上传/下载任务的并发执行、排队和状态更新
-@MainActor
-class TransferTaskManager: ObservableObject {
+
+
+
+// MARK: - DownloadDirectoryManager (Merged)
+// Moved here because the original file was not included in the Xcode project target.
+
+class DownloadDirectoryManager: ObservableObject {
+    static let shared = DownloadDirectoryManager()
     
-    // MARK: - Singleton
+    @Published var currentDownloadPath: String = {
+        let username = NSUserName()
+        return "/Users/\(username)/Downloads"
+    }()
     
-    static let shared = TransferTaskManager()
+    private let kBookmarkKey = "UserDownloadDirBookmark"
+    private var securityScopedURL: URL?
     
-    // MARK: - Published Properties
-    
-    /// 任务状态更新通知 (用于 UI 监听)
-    /// Key: TransferItem.id, Value: (Status, Progress, Speed)
-    @Published var taskUpdates: [UUID: (String, Double, String)] = [:]
-    
-    // MARK: - Private Properties
-    
-    /// 最大并发数 (根据CPU核心数动态调整，最少4个)
-    private let maxConcurrentTasks = max(4, ProcessInfo.processInfo.processorCount)
-    
-    /// 正在执行的任务
-    private var activeTasks: [UUID: Task<Void, Never>] = [:]
-    
-    /// 等待队列
-    private var pendingQueue: [StorageTransferTask] = []
-    
-    /// 任务映射表 (存储任务详情)
-    private var tasks: [UUID: StorageTransferTask] = [:]
-    
-    private init() {}
-    
-    // MARK: - Public Methods
-    
-    /// 提交任务
-    /// - Parameter task: 传输任务
-    func submit(task: StorageTransferTask) {
-        // 如果任务已存在，直接恢复
-        if tasks[task.id] != nil {
-            resume(id: task.id)
-            return
-        }
-        
-        tasks[task.id] = task
-        pendingQueue.append(task)
-        
-        scheduleNext()
+    private init() {
+        restoreBookmark()
     }
     
-    /// 暂停任务
-    /// - Parameter id: 任务ID
-    func pause(id: UUID) {
-        // 1. 如果在执行中，取消 Task
-        if let runningTask = activeTasks[id] {
-            runningTask.cancel()
-            activeTasks.removeValue(forKey: id)
-            updateTaskStatus(id: id, status: "暂停")
-            // --- Persistence Pause ---
-            PersistenceManager.shared.updateStatus(taskId: id.uuidString, status: "Paused")
+    /// 获取当前的下载目录 (如果是默认则返回系统Downloads，如果是自定义则返回自定义URL)
+    func getDownloadDirectory() -> URL {
+        if let url = securityScopedURL {
+            return url
         }
-        
-        // 2. 如果在等待队列中，移除
-        if let index = pendingQueue.firstIndex(where: { $0.id == id }) {
-            pendingQueue.remove(at: index)
-            updateTaskStatus(id: id, status: "暂停")
-            // --- Persistence Pause ---
-            PersistenceManager.shared.updateStatus(taskId: id.uuidString, status: "Paused")
+        if let url = securityScopedURL {
+            return url
         }
-        
-        // 调度下一个
-        scheduleNext()
+        let username = NSUserName()
+        return URL(fileURLWithPath: "/Users/\(username)/Downloads")
     }
     
-    /// 恢复任务 (重新提交)
-    /// - Parameter id: 任务ID
-    func resume(id: UUID) {
-        guard let task = tasks[id] else {
-            return
+    /// 选择新的下载目录
+    @MainActor
+    func selectDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "选择下载存储目录"
+        
+        if panel.runModal() == .OK, let url = panel.url {
+            saveBookmark(for: url)
         }
-        
-        // 如果已经在执行或等待中，忽略
-        if activeTasks[id] != nil || pendingQueue.contains(where: { $0.id == id }) {
-            return
-        }
-        
-        pendingQueue.append(task)
-        updateTaskStatus(id: id, status: "等待上传")
-        
-        scheduleNext()
     }
     
-    /// 取消任务 (彻底移除)
-    /// - Parameter id: 任务ID
-    func cancel(id: UUID) {
-        pause(id: id)
-        
-        tasks.removeValue(forKey: id)
-        taskUpdates.removeValue(forKey: id)
+    /// 开始访问安全资源 (在进行文件读写前调用)
+    /// 返回 true 表示成功获取权限或不需要权限(默认目录)，false 表示失败
+    func startAccess() -> Bool {
+        // 如果是默认路径，不需要申请权限（前提是有 entitlements）
+        // 实际上，只要 no securityScopedURL，就说明是默认路径。
+        // 但为了保险，我们检查是否为 nil
+        guard let url = securityScopedURL else { return true } 
+        return url.startAccessingSecurityScopedResource()
+    }
+    
+    /// 停止访问安全资源
+    func stopAccess() {
+        securityScopedURL?.stopAccessingSecurityScopedResource()
     }
     
     // MARK: - Private Methods
     
-    /// 调度下一个任务
-    private func scheduleNext() {
-        // 检查并发限制
-        guard activeTasks.count < maxConcurrentTasks else { return }
-        
-        // 检查是否有等待任务
-        guard !pendingQueue.isEmpty else { return }
-        
-        // 取出第一个任务
-        let task = pendingQueue.removeFirst()
-        
-        // 启动任务
-        startTask(task)
+    private func saveBookmark(for url: URL) {
+        do {
+            // 创建安全范围书签
+            let bookmarkData = try url.bookmarkData(
+                options: .withSecurityScope,
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+            
+            // 保存到 UserDefaults
+            UserDefaults.standard.set(bookmarkData, forKey: kBookmarkKey)
+            
+            // 更新当前 URL
+            self.securityScopedURL = url
+            self.currentDownloadPath = url.path
+            
+            print("✅ [DownloadManager] 新下载目录已保存: \(url.path)")
+            
+        } catch {
+            print("❌ [DownloadManager] 保存书签失败: \(error)")
+        }
     }
     
-    /// 启动单个任务
-    private func startTask(_ task: StorageTransferTask) {
-        print("🚀 启动任务: \(task.name)")
-        updateTaskStatus(id: task.id, status: "上传中")
+    private func restoreBookmark() {
+        guard let data = UserDefaults.standard.data(forKey: kBookmarkKey) else {
+            return
+        }
         
-        let executionTask = Task {
-            // 创建新的 SocketManager 实例
-            // 注意：SocketManager 应该是线程安全的，或者我们需要确保它可以在后台线程使用
-            let socketManager = SocketManager()
+        var isStale = false
+        do {
+            let url = try URL(
+                resolvingBookmarkData: data,
+                options: .withSecurityScope,
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            )
             
-            do {
-                
-                // 获取当前主连接的 Host (从 SocketManager.shared 获取，假设它是线程安全的或我们只读)
-                let (currentHost, _) = SocketManager.shared.getCurrentServer()
-                
-                // 切换到数据端口
-                socketManager.switchConnection(host: currentHost, port: 10087)
-                
-                // 等待连接建立
-                var attempts = 0
-                while socketManager.connectionState != .connected {
-                    // if attempts > 300 { throw TransferError.connectionFailed } // 30秒超时 (300 * 0.1s)
-                    try await Task.sleep(nanoseconds: 100_000_000) // 0.1s
-                    attempts += 1
-                }
-                
-                // 执行上传逻辑
-                let service = FileTransferService(socketManager: socketManager)
-                
-                try await service.uploadFile(
-                    fileUrl: task.fileUrl,
-                    targetDirId: task.targetDirId,
-                    userId: Int32(task.userId),
-                    userName: task.userName,
-                    taskId: task.id.uuidString,
-                    progressHandler: { progress, speed in
-                        // 回到主线程更新进度
-                        Task { @MainActor in
-                            self.updateTaskProgress(id: task.id, progress: progress, speed: speed)
-                        }
-                    }
-                )
-                
-                // 任务完成 (回到主线程)
-                await MainActor.run {
-                    self.updateTaskStatus(id: task.id, status: "已完成", progress: 1.0)
-                }
-                socketManager.disconnect()
-                
-            } catch is CancellationError {
-                print("⏸️ 任务已暂停 [\(task.name)]")
-                await MainActor.run {
-                    self.updateTaskStatus(id: task.id, status: "已暂停")
-                }
-                socketManager.disconnect()
-                
-            } catch {
-                print("========== ❌ 任务处理异常 ==========")
-                print("📋 任务 ID: \(task.id)")
-                print("📄 文件名称: \(task.name)")
-                print("📂 目标路径: \(task.targetDirId)")
-                print("❌ 错误信息: \(error.localizedDescription)")
-                print("🔍 详细错误: \(error)")
-                print("📚 堆栈信息:\n\(Thread.callStackSymbols.joined(separator: "\n"))")
-                print("======================================")
-                await MainActor.run {
-                    self.updateTaskStatus(id: task.id, status: "失败")
-                }
-                socketManager.disconnect()
+            if isStale {
+                print("⚠️ [DownloadManager] 书签已过期，重置为默认")
+                UserDefaults.standard.removeObject(forKey: kBookmarkKey)
+                // 重置为默认路径
+                let username = NSUserName()
+                self.currentDownloadPath = "/Users/\(username)/Downloads"
+                return
             }
             
-            // 任务结束清理 (回到主线程)
-            await MainActor.run {
-                self.activeTasks.removeValue(forKey: task.id)
-                self.scheduleNext()
-            }
+            self.securityScopedURL = url
+            self.currentDownloadPath = url.path
+            print("✅ [DownloadManager] 恢复下载目录成功: \(url.path)")
+            
+        } catch {
+            print("❌ [DownloadManager] 解析书签失败: \(error)")
         }
-        
-        activeTasks[task.id] = executionTask
-    }
-    
-    // MARK: - Status Updates
-    
-    private func updateTaskStatus(id: UUID, status: String, progress: Double? = nil) {
-        var current = self.taskUpdates[id] ?? ("", 0.0, "")
-        current.0 = status
-        if let p = progress {
-            current.1 = p
-        }
-        self.taskUpdates[id] = current
-    }
-    
-    private func updateTaskProgress(id: UUID, progress: Double, speed: String = "") {
-        var current = self.taskUpdates[id] ?? ("", 0.0, "")
-        current.1 = progress
-        if !speed.isEmpty {
-            current.2 = speed
-        }
-        self.taskUpdates[id] = current
-    }
-    
-    /// 恢复(还原)任务 - 用于从持久化存储加载
-    func restore(task: StorageTransferTask, status: String, progress: Double) {
-        // 存入任务表
-        tasks[task.id] = task
-        
-        // 恢复状态 display logic
-        let displayStatus = (status == "Uploading" || status == "Waiting") ? "已暂停" : status
-        
-        updateTaskStatus(id: task.id, status: displayStatus, progress: progress)
-        
-        // 如果是 Paused/Failed，不需要放入 active/pending，因为已经在 tasks 里了
-        // 如果要自动开始，可以在这里 append to pendingQueue 并 call scheduleNext()
-        // 目前策略：只恢复显示，不自动开始
-    }
-    
-    /// 获取所有任务 (用于 UI 同步)
-    func getAllTasks() -> [StorageTransferTask] {
-        return Array(self.tasks.values)
     }
 }
-
-// MARK: - Shared Models
-
-/// 传输任务模型
-struct StorageTransferTask {
-    let id: UUID
-    let name: String
-    let fileUrl: URL
-    let targetDirId: Int64
-    let userId: Int64
-    let userName: String
-    let fileSize: Int64
-    let directoryName: String
-    let progress: Double
-}
-
-enum TransferError: Error {
-    case connectionFailed
-}
-
-

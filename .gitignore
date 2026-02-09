@@ -1,0 +1,4 @@
+build/
+*.dmg
+*.xcarchive
+*.dSYM

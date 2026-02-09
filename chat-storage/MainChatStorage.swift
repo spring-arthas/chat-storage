@@ -16,6 +16,7 @@ struct MainChatStorage: View {
     @EnvironmentObject var socketManager: SocketManager
     @EnvironmentObject var authService: AuthenticationService
     @StateObject private var transferManager = TransferTaskManager.shared
+    @StateObject private var downloadDirectoryManager = DownloadDirectoryManager.shared
     
     // MARK: - Bindings
     
@@ -127,6 +128,11 @@ struct MainChatStorage: View {
 
     /// 主题模式状态 (持久化)
     @AppStorage("isDarkMode") private var isDarkMode = true
+    
+    // MARK: - Detail View State
+    @State private var selectedFileId: Int64?
+    @State private var fileDetail: FileDto?
+    @State private var isLoadingDetail = false
     
     // MARK: - Body
     
@@ -394,6 +400,7 @@ struct MainChatStorage: View {
                         self.newDirName = ""
                         self.showingCreateDirDialog = true
                     },
+                    onMove: { _ in },
                     onRename: { item in 
                         self.renameTargetId = item.id
                         self.renameValue = item.fileName
@@ -473,6 +480,29 @@ struct MainChatStorage: View {
             .disabled(selectedFiles.isEmpty)
 
 
+            
+            // 下载目录配置 (移到工具栏)
+            HStack(spacing: 8) {
+                Text("下载至:")
+                    .font(.caption)
+                    .foregroundColor(.gray)
+                
+                Text(downloadDirectoryManager.currentDownloadPath)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 150)
+                    .help(downloadDirectoryManager.currentDownloadPath)
+                
+                Button("更改") {
+                    downloadDirectoryManager.selectDirectory()
+                }
+                .font(.caption)
+                .controlSize(.small)
+            }
+            .padding(.horizontal, 8)
+            .background(Color.secondary.opacity(0.05))
+            .cornerRadius(4)
             
             Spacer()
             
@@ -677,9 +707,15 @@ struct MainChatStorage: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(selectedFiles.contains(file.id) ? Color.accentColor.opacity(0.1) : Color.clear)
+        .background(
+            (selectedFileId == file.id) ? Color.accentColor.opacity(0.2) :
+            (selectedFiles.contains(file.id) ? Color.secondary.opacity(0.1) : Color.clear)
+        )
+        .contentShape(Rectangle()) // 确保点击区域覆盖整行
         .onTapGesture {
-            toggleSelection(file.id)
+            // 点击行：选中查看详情 (不触发批量选择)
+            self.selectedFileId = file.id
+            loadFileDetail(fileId: file.id)
         }
     }
     
@@ -710,7 +746,10 @@ struct MainChatStorage: View {
                     // 清除已完成的任务
                     let completedTasks = transferList.filter { $0.status == "已完成" }
                     for task in completedTasks {
+                        // 1. 从数据库彻底删除
                         PersistenceManager.shared.deleteTask(taskId: task.id.uuidString)
+                        // 2. 从内存管理器中移除 (停止更新并释放)
+                        transferManager.cancel(id: task.id)
                     }
                     
                     transferList.removeAll { $0.status == "已完成" }
@@ -1061,7 +1100,12 @@ struct MainChatStorage: View {
         } else if action == 2 {
             // 下载操作
             print("📥 准备下载文件: \(file.fileName)")
-            // TODO: 调用下载逻辑 (如果已有 downloadFile 方法)
+            // 修正属性访问: isFolder -> !isFile
+            if !file.isFile {
+                addLog("⚠️ 暂不支持文件夹下载")
+            } else {
+                submitDownloadTask(for: file)
+            }
         }
     }
     
@@ -1109,6 +1153,7 @@ struct MainChatStorage: View {
         }
     }
     
+    // 批量循环下载
     private func handleBatchDelete() {
         // 1. 如果没有选中的文件，直接返回，不做任何事情
         if selectedFiles.isEmpty {
@@ -1162,20 +1207,69 @@ struct MainChatStorage: View {
         }
     }
     
+    // 批量循环下载
     private func handleBatchDownload() {
-        let count = selectedFiles.count
-        print("批量下载: \(count) 个文件")
+        guard !selectedFiles.isEmpty else { return }
         
-        // 获取选中的行号 (index + 1)
-        let selectedIndices = fileList.enumerated()
-            .filter { selectedFiles.contains($0.element.id) }
-            .map { String($0.offset + 1) }
-            .joined(separator: ", ")
-            
-        alertMessage = "选择了以下行进行下载：\(selectedIndices)"
-        showingAlert = true
+        var count = 0
+        for id in selectedFiles {
+            // 优先在当前文件列表中查找 (最常用场景)
+            if let item = currentFiles.first(where: { $0.id == id }) {
+                if !item.isFile {
+                    addLog("⚠️ 暂不支持文件夹下载: \(item.fileName)")
+                    continue
+                }
+                submitDownloadTask(for: item)
+                count += 1
+            } 
+            // 如果没找到，再尝试在目录树中递归查找 (防御性)
+            else if let item = findDirectoryItem(id: id, nodes: directoryTree) {
+                if !item.isFile {
+                    addLog("⚠️ 暂不支持文件夹下载: \(item.fileName)")
+                    continue
+                }
+                submitDownloadTask(for: item)
+                count += 1
+            } else {
+                print("❌ 未在当前列表或目录树中找到文件 ID: \(id)")
+            }
+        }
         
-        addLog("批量下载 \(count) 个文件")
+        if count > 0 {
+            // 批量添加完成后，取消选择
+            selectedFiles.removeAll()
+            addLog("✅ 批量添加了 \(count) 个下载任务")
+        }
+    }
+    
+    /// 提交单个下载任务
+    private func submitDownloadTask(for item: DirectoryItem) {
+        let downloadDir = downloadDirectoryManager.getDownloadDirectory()
+        try? FileManager.default.createDirectory(at: downloadDir, withIntermediateDirectories: true, attributes: nil)
+        
+        let targetUrl = downloadDir.appendingPathComponent(item.fileName)
+        
+        // 获取当前用户ID
+        let currentUserId = Int64(authService.currentUser?.userId ?? 0)
+        let currentUserName = String(authService.currentUser?.userName ?? "default")
+        
+        let task = StorageTransferTask(
+            id: UUID(), // Explicitly provide ID
+            taskType: .download,
+            name: item.fileName,
+            fileUrl: targetUrl,
+            targetDirId: 0,
+            userId: currentUserId,
+            userName: currentUserName,
+            fileSize: item.fileSize ?? 0, // 修正属性访问: size -> fileSize
+            directoryName: "",
+            remoteFileId: item.id,
+            progress: 0.0,
+            status: "等待下载"
+        )
+        
+        transferManager.submit(task: task)
+        addLog("📥 已添加下载任务: \(item.fileName)")
     }
     
     private func generateFakeData() {
@@ -1346,9 +1440,127 @@ struct MainChatStorage: View {
                     .frame(minWidth: 150, maxWidth: .infinity)
                     .frame(width: geometry.size.width * 0.18)
                 
-                // 右侧主内容 (75%)
+                // 右侧主内容 (52%)
                 mainContent
                     .frame(minWidth: 300, maxWidth: .infinity)
+                
+                // 详情侧边栏 (30%)
+                detailSidebar
+                    .frame(minWidth: 200, maxWidth: .infinity)
+                    .frame(width: geometry.size.width * 0.3)
+            }
+        }
+    }
+    
+    // MARK: - File Detail Sidebar
+    
+    private var detailSidebar: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Text("文件详情")
+                    .font(.headline)
+                Spacer()
+                if isLoadingDetail {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+            .padding()
+            .background(Color(NSColor.controlBackgroundColor))
+            
+            Divider()
+            
+            if let detail = fileDetail {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        // File Icon & Name
+                        HStack(spacing: 15) {
+                            Image(systemName: detail.iconName)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .frame(width: 48, height: 48)
+                                .foregroundColor(.blue)
+                            
+                            Text(detail.fileName)
+                                .font(.title3)
+                                .bold()
+                                .lineLimit(2)
+                        }
+                        .padding(.top, 10)
+                        
+                        Divider()
+                        
+                        // Properties
+                        Group {
+                            DetailRow(label: "文件大小", value: detail.sizeString)
+                            DetailRow(label: "文件类型", value: detail.fileType.uppercased())
+                            DetailRow(label: "上传时间", value: detail.uploadTime)
+                            DetailRow(label: "所属目录", value: detail.directoryName)
+                            if let md5 = detail.md5, !md5.isEmpty {
+                                DetailRow(label: "MD5", value: md5)
+                            }
+                        }
+                        
+                        Spacer()
+                        
+                        // Actions
+                        HStack(spacing: 20) {
+                            Button(action: {
+                                if let item = directoryTree.first(where: { $0.id == detail.id }) ?? findDirectoryItem(id: detail.id, nodes: directoryTree) {
+                                     // 使用找到的 item (以获取完整的 DirectoryItem 结构)
+                                     // 或者临时构造一个 (只要包含下载所需信息)
+                                     submitDownloadTask(for: item)
+                                } else {
+                                     // Fallback: Construct from detail
+                                     let item = detail.toDirectoryItem()
+                                     submitDownloadTask(for: item)
+                                }
+                            }) {
+                                Label("下载", systemImage: "arrow.down.circle.fill")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .controlSize(.large)
+                            
+                            Button(action: {
+                                handleFileAction(detail.toDirectoryItem(), action: 1) // 1: Delete
+                            }) {
+                                Label("删除", systemImage: "trash.fill")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .controlSize(.large)
+                            // .role(.destructive) // macOS 12+ API, remove if targeting lower or just remove to fix build
+                        }
+                    }
+                    .padding()
+                }
+            } else {
+                VStack(spacing: 15) {
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.system(size: 48))
+                        .foregroundColor(.secondary)
+                    Text("选择文件查看详情")
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .background(Color(NSColor.windowBackgroundColor))
+    }
+    
+    // Helper View for Detail
+    private struct DetailRow: View {
+        let label: String
+        let value: String
+        
+        var body: some View {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(label)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Text(value)
+                    .font(.body)
+                    .textSelection(.enabled)
             }
         }
     }
@@ -1379,7 +1591,7 @@ struct MainChatStorage: View {
                 .font(.system(size: 11))
         }
     }
-
+    
     // MARK: - Create Directory Dialog
     
     private var createDirectoryDialog: some View {
@@ -1620,6 +1832,7 @@ struct MainChatStorage: View {
                 if let fileUrl = item.fileUrl {
                     let task = StorageTransferTask(
                         id: item.id, // 使用 TransferItem 现有的 ID
+                        taskType: .upload,
                         name: item.name,
                         fileUrl: fileUrl,
                         targetDirId: item.targetDirId,
@@ -1675,6 +1888,7 @@ struct MainChatStorage: View {
                 // 构建 TransferTask
                 let task = StorageTransferTask(
                     id: item.id,
+                    taskType: .upload,
                     name: item.name,
                     fileUrl: fileUrl,
                     targetDirId: item.targetDirId,
@@ -1816,7 +2030,7 @@ struct MainChatStorage: View {
                     directoryName: task.directoryName,
                     fileUrl: task.fileUrl,
                     targetDirId: task.targetDirId,
-                    taskType: .upload, // Defaulting to upload
+                    taskType: task.taskType == .upload ? .upload : .download, // Correctly map task type
                     status: status,
                     progress: progress,
                     speed: speed
@@ -1838,6 +2052,100 @@ struct MainChatStorage: View {
         case "暂停", "已暂停", "失败": return 60
         case "已完成": return 10
         default: return 0
+        }
+    }
+    
+    /// 加载文件详情
+    private func loadFileDetail(fileId: Int64) {
+        guard !isLoadingDetail else { return }
+        
+        isLoadingDetail = true
+        // 先使用本地缓存的列表作为临时展示 (如果需要)
+        // fileDetail = fileList.first { $0.id == fileId }?.toFileDto() 
+        
+        Task {
+            do {
+                // Determine which service to use
+                // If directoryService is available, use it (it has fetchFileDetail)
+                if let service = directoryService {
+                    let detail = try await service.fetchFileDetail(fileId: fileId)
+                    await MainActor.run {
+                        self.fileDetail = detail
+                        self.isLoadingDetail = false
+                    }
+                } else {
+                     print("❌ directoryService is nil")
+                     await MainActor.run { self.isLoadingDetail = false }
+                }
+            } catch {
+                print("❌ 加载文件详情失败: \(error.localizedDescription)")
+                await MainActor.run {
+                    self.isLoadingDetail = false
+                    // 可选: 显示错误提示
+                    // alertMessage = "无法加载详情: \(error.localizedDescription)"
+                    // showingAlert = true
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Extensions
+
+extension DirectoryItem {
+    static func formatBytes(_ size: Int64?) -> String {
+        guard let size = size else { return "-" }
+        if size < 1024 {
+            return String(format: "%.1f KB", Double(size) / 1024.0)
+        }
+        let units = ["bytes", "KB", "MB", "GB", "TB"]
+        var index = 0
+        var value = Double(size)
+        while value >= 1024 && index < units.count - 1 {
+            value /= 1024
+            index += 1
+        }
+        return String(format: "%.1f %@", value, units[index])
+    }
+}
+
+extension FileDto {
+    // toDirectoryItem is already defined in Models/do/FileDto.swift
+    
+    /// 格式化大小
+    var sizeString: String {
+        return DirectoryItem.formatBytes(fileSize)
+    }
+    
+    /// 格式化上传时间
+    var uploadTime: String {
+        guard let time = gmtCreated else { return "-" }
+        let date = Date(timeIntervalSince1970: TimeInterval(time / 1000))
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.string(from: date)
+    }
+    
+    /// 获取所属目录名称
+    var directoryName: String {
+        // 简化处理，如果有 filePath 则显示，否则显示 "-"
+        return filePath.isEmpty ? "-" : filePath
+    }
+    
+    /// 获取图标名称
+    var iconName: String {
+        let type = fileType.lowercased()
+        switch type {
+        case "jpg", "jpeg", "png", "gif", "bmp": return "photo"
+        case "mp4", "mov", "avi", "mkv": return "film"
+        case "mp3", "wav", "aac": return "music.note"
+        case "doc", "docx": return "doc.text"
+        case "xls", "xlsx": return "chart.bar.doc.horizontal"
+        case "ppt", "pptx": return "rectangle.on.rectangle"
+        case "pdf": return "doc.text.fill"
+        case "zip", "rar", "7z": return "doc.zipper"
+        case "txt", "md", "json", "xml": return "doc.text"
+        default: return "doc"
         }
     }
 }
@@ -1894,105 +2202,7 @@ struct TransferItem: Identifiable {
 
 // MARK: - Recursive Directory View Support
 
-struct RecursiveDirectoryView: View {
-    let nodes: [DirectoryItem]
-    @Binding var selectedId: Int64?
-    @Binding var expandedIds: Set<Int64>
-    
-    // Actions
-    var onCreate: (DirectoryItem) -> Void
-    var onRename: (DirectoryItem) -> Void
-    var onDelete: (DirectoryItem) -> Void
-    var onUpload: (DirectoryItem) -> Void
-    
-    var body: some View {
-        ForEach(nodes) { item in
-            DirectoryNodeView(
-                item: item,
-                selectedId: $selectedId,
-                expandedIds: $expandedIds,
-                onCreate: onCreate,
-                onRename: onRename,
-                onDelete: onDelete,
-                onUpload: onUpload
-            )
-        }
-    }
-}
 
-struct DirectoryNodeView: View {
-    let item: DirectoryItem
-    @Binding var selectedId: Int64?
-    @Binding var expandedIds: Set<Int64>
-    
-    // Actions
-    var onCreate: (DirectoryItem) -> Void
-    var onRename: (DirectoryItem) -> Void
-    var onDelete: (DirectoryItem) -> Void
-    var onUpload: (DirectoryItem) -> Void
-    
-    var isExpanded: Binding<Bool> {
-        Binding(
-            get: { expandedIds.contains(item.id) },
-            set: { isExp in
-                if isExp { expandedIds.insert(item.id) }
-                else { expandedIds.remove(item.id) }
-            }
-        )
-    }
-    
-    var body: some View {
-        Group {
-            if let children = item.childFileList, !children.isEmpty {
-                DisclosureGroup(isExpanded: isExpanded) {
-                    RecursiveDirectoryView(
-                        nodes: children,
-                        selectedId: $selectedId,
-                        expandedIds: $expandedIds,
-                        onCreate: onCreate,
-                        onRename: onRename,
-                        onDelete: onDelete,
-                        onUpload: onUpload
-                    )
-                } label: {
-                    nodeContent
-                }
-            } else {
-                nodeContent
-            }
-        }
-    }
-    
-    private var nodeContent: some View {
-        HStack {
-            Image(systemName: item.childFileList == nil && item.isFile ? "doc" : (item.childFileList == nil ? "folder" : "folder.fill"))
-                .foregroundColor(item.isFile ? .gray : .blue)
-                .font(.system(size: 14))
-            
-            Text(item.fileName)
-                .font(.system(size: 13))
-                .lineLimit(1)
-                .truncationMode(.middle)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle()) // Make entire row tappable
-        .padding(.vertical, 4)
-        .background(selectedId == item.id ? Color.accentColor.opacity(0.2) : Color.clear) // Custom Selection Highlight
-        .cornerRadius(4)
-        .onTapGesture {
-            selectedId = item.id
-        }
-        .contextMenu {
-            if !item.isFile {
-                 Button("选择文件") { onUpload(item) }
-                 Button("新建") { onCreate(item) }
-            }
-            Button("重命名") { onRename(item) }
-            Divider()
-            Button("删除") { onDelete(item) }
-        }
-    }
-}
 
 // MARK: - Directory Tree Selector (用于筛选的树形组件)
 

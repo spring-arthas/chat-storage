@@ -121,6 +121,10 @@ public class TransferTaskManager: ObservableObject {
         saveTaskToPersistence(task, status: "Waiting")
         // -----------------------------
         
+        // 🔹 Fix: 立即更新状态为 "等待中"，否则 UI 会默认为 "已暂停"
+        let initialStatus = task.taskType == .upload ? "等待上传" : "等待下载"
+        updateTaskStatus(id: task.id, status: initialStatus)
+        
         scheduleNext()
     }
     

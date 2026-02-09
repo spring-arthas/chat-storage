@@ -55,6 +55,9 @@ struct FileDto: Codable {
     /// 子文件列表 (如果是目录且有子项，可能为空数组)
     let childFileList: [FileDto]?
     
+    /// MD5 Checksum
+    let md5: String?
+    
     // MARK: - Robust Decoding
     
     enum CodingKeys: String, CodingKey {
@@ -65,6 +68,7 @@ struct FileDto: Codable {
         case gmtCreated, gmtModified
         case del, delTime
         case childFileList
+        case md5
     }
     
     init(from decoder: Decoder) throws {
@@ -116,10 +120,12 @@ struct FileDto: Codable {
         self.delTime = try container.decodeIfPresent(Int64.self, forKey: .delTime)
         
         self.childFileList = try container.decodeIfPresent([FileDto].self, forKey: .childFileList)
+        
+        self.md5 = try container.decodeIfPresent(String.self, forKey: .md5)
     }
     
     // Default init for manual creation if needed
-    init(id: Int64, pId: Int64, fileName: String, filePath: String, fileSize: Int64?, fileType: String, isFile: String, isExist: String, hasChild: String, userName: String?, gmtCreated: Int64?, gmtModified: Int64?, del: String?, delTime: Int64?, childFileList: [FileDto]?) {
+    init(id: Int64, pId: Int64, fileName: String, filePath: String, fileSize: Int64?, fileType: String, isFile: String, isExist: String, hasChild: String, userName: String?, gmtCreated: Int64?, gmtModified: Int64?, del: String?, delTime: Int64?, childFileList: [FileDto]?, md5: String? = nil) {
         self.id = id
         self.pId = pId
         self.fileName = fileName
@@ -135,6 +141,7 @@ struct FileDto: Codable {
         self.del = del
         self.delTime = delTime
         self.childFileList = childFileList
+        self.md5 = md5
     }
     
     func encode(to encoder: Encoder) throws {
@@ -154,6 +161,7 @@ struct FileDto: Codable {
         try container.encodeIfPresent(del, forKey: .del)
         try container.encodeIfPresent(delTime, forKey: .delTime)
         try container.encodeIfPresent(childFileList, forKey: .childFileList)
+        try container.encodeIfPresent(md5, forKey: .md5)
     }
     
     /// 是否是文件 (布尔值)

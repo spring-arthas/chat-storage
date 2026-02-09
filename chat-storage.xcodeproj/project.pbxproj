@@ -16,6 +16,14 @@
 		4E15EB342F2B48250093C805 /* chat_storageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E15EB332F2B48250093C805 /* chat_storageTests.swift */; };
 		4E15EB3E2F2B48250093C805 /* chat_storageUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E15EB3D2F2B48250093C805 /* chat_storageUITests.swift */; };
 		4E15EB402F2B48250093C805 /* chat_storageUITestsLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E15EB3F2F2B48250093C805 /* chat_storageUITestsLaunchTests.swift */; };
+		4E2B8E3C2F37294600EE9F33 /* VideoStreamLoaderDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E2B8E352F37294600EE9F33 /* VideoStreamLoaderDelegate.swift */; };
+		4E2B8E3D2F37294600EE9F33 /* RecursiveDirectoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E2B8E362F37294600EE9F33 /* RecursiveDirectoryView.swift */; };
+		4E2B8E3E2F37294600EE9F33 /* TransferModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E2B8E372F37294600EE9F33 /* TransferModels.swift */; };
+		4E2B8E3F2F37294600EE9F33 /* VideoPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E2B8E382F37294600EE9F33 /* VideoPlayerView.swift */; };
+		4E2B8E402F37294600EE9F33 /* StorageTransferTask.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E2B8E392F37294600EE9F33 /* StorageTransferTask.swift */; };
+		4E2B8E412F37294600EE9F33 /* FileDownloadService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E2B8E3A2F37294600EE9F33 /* FileDownloadService.swift */; };
+		4E2B8E422F37294600EE9F33 /* Contents.json in Resources */ = {isa = PBXBuildFile; fileRef = 4E2B8E3B2F37294600EE9F33 /* Contents.json */; };
+		4E2B8E442F397EB500EE9F33 /* TransferTaskManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E2B8E432F397EB500EE9F33 /* TransferTaskManager.swift */; };
 		4ED769982F2C4D6D006CFB2F /* InputValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4ED769952F2C4D6D006CFB2F /* InputValidator.swift */; };
 		4ED769992F2C4D6D006CFB2F /* RegisterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4ED769962F2C4D6D006CFB2F /* RegisterView.swift */; };
 		4ED7699A2F2C4D6D006CFB2F /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4ED769972F2C4D6D006CFB2F /* LoginView.swift */; };
@@ -66,6 +74,14 @@
 		4E15EB392F2B48250093C805 /* chat-storageUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "chat-storageUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		4E15EB3D2F2B48250093C805 /* chat_storageUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = chat_storageUITests.swift; sourceTree = "<group>"; };
 		4E15EB3F2F2B48250093C805 /* chat_storageUITestsLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = chat_storageUITestsLaunchTests.swift; sourceTree = "<group>"; };
+		4E2B8E352F37294600EE9F33 /* VideoStreamLoaderDelegate.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = VideoStreamLoaderDelegate.swift; sourceTree = "<group>"; };
+		4E2B8E362F37294600EE9F33 /* RecursiveDirectoryView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = RecursiveDirectoryView.swift; sourceTree = "<group>"; };
+		4E2B8E372F37294600EE9F33 /* TransferModels.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = TransferModels.swift; sourceTree = "<group>"; };
+		4E2B8E382F37294600EE9F33 /* VideoPlayerView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = VideoPlayerView.swift; sourceTree = "<group>"; };
+		4E2B8E392F37294600EE9F33 /* StorageTransferTask.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = StorageTransferTask.swift; sourceTree = "<group>"; };
+		4E2B8E3A2F37294600EE9F33 /* FileDownloadService.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = FileDownloadService.swift; sourceTree = "<group>"; };
+		4E2B8E3B2F37294600EE9F33 /* Contents.json */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.json; name = Contents.json; path = "Preview Content/Preview Assets.xcassets/Contents.json"; sourceTree = "<group>"; };
+		4E2B8E432F397EB500EE9F33 /* TransferTaskManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = TransferTaskManager.swift; path = Services/TransferTaskManager.swift; sourceTree = "<group>"; };
 		4ED769952F2C4D6D006CFB2F /* InputValidator.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = InputValidator.swift; sourceTree = "<group>"; };
 		4ED769962F2C4D6D006CFB2F /* RegisterView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = RegisterView.swift; sourceTree = "<group>"; };
 		4ED769972F2C4D6D006CFB2F /* LoginView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
@@ -133,6 +149,8 @@
 		4E15EB1B2F2B48230093C805 /* chat-storage */ = {
 			isa = PBXGroup;
 			children = (
+				4E2B8E432F397EB500EE9F33 /* TransferTaskManager.swift */,
+				4E2B8E3B2F37294600EE9F33 /* Contents.json */,
 				767210262F2DADC20067C257 /* MainChatStorage.swift */,
 				4ED769CF2F2CB903006CFB2F /* Services */,
 				4ED769BF2F2CB8F4006CFB2F /* Models */,
@@ -220,6 +238,12 @@
 		4ED769CF2F2CB903006CFB2F /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				4E2B8E3A2F37294600EE9F33 /* FileDownloadService.swift */,
+				4E2B8E362F37294600EE9F33 /* RecursiveDirectoryView.swift */,
+				4E2B8E392F37294600EE9F33 /* StorageTransferTask.swift */,
+				4E2B8E372F37294600EE9F33 /* TransferModels.swift */,
+				4E2B8E382F37294600EE9F33 /* VideoPlayerView.swift */,
+				4E2B8E352F37294600EE9F33 /* VideoStreamLoaderDelegate.swift */,
 				767210282F2DE4D70067C257 /* DirectoryService.swift */,
 				4ED769D02F2CB903006CFB2F /* AuthenticationService.swift */,
 			);
@@ -333,6 +357,7 @@
 				4ED769A32F2CB198006CFB2F /* Preview Content in Resources */,
 				4E15EB242F2B48250093C805 /* Preview Assets.xcassets in Resources */,
 				4E15EB212F2B48250093C805 /* Assets.xcassets in Resources */,
+				4E2B8E422F37294600EE9F33 /* Contents.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -364,19 +389,26 @@
 				4ED769982F2C4D6D006CFB2F /* InputValidator.swift in Sources */,
 				4ED769D12F2CB903006CFB2F /* AuthenticationService.swift in Sources */,
 				4ED7699A2F2C4D6D006CFB2F /* LoginView.swift in Sources */,
+				4E2B8E412F37294600EE9F33 /* FileDownloadService.swift in Sources */,
 				4ED769A52F2CB198006CFB2F /* SocketManager+FrameHandling.swift in Sources */,
 				4ED769CB2F2CB8F4006CFB2F /* FrameParser.swift in Sources */,
 				4ED7699C2F2C52F8006CFB2F /* SocketManager.swift in Sources */,
+				4E2B8E3E2F37294600EE9F33 /* TransferModels.swift in Sources */,
 				4E15EB262F2B48250093C805 /* Persistence.swift in Sources */,
 				4ED769CC2F2CB8F4006CFB2F /* Frame.swift in Sources */,
 				4E15EB292F2B48250093C805 /* chat_storage.xcdatamodeld in Sources */,
 				4ED769992F2C4D6D006CFB2F /* RegisterView.swift in Sources */,
+				4E2B8E402F37294600EE9F33 /* StorageTransferTask.swift in Sources */,
 				4ED769C92F2CB8F4006CFB2F /* UserDO.swift in Sources */,
 				4ED769CE2F2CB8F4006CFB2F /* UserRequest.swift in Sources */,
 				4E15EB1F2F2B48230093C805 /* ContentView.swift in Sources */,
+				4E2B8E3D2F37294600EE9F33 /* RecursiveDirectoryView.swift in Sources */,
+				4E2B8E3C2F37294600EE9F33 /* VideoStreamLoaderDelegate.swift in Sources */,
+				4E2B8E442F397EB500EE9F33 /* TransferTaskManager.swift in Sources */,
 				4E15EB1D2F2B48230093C805 /* chat_storageApp.swift in Sources */,
 				4ED769CD2F2CB8F4006CFB2F /* FrameBuilder.swift in Sources */,
 				767210292F2DE4D70067C257 /* DirectoryService.swift in Sources */,
+				4E2B8E3F2F37294600EE9F33 /* VideoPlayerView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
