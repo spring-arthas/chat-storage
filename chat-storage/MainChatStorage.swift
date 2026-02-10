@@ -46,7 +46,7 @@ struct MainChatStorage: View {
     @State private var currentPage: Int = 1
     
     /// 每页显示数量
-    @State private var itemsPerPage: Int = 10
+    @State private var itemsPerPage: Int = 13
     
     /// 总页数
     @State private var totalPages: Int = 1
@@ -719,8 +719,7 @@ struct MainChatStorage: View {
         }
     }
     
-    // MARK: - Transfer List View (文件传输区)
-    
+    // MARK: - Transfer List View (文件传输区) 传输列表UI以及相关逻辑
     private var transferListView: some View {
         VStack(spacing: 0) {
             // 标题栏
@@ -730,7 +729,7 @@ struct MainChatStorage: View {
                 
                 Spacer()
                 
-                // 批量启动按钮 (原批量上传)
+                // 批量启动按钮，开启相关文件上传或是下载任务
                 Button(action: {
                     handleBatchStart()
                 }) {
@@ -745,14 +744,18 @@ struct MainChatStorage: View {
                 Button(action: {
                     // 清除已完成的任务
                     let completedTasks = transferList.filter { $0.status == "已完成" }
+                    print("🗑️ 清除已完成任务: \(completedTasks.count) 个")
+                    
                     for task in completedTasks {
-                        // 1. 从数据库彻底删除
-                        PersistenceManager.shared.deleteTask(taskId: task.id.uuidString)
-                        // 2. 从内存管理器中移除 (停止更新并释放)
+                        print("🗑️ 删除任务: \(task.name) (ID: \(task.id.uuidString))")
+                        // 从内存管理器中移除 (会自动删除数据库)
                         transferManager.cancel(id: task.id)
                     }
                     
+                    // 从UI列表移除
                     transferList.removeAll { $0.status == "已完成" }
+                    print("✅ 已从UI移除 \(completedTasks.count) 个已完成任务")
+                    
                     // 重新排序剩余任务 (保持规则一致)
                     sortTransferList()
                 }) {
@@ -834,7 +837,7 @@ struct MainChatStorage: View {
             .background(Color(NSColor.textBackgroundColor).opacity(0.3))
         }
     }
-    
+    // 文件传输列表一行记录的状态
     private func transferRow(_ item: TransferItem) -> some View {
         HStack(spacing: 0) {
             // 文件名
@@ -895,16 +898,17 @@ struct MainChatStorage: View {
             
             // 操作按钮
             HStack(spacing: 4) {
+                // 🔹 修复: 等待下载时显示暂停按钮 (任务已启动,只是在队列中等待)
                 if item.status == "等待上传" || item.status == "暂停" || item.status == "已暂停" || item.status == "失败" {
-                    // Start/Resume Button
+                    // Start/Resume Button (仅上传的等待状态、暂停、失败显示)
                     Button(action: { handleTransferAction(id: item.id, action: "start") }) {
-                        Image(systemName: "arrow.up.circle") // Upload icon for start
+                        Image(systemName: item.taskType == .upload ? "arrow.up.circle" : "arrow.down.circle")
                         .foregroundColor(.blue)
                     }
                     .buttonStyle(.borderless)
-                    .help("开始上传")
-                } else if item.status == "上传中" {
-                    // Pause Button
+                    .help(item.taskType == .upload ? "开始上传" : "开始下载")
+                } else if item.status == "上传中" || item.status == "下载中" || item.status == "等待下载" {
+                    // Pause Button (上传中、下载中、等待下载都显示暂停按钮)
                     Button(action: { handleTransferAction(id: item.id, action: "pause") }) {
                         Image(systemName: "pause.circle")
                         .foregroundColor(.orange)
@@ -932,7 +936,9 @@ struct MainChatStorage: View {
         switch status {
         case "已完成": return .green
         case "上传中": return .blue
+        case "下载中": return .green
         case "等待上传": return .gray
+        case "等待下载": return .gray
         case "失败": return .red
         case "暂停", "已暂停": return .orange
         default: return .primary
@@ -1247,7 +1253,9 @@ struct MainChatStorage: View {
         let downloadDir = downloadDirectoryManager.getDownloadDirectory()
         try? FileManager.default.createDirectory(at: downloadDir, withIntermediateDirectories: true, attributes: nil)
         
-        let targetUrl = downloadDir.appendingPathComponent(item.fileName)
+        // 🔹 使用唯一路径生成逻辑 (处理重名)
+        let targetUrl = getUniqueFileURL(in: downloadDir, fileName: item.fileName)
+        let finalFileName = targetUrl.lastPathComponent
         
         // 获取当前用户ID
         let currentUserId = Int64(authService.currentUser?.userId ?? 0)
@@ -1256,7 +1264,7 @@ struct MainChatStorage: View {
         let task = StorageTransferTask(
             id: UUID(), // Explicitly provide ID
             taskType: .download,
-            name: item.fileName,
+            name: finalFileName, // 🔹 使用最终文件名 (包含序号)
             fileUrl: targetUrl,
             targetDirId: 0,
             userId: currentUserId,
@@ -1269,7 +1277,41 @@ struct MainChatStorage: View {
         )
         
         transferManager.submit(task: task)
-        addLog("📥 已添加下载任务: \(item.fileName)")
+        addLog("📥 已添加下载任务: \(finalFileName)")
+    }
+    
+    /// 获取唯一的文件保存路径 (处理重名自动重命名)
+    /// - Parameters:
+    ///   - directory: 目标目录
+    ///   - fileName: 原始文件名
+    /// - Returns: 不冲突的文件路径
+    private func getUniqueFileURL(in directory: URL, fileName: String) -> URL {
+        let fileManager = FileManager.default
+        var destinationURL = directory.appendingPathComponent(fileName)
+        
+        // 如果文件不存在，直接返回
+        if !fileManager.fileExists(atPath: destinationURL.path) {
+            return destinationURL
+        }
+        
+        // 分离文件名和扩展名
+        let nameWithoutExtension = (fileName as NSString).deletingPathExtension
+        let pathExtension = (fileName as NSString).pathExtension
+        let extensionString = pathExtension.isEmpty ? "" : ".\(pathExtension)"
+        
+        var counter = 1
+        
+        // 循环查找可用文件名
+        while true {
+            let newName = "\(nameWithoutExtension)（\(counter)）\(extensionString)" // 使用中文括号
+            destinationURL = directory.appendingPathComponent(newName)
+            
+            if !fileManager.fileExists(atPath: destinationURL.path) {
+                return destinationURL
+            }
+            
+            counter += 1
+        }
     }
     
     private func generateFakeData() {
@@ -1908,8 +1950,17 @@ struct MainChatStorage: View {
             
         case "cancel":
             addLog("❌ 取消任务: \(item.name)")
+            
+            // 🔹 从管理器移除 (会自动删除数据库)
             transferManager.cancel(id: id)
+            
+            // 🔹 从UI列表移除
             transferList.remove(at: index)
+            
+            // 🔹 如果是已完成任务,额外记录日志
+            if item.status == "已完成" {
+                print("🗑️ 已删除已完成任务: \(item.name) (ID: \(id.uuidString))")
+            }
             
         default:
             break

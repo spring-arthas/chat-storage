@@ -260,6 +260,7 @@ typedef unsigned int swift_uint4  __attribute__((__ext_vector_type__(4)));
 #if __has_warning("-Watimport-in-framework-header")
 #pragma clang diagnostic ignored "-Watimport-in-framework-header"
 #endif
+@import AVFoundation;
 @import CoreData;
 @import Foundation;
 @import ObjectiveC;
@@ -338,6 +339,19 @@ SWIFT_CLASS_NAMED("TransferTaskEntity")
 @property (nonatomic) int32_t userId;
 @property (nonatomic, copy) NSString * _Nullable userName;
 @end
+
+@class AVAssetResourceLoader;
+@class AVAssetResourceLoadingRequest;
+
+/// 视频资源加载器 - 负责对接 AVPlayer 和 Socket 下载流
+SWIFT_CLASS("_TtC12chat_storage19VideoResourceLoader")
+@interface VideoResourceLoader : NSObject <AVAssetResourceLoaderDelegate>
+- (BOOL)resourceLoader:(AVAssetResourceLoader * _Nonnull)resourceLoader shouldWaitForLoadingOfRequestedResource:(AVAssetResourceLoadingRequest * _Nonnull)loadingRequest SWIFT_WARN_UNUSED_RESULT;
+- (void)resourceLoader:(AVAssetResourceLoader * _Nonnull)resourceLoader didCancelLoadingRequest:(AVAssetResourceLoadingRequest * _Nonnull)loadingRequest;
+- (nonnull instancetype)init SWIFT_UNAVAILABLE;
++ (nonnull instancetype)new SWIFT_UNAVAILABLE_MSG("-init is unavailable");
+@end
+
 
 #endif
 #if defined(__cplusplus)
@@ -609,6 +623,7 @@ typedef unsigned int swift_uint4  __attribute__((__ext_vector_type__(4)));
 #if __has_warning("-Watimport-in-framework-header")
 #pragma clang diagnostic ignored "-Watimport-in-framework-header"
 #endif
+@import AVFoundation;
 @import CoreData;
 @import Foundation;
 @import ObjectiveC;
@@ -687,6 +702,19 @@ SWIFT_CLASS_NAMED("TransferTaskEntity")
 @property (nonatomic) int32_t userId;
 @property (nonatomic, copy) NSString * _Nullable userName;
 @end
+
+@class AVAssetResourceLoader;
+@class AVAssetResourceLoadingRequest;
+
+/// 视频资源加载器 - 负责对接 AVPlayer 和 Socket 下载流
+SWIFT_CLASS("_TtC12chat_storage19VideoResourceLoader")
+@interface VideoResourceLoader : NSObject <AVAssetResourceLoaderDelegate>
+- (BOOL)resourceLoader:(AVAssetResourceLoader * _Nonnull)resourceLoader shouldWaitForLoadingOfRequestedResource:(AVAssetResourceLoadingRequest * _Nonnull)loadingRequest SWIFT_WARN_UNUSED_RESULT;
+- (void)resourceLoader:(AVAssetResourceLoader * _Nonnull)resourceLoader didCancelLoadingRequest:(AVAssetResourceLoadingRequest * _Nonnull)loadingRequest;
+- (nonnull instancetype)init SWIFT_UNAVAILABLE;
++ (nonnull instancetype)new SWIFT_UNAVAILABLE_MSG("-init is unavailable");
+@end
+
 
 #endif
 #if defined(__cplusplus)

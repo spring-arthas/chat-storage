@@ -1,8 +1,8 @@
 "/Users/hljy/macProjects/chat-storage/chat-storage/MainChatStorage.swift":
-  objc-header: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/arm64/chat_storage-Swift.h"
-  swiftsourceinfo: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/arm64/chat_storage.swiftsourceinfo"
-  dependencies: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/arm64/chat-storage-master.d"
-  swiftmodule: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/arm64/chat_storage.swiftmodule"
   swiftdoc: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/arm64/chat_storage.swiftdoc"
   diagnostics: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/arm64/chat-storage-master.dia"
+  objc-header: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/arm64/chat_storage-Swift.h"
+  swiftsourceinfo: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/arm64/chat_storage.swiftsourceinfo"
   abi-baseline-json: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/arm64/chat_storage.abi.json"
+  swiftmodule: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/arm64/chat_storage.swiftmodule"
+  dependencies: "/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/arm64/chat-storage-master.d"

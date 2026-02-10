@@ -431,6 +431,12 @@ class DirectoryService: ObservableObject {
         var count = 0
         
         for entity in entities {
+            // 🔹 跳过已完成的任务 (已完成的任务不应该恢复到传输列表)
+            if let status = entity.status, status == "已完成" {
+                print("⏭️ 跳过已完成任务: \(entity.fileName ?? "Unknown")")
+                continue
+            }
+            
             // Debug info
             let debugName = entity.fileName ?? "Unknown"
             let debugId = entity.taskId ?? "No ID"
@@ -480,6 +486,13 @@ class DirectoryService: ObservableObject {
                 if let idSnippet = md5.split(separator: "_").last, let id = Int64(idSnippet) {
                    remoteFileId = id
                 }
+                
+                // 🔹 下载任务特殊处理: 验证本地文件并重新计算实际进度
+                let actualProgress = calculateActualProgress(fileUrl: url, totalSize: entity.fileSize)
+                if actualProgress != progress {
+                    print("📥 [恢复] 下载任务进度校正: DB=\(progress) -> 实际=\(actualProgress)")
+                    progress = actualProgress
+                }
             }
 
             let task = StorageTransferTask(
@@ -501,15 +514,39 @@ class DirectoryService: ObservableObject {
 
             // 使用 MainActor 确保 UI 更新
             Task { @MainActor in
+                let originalStatus = entity.status ?? "Paused"
+                print("📋 [恢复] 任务: \(fileName), 原始状态: \(originalStatus), 进度: \(String(format: "%.1f%%", progress * 100))")
+                
                 TransferTaskManager.shared.restore(
                     task: task,
-                    status: entity.status ?? "Paused",
+                    status: originalStatus,
                     progress: progress
                 )
             }
             count += 1
         }
         print("✅ 已恢复 \(count) 个挂起任务")
+    }
+    
+    /// 计算下载任务的实际进度 (基于本地文件大小)
+    /// - Parameters:
+    ///   - fileUrl: 本地文件路径
+    ///   - totalSize: 文件总大小
+    /// - Returns: 实际进度 (0.0 - 1.0)
+    private func calculateActualProgress(fileUrl: URL, totalSize: Int64) -> Double {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: fileUrl.path) else {
+            return 0.0
+        }
+        
+        do {
+            let attributes = try fileManager.attributesOfItem(atPath: fileUrl.path)
+            let currentSize = attributes[.size] as? Int64 ?? 0
+            return totalSize > 0 ? Double(currentSize) / Double(totalSize) : 0.0
+        } catch {
+            print("❌ [恢复] 读取本地文件大小失败: \(error)")
+            return 0.0
+        }
     }
 }
 

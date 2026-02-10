@@ -100,6 +100,9 @@ public class TransferTaskManager: ObservableObject {
     /// 任务映射表 (存储任务详情)
     private var tasks: [UUID: StorageTransferTask] = [:]
     
+    // 🔹 新增: 保存下载服务引用 (用于取消)
+    private var downloadServices: [UUID: FileDownloadService] = [:]
+    
     private init() {}
     
     // MARK: - Public Methods
@@ -131,7 +134,13 @@ public class TransferTaskManager: ObservableObject {
     /// 暂停任务
     /// - Parameter id: 任务ID
     public func pause(id: UUID) {
-        // 1. 如果在执行中，取消 Task
+        // 1. 🔹 如果是下载任务,调用 cancel()
+        if let service = downloadServices[id] {
+            print("🛑 [管理器] 调用下载服务取消")
+            service.cancel()
+        }
+        
+        // 2. 如果在执行中，取消 Task
         if let runningTask = activeTasks[id] {
             runningTask.cancel()
             activeTasks.removeValue(forKey: id)
@@ -175,7 +184,10 @@ public class TransferTaskManager: ObservableObject {
         
         tasks.removeValue(forKey: id)
         taskUpdates.removeValue(forKey: id)
-        // Persistence: 可以选择删除或标记为 Cancelled
+        
+        // 🔹 从数据库彻底删除
+        PersistenceManager.shared.deleteTask(taskId: id.uuidString)
+        print("🗑️ [管理器] 已从数据库删除任务: \(id.uuidString)")
     }
     
     /// 恢复(还原)任务 - 用于从持久化存储加载
@@ -183,8 +195,20 @@ public class TransferTaskManager: ObservableObject {
         // 存入任务表
         tasks[task.id] = task
         
-        // 恢复状态 display logic
-        let displayStatus = (status == "Uploading" || status == "Downloading" || status == "Waiting") ? "已暂停" : status
+        // 🔹 恢复状态映射: 所有进行中的状态都转换为"已暂停"
+        let inProgressStatuses = [
+            "Uploading", "Downloading", "Waiting",  // 英文状态
+            "上传中", "下载中",                      // 进行中状态
+            "等待上传", "等待下载"                   // 等待状态
+        ]
+        
+        let displayStatus = inProgressStatuses.contains(status) ? "已暂停" : status
+        
+        // 🔹 如果状态被转换,更新数据库
+        if displayStatus != status {
+            print("🔄 [恢复] 状态转换: \(status) → \(displayStatus) (任务: \(task.name))")
+            PersistenceManager.shared.updateStatus(taskId: task.id.uuidString, status: "已暂停")
+        }
         
         updateTaskStatus(id: task.id, status: displayStatus, progress: progress)
     }
@@ -261,21 +285,44 @@ public class TransferTaskManager: ObservableObject {
                     )
                     
                 case .download:
+                    // 1. 计算断点续传偏移量
+                    let startOffset = calculateDownloadOffset(task: task)
+                    
+                    // 2. 如果已完成,直接标记完成
+                    if startOffset >= task.fileSize && task.fileSize > 0 {
+                        print("✅ [Manager] 文件已下载完成,跳过下载")
+                        await MainActor.run {
+                            self.updateTaskStatus(id: task.id, status: "已完成", progress: 1.0)
+                        }
+                        socketManager.disconnect()
+                        return
+                    }
+                    
+                    // 3. 执行下载
                     let service = FileDownloadService(socketManager: socketManager)
+                    
+                    // 🔹 保存引用 (已在 MainActor 上,无需 await)
+                    self.downloadServices[task.id] = service
+                    
                     try await service.downloadFile(
                         task: task,
-                        startOffset: 0, // 断点续传逻辑需完善：检查本地文件大小
+                        startOffset: startOffset,
                         progressHandler: { progress, speed in
                              Task { @MainActor in
                                 self.updateTaskProgress(id: task.id, progress: progress, speed: speed)
                             }
                         }
                     )
+                    
+                    // 🔹 完成后移除引用
+                    self.downloadServices.removeValue(forKey: task.id)
                 }
                 
                 // 任务完成
                 await MainActor.run {
                     self.updateTaskStatus(id: task.id, status: "已完成", progress: 1.0)
+                    // 🔹 清理下载服务引用
+                    self.downloadServices.removeValue(forKey: task.id)
                 }
                 socketManager.disconnect()
                 
@@ -283,6 +330,8 @@ public class TransferTaskManager: ObservableObject {
                 print("⏸️ [Manager] 任务已暂停 [\(task.name)]")
                 await MainActor.run {
                     self.updateTaskStatus(id: task.id, status: "已暂停")
+                    // 🔹 清理下载服务引用
+                    self.downloadServices.removeValue(forKey: task.id)
                 }
                 socketManager.disconnect()
                 
@@ -290,6 +339,8 @@ public class TransferTaskManager: ObservableObject {
                 print("❌ [Manager] 任务失败: \(error.localizedDescription)")
                 await MainActor.run {
                     self.updateTaskStatus(id: task.id, status: "失败")
+                    // 🔹 清理下载服务引用
+                    self.downloadServices.removeValue(forKey: task.id)
                 }
                 socketManager.disconnect()
             }
@@ -344,5 +395,44 @@ public class TransferTaskManager: ObservableObject {
             progress: task.progress,
             md5: md5Value
         )
+    }
+    
+    /// 计算下载断点续传偏移量
+    /// - Parameter task: 下载任务
+    /// - Returns: 起始偏移量 (字节)
+    private func calculateDownloadOffset(task: StorageTransferTask) -> Int64 {
+        let fileManager = FileManager.default
+        let localPath = task.fileUrl.path
+        
+        // 检查文件是否存在
+        guard fileManager.fileExists(atPath: localPath) else {
+            print("📥 [Manager] 本地文件不存在,从头开始下载")
+            return 0
+        }
+        
+        // 获取本地文件大小
+        do {
+            let attributes = try fileManager.attributesOfItem(atPath: localPath)
+            let fileSize = attributes[.size] as? Int64 ?? 0
+            
+            // 验证文件大小
+            if fileSize > task.fileSize {
+                print("⚠️ [Manager] 本地文件异常(大于总大小),删除重新下载")
+                try? fileManager.removeItem(atPath: localPath)
+                return 0
+            }
+            
+            if fileSize == task.fileSize {
+                print("✅ [Manager] 文件已完整下载")
+                return fileSize
+            }
+            
+            print("📥 [Manager] 断点续传: 已下载 \(fileSize) / \(task.fileSize) 字节 (\(String(format: "%.1f", Double(fileSize) / Double(task.fileSize) * 100))%)")
+            return fileSize
+            
+        } catch {
+            print("❌ [Manager] 读取本地文件失败: \(error)")
+            return 0
+        }
     }
 }
