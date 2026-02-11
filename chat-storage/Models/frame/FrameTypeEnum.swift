@@ -59,6 +59,15 @@ enum FrameTypeEnum: UInt8, CaseIterable {
     /// 用户操作响应
     case userResponse = 0x34
     
+    /// 搜索用户请求 (0x36)
+    case searchUserReq = 0x36
+    /// 添加好友请求 (0x37)
+    case addFriendReq = 0x37
+    /// 获取未处理好友申请请求 (0x38)
+    case pendingRequestsReq = 0x38
+    /// 处理好友申请请求 (0x39)
+    case handleFriendReq = 0x39
+    
     // ========== 文件操作帧 (0x40-0x4F) ==========
     /// 文件列表分页请求
     case fileListReq = 0x40
@@ -96,6 +105,10 @@ enum FrameTypeEnum: UInt8, CaseIterable {
         case .userChangePwdReq: return "用户修改密码请求"
         case .userLogoutReq: return "用户退出登录请求"
         case .userResponse: return "用户操作响应"
+        case .searchUserReq: return "搜索用户请求"
+        case .addFriendReq: return "添加好友请求"
+        case .pendingRequestsReq: return "获取好友申请列表"
+        case .handleFriendReq: return "处理好友申请"
             
         case .fileListReq: return "文件列表请求"
         case .fileDetailReq: return "文件详情请求"

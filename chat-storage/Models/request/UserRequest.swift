@@ -18,6 +18,12 @@ struct UserRequest: Codable {
     /// 邮箱（注册时必填，登录时可选）
     let mail: String?
     
+    /// 头像数据 (Base64 编码的图片数据)
+    let avatarData: String?
+    
+    /// 头像文件名 (可选)
+    let avatarName: String?
+    
     // MARK: - Initializers
     
     /// 创建登录请求
@@ -28,6 +34,8 @@ struct UserRequest: Codable {
         self.userName = userName
         self.password = password
         self.mail = nil
+        self.avatarData = nil
+        self.avatarName = nil
     }
     
     /// 创建注册请求
@@ -35,9 +43,13 @@ struct UserRequest: Codable {
     ///   - userName: 用户名
     ///   - password: 密码
     ///   - mail: 邮箱
-    init(userName: String, password: String, mail: String) {
+    ///   - avatarData: 头像数据 (Base64)
+    ///   - avatarName: 头像文件名
+    init(userName: String, password: String, mail: String, avatarData: String? = nil, avatarName: String? = nil) {
         self.userName = userName
         self.password = password
         self.mail = mail
+        self.avatarData = avatarData
+        self.avatarName = avatarName
     }
 }

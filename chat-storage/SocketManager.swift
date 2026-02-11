@@ -34,6 +34,12 @@ public class SocketManager: NSObject, ObservableObject {
     /// 下行速率 (UI 显示)
     @Published var downloadSpeedStr: String = "0 KB/s"
     
+    /// 待处理好友申请数量 (UI 显示)
+    @Published var pendingRequestCount: Int = 0
+    
+    /// 待处理好友申请列表缓存
+    @Published var pendingFriendRequests: [FriendRequestDto] = []
+    
     // MARK: - Private Properties
     
     /// 输入流（从服务器接收数据）
@@ -599,6 +605,155 @@ public class SocketManager: NSObject, ObservableObject {
         totalBytesReceived += count
         speedLock.unlock()
     }
+    
+    // MARK: - User Search
+    
+    /// 搜索用户
+    /// - Parameter userName: 用户名关键词
+    /// - Returns: 用户列表
+    func searchUser(userName: String) async throws -> [UserDto] {
+        // 1. 构建请求模型
+        let request = UserSearchRequest(userName: userName)
+        let jsonData = try JSONEncoder().encode(request)
+        
+        // 2. 构建帧 (0x36)
+        let frame = Frame(type: .searchUserReq, data: jsonData)
+        
+        // 3. 发送并等待响应
+        // 服务端返回的是 userResponse (0x34) 而不是 searchUserReq (0x36)
+        // 错误日志显示: "收到未预期的帧类型: 用户操作响应"
+        let responseFrame = try await sendFrameAndWait(frame, expecting: .userResponse, timeout: 10.0)
+        
+        // 4. 解析响应
+        // 先尝试解析为标准响应结构 (code, message, data)
+        if let jsonObject = try? JSONSerialization.jsonObject(with: responseFrame.data, options: []) as? [String: Any] {
+            // 情况A: 包含 code/data 的标准响应
+            if let data = jsonObject["data"] {
+                let dataData = try JSONSerialization.data(withJSONObject: data)
+                // 尝试解析为列表
+                if let users = try? JSONDecoder().decode([UserDto].self, from: dataData) {
+                    return users
+                }
+                // 尝试解析为单个对象
+                if let user = try? JSONDecoder().decode(UserDto.self, from: dataData) {
+                    return [user]
+                }
+            }
+            
+            // 情况B: 直接是列表或对象 (后端可能直接返回了数据)
+            // 尝试全量解析为列表
+            if let users = try? JSONDecoder().decode([UserDto].self, from: responseFrame.data) {
+                return users
+            }
+            // 尝试全量解析为单个对象 (如截图所示似乎是单个对象)
+            if let user = try? JSONDecoder().decode(UserDto.self, from: responseFrame.data) {
+                return [user]
+            }
+        }
+        
+        // 如果都失败，抛出错误
+        throw SocketError.invalidResponse
+    }
+    
+    // MARK: - Friend Request Management
+    
+    /// 发送好友申请
+    /// - Parameter remoteUserId: 目标用户ID
+    /// - Parameter requestMsg: 验证消息
+    /// - Returns: 是否发送成功
+    func addFriend(remoteUserId: Int64, requestMsg: String) async throws -> Bool {
+        // 1. 构建请求 Payload
+        let payload: [String: Any] = [
+            "userId": remoteUserId,
+            "requestMsg": requestMsg
+        ]
+        let jsonData = try JSONSerialization.data(withJSONObject: payload)
+        
+        // 2. 构建帧 (0x37)
+        let frame = Frame(type: .addFriendReq, data: jsonData)
+        
+        // 3. 发送并等待响应 (0x34)
+        let responseFrame = try await sendFrameAndWait(frame, expecting: .userResponse, timeout: 10.0)
+        
+        // 4. 解析通用响应 (code == 200 即成功)
+        return try parseStandardResponse(responseFrame)
+    }
+    
+    /// 获取未处理的好友申请列表
+    /// - Returns: 申请列表
+    func getPendingRequests() async throws -> [FriendRequestDto] {
+        // 1. 构建空 Payload (或不需要)
+        let frame = Frame(type: .pendingRequestsReq, data: Data())
+        
+        // 2. 发送并等待响应 (0x34)
+        let responseFrame = try await sendFrameAndWait(frame, expecting: .userResponse, timeout: 10.0)
+        
+        // 3. 解析响应数据
+        let requests: [FriendRequestDto] = try parseDataResponse(responseFrame)
+        
+        // 4. 更新状态 (MainActor)
+        await MainActor.run {
+            self.pendingFriendRequests = requests
+            self.pendingRequestCount = requests.count
+        }
+        
+        return requests
+    }
+    
+    /// 处理好友申请
+    /// - Parameters:
+    ///   - requestId: 申请记录ID
+    ///   - action: 1=同意, 2=拒绝
+    /// - Returns: 是否成功
+    func handleFriendRequest(requestId: Int64, action: Int) async throws -> Bool {
+        // 1. 构建请求 Payload
+        let payload: [String: Any] = [
+            "requestId": requestId,
+            "action": action
+        ]
+        let jsonData = try JSONSerialization.data(withJSONObject: payload)
+        
+        // 2. 构建帧 (0x39)
+        let frame = Frame(type: .handleFriendReq, data: jsonData)
+        
+        // 3. 发送并等待响应 (0x34)
+        let responseFrame = try await sendFrameAndWait(frame, expecting: .userResponse, timeout: 10.0)
+        
+        // 4. 解析通用响应
+        return try parseStandardResponse(responseFrame)
+    }
+    
+    // MARK: - Helper Parsing Methods
+    
+    /// 解析标准响应 (code/msg)
+    private func parseStandardResponse(_ frame: Frame) throws -> Bool {
+        guard let jsonResult = try? JSONSerialization.jsonObject(with: frame.data) as? [String: Any] else {
+            throw SocketError.invalidResponse
+        }
+        
+        if let code = jsonResult["code"] as? Int {
+            if code == 200 { return true }
+            let msg = jsonResult["message"] as? String ?? "Unknown error"
+            print("❌ 操作失败: \(msg)")
+            throw DirectoryError.serverError(code: code, message: msg)
+        }
+        // Fallback: 假设没有 code 字段就是成功 (视后端实现而定)
+        return true
+    }
+    
+    /// 解析带数据的响应 (T)
+    private func parseDataResponse<T: Decodable>(_ frame: Frame) throws -> T {
+        // 1. 尝试解析为标准结构 {"code": 200, "data": ...}
+        if let jsonObject = try? JSONSerialization.jsonObject(with: frame.data, options: []) as? [String: Any],
+           let data = jsonObject["data"] {
+            let dataData = try JSONSerialization.data(withJSONObject: data)
+            return try JSONDecoder().decode(T.self, from: dataData)
+        }
+        
+        // 2. 尝试直接解析数据
+        return try JSONDecoder().decode(T.self, from: frame.data)
+    }
+
 }
 
 // MARK: - StreamDelegate

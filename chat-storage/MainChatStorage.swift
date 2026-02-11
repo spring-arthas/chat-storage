@@ -134,6 +134,10 @@ struct MainChatStorage: View {
     @State private var fileDetail: FileDto?
     @State private var isLoadingDetail = false
     
+    // MARK: - New Friend State
+    @State private var showingNewFriendView = false
+    @State private var newFriendBadgeCount = 3 // Mock count
+
     // MARK: - Body
     
     var body: some View {
@@ -146,10 +150,10 @@ struct MainChatStorage: View {
                 
                 // TabView 内容区域
                 TabView(selection: $selectedTab) {
-                    // 第一个标签页：好友列表
-                    friendsListView
+                    // 第一个标签页：好友列表与聊天
+                    FriendChatSplitView()
                         .tabItem {
-                            Label("好友列表", systemImage: "person.2.fill")
+                            Label("消息", systemImage: "bubble.left.and.bubble.right.fill")
                         }
                         .tag(0)
                     
@@ -2331,6 +2335,776 @@ struct DirectoryTreeSelector: View {
             collapsedIds.remove(id)
         } else {
             collapsedIds.insert(id)
+        }
+    }
+}
+
+// MARK: - Friend List & Chat Module
+
+// 1. Data Models (Mock)
+struct Friend: Identifiable, Hashable {
+    let id = UUID()
+    let name: String
+    let status: String // "在线", "离线"
+    let avatarColor: Color
+    let lastMessage: String
+    let lastTime: String
+    let unreadCount: Int
+}
+
+struct ChatMessage: Identifiable, Hashable {
+    let id = UUID()
+    let content: String
+    let isMe: Bool // true = 我发的, false = 对方发的
+    let timestamp: Date
+    let type: MessageType
+    
+    enum MessageType {
+        case text
+        case image
+        case file
+    }
+}
+
+// 2. Chat Detail View (右侧聊天窗口)
+private struct ChatDetailView: View {
+    let friend: Friend
+    @State private var messageText = ""
+    @State private var messages: [ChatMessage] = []
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Text(friend.name)
+                    .font(.system(size: 16, weight: .bold))
+                
+                if friend.status == "在线" {
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 8, height: 8)
+                }
+                
+                Spacer()
+                
+                Button(action: {}) {
+                    Image(systemName: "video")
+                }
+                .buttonStyle(.borderless)
+                
+                Button(action: {}) {
+                    Image(systemName: "phone")
+                }
+                .buttonStyle(.borderless)
+                .padding(.leading, 8)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(Color(NSColor.controlBackgroundColor))
+            
+            Divider()
+            
+            // Messages Area
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 12) {
+                        ForEach(messages) { msg in
+                            messageBubble(msg)
+                        }
+                    }
+                    .padding(16)
+                }
+                .onChange(of: messages.count) { _ in
+                    if let lastId = messages.last?.id {
+                        proxy.scrollTo(lastId, anchor: .bottom)
+                    }
+                }
+            }
+            .background(Color(NSColor.textBackgroundColor)) // 白色或深色背景
+            
+            Divider()
+            
+            // Input Area
+            VStack(spacing: 0) {
+                // Toolbar
+                HStack(spacing: 12) {
+                    Button(action: {}) { Image(systemName: "face.smiling") }
+                    Button(action: {}) { Image(systemName: "paperclip") }
+                    Button(action: {}) { Image(systemName: "folder") }
+                    Spacer()
+                }
+                .foregroundColor(.secondary)
+                .buttonStyle(.borderless)
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+                
+                // Text Editor
+                TextEditor(text: $messageText)
+                    .font(.system(size: 14))
+                    .frame(minHeight: 60)
+                    .scrollContentBackground(.hidden) // 透明背景适配
+                    .background(Color.clear)
+                    .padding(8)
+                
+                // Send Button
+                HStack {
+                    Spacer()
+                    Button("发送") {
+                        sendMessage()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+                    .disabled(messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+            }
+            .background(Color(NSColor.controlBackgroundColor))
+            .frame(height: 150)
+        }
+        .onAppear {
+            loadMockMessages()
+        }
+        .onChange(of: friend) { _ in
+            loadMockMessages() // 切换好友时重载消息
+        }
+    }
+    
+    private func messageBubble(_ msg: ChatMessage) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            if msg.isMe {
+                Spacer()
+                
+                // Bubble (Me)
+                Text(msg.content)
+                    .padding(10)
+                    .background(Color.blue)
+                    .foregroundColor(.white)
+                    .cornerRadius(8)
+                
+                // Avatar (Me)
+                Circle()
+                    .fill(Color.gray)
+                    .frame(width: 32, height: 32)
+                    .overlay(Text("我").font(.caption).foregroundColor(.white))
+            } else {
+                // Avatar (Friend)
+                Circle()
+                    .fill(friend.avatarColor)
+                    .frame(width: 32, height: 32)
+                    .overlay(Text(friend.name.prefix(1)).font(.caption).foregroundColor(.white))
+                
+                // Bubble (Friend)
+                Text(msg.content)
+                    .padding(10)
+                    .background(Color(NSColor.controlBackgroundColor))
+                    .foregroundColor(.primary)
+                    .cornerRadius(8)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.secondary.opacity(0.1), lineWidth: 1)
+                    )
+                
+                Spacer()
+            }
+        }
+        .id(msg.id)
+    }
+    
+    private func sendMessage() {
+        guard !messageText.isEmpty else { return }
+        
+        let newMsg = ChatMessage(content: messageText, isMe: true, timestamp: Date(), type: .text)
+        messages.append(newMsg)
+        messageText = ""
+        
+        // Mock reply
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            let reply = ChatMessage(content: "收到: " + newMsg.content, isMe: false, timestamp: Date(), type: .text)
+            messages.append(reply)
+        }
+    }
+    
+    private func loadMockMessages() {
+        // 生成演示数据
+        messages = [
+            ChatMessage(content: "你好，最近怎么样？", isMe: false, timestamp: Date().addingTimeInterval(-3600), type: .text),
+            ChatMessage(content: "挺好的，在开发新功能。", isMe: true, timestamp: Date().addingTimeInterval(-3000), type: .text),
+            ChatMessage(content: "Chat Storage 看起来很不错！", isMe: false, timestamp: Date().addingTimeInterval(-60), type: .text)
+        ]
+    }
+}
+
+// 3. Friend Sidebar View (左侧列表)
+// 3. Friend Sidebar View (左侧列表)
+// 3. Friend Sidebar View (左侧列表)
+private struct OptimizedFriendSidebarView: View {
+    @Binding var selectedFriendId: UUID?
+    let friends: [Friend]
+    @State private var searchText = ""
+    @State private var showingAddFriendSheet = false
+    @FocusState private var isSearchFocused: Bool
+    @EnvironmentObject var socketManager: SocketManager
+    
+    var filteredFriends: [Friend] {
+        if searchText.isEmpty {
+            return friends
+        } else {
+            return friends.filter { $0.name.contains(searchText) }
+        }
+    }
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Combined Header: Search Bar + Add Button
+            HStack(spacing: 8) {
+                // Search Bar
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.secondary)
+                        .font(.system(size: 12))
+                    
+                    TextField("搜索好友", text: $searchText)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 13))
+                        .focused($isSearchFocused)
+                    
+                    if !searchText.isEmpty {
+                        Button(action: { searchText = "" }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.secondary)
+                                .font(.system(size: 12))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(Color(NSColor.controlBackgroundColor))
+                .cornerRadius(8)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(isSearchFocused ? Color.blue.opacity(0.6) : Color.clear, lineWidth: 1)
+                )
+                
+                // Add Button
+                Button(action: {
+                    showingAddFriendSheet = true
+                }) {
+                    Image(systemName: "person.badge.plus")
+                        .font(.system(size: 14))
+                        .foregroundColor(.white)
+                        .frame(width: 28, height: 28)
+                        .background(Color.blue)
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help("添加好友")
+                .shadow(color: .black.opacity(0.1), radius: 1, x: 0, y: 1)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            
+            Divider()
+            
+            // List
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    // New Friend Item
+                    Button(action: {
+                        selectedFriendId = UUID(uuidString: "00000000-0000-0000-0000-000000000000") // Special ID for New Friend
+                    }) {
+                        HStack(spacing: 12) {
+                            Image(systemName: "person.badge.plus")
+                                .font(.system(size: 16))
+                                .foregroundColor(.white)
+                                .frame(width: 40, height: 40)
+                                .background(Color.orange)
+                                .clipShape(Circle())
+                            
+                            Text("新的朋友")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundColor(.primary)
+                            
+                            Spacer()
+                            
+                            // Badge with dynamic count
+                            if socketManager.pendingRequestCount > 0 {
+                                Text("\(socketManager.pendingRequestCount)")
+                                    .font(.caption)
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.red)
+                                    .clipShape(Capsule())
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .contentShape(Rectangle()) // Make entire area clickable
+                        .background(selectedFriendId?.uuidString == "00000000-0000-0000-0000-000000000000" ? Color.blue : Color.clear)
+                    }
+                    .buttonStyle(.plain)
+
+                    Divider()
+                        .padding(.leading, 64)
+                    
+                    ForEach(filteredFriends) { friend in
+                        FriendRow(friend: friend, isSelected: selectedFriendId == friend.id)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                selectedFriendId = friend.id
+                            }
+                    }
+                }
+            }
+        }
+        .background(Color(NSColor.windowBackgroundColor))
+        .sheet(isPresented: $showingAddFriendSheet) {
+            MacAddFriendSheet(isPresented: $showingAddFriendSheet)
+        }
+    }
+}
+
+// 3.1. Add Friend View (添加好友弹窗 - macOS Style)
+private struct MacAddFriendSheet: View {
+    @Binding var isPresented: Bool
+    @State private var searchText = ""
+    @State private var searchResults: [UserDto] = []
+    @State private var isSearching = false
+    @State private var requestSent = false
+    @State private var lastErrorMessage: String?
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Window Header (Visual Title Bar)
+            ZStack {
+                Text("添加好友")
+                    .font(.headline)
+                    .foregroundColor(.primary)
+                
+                HStack {
+                    Spacer()
+                    Button(action: { isPresented = false }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 16))
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(VisualEffectBlur(material: .headerView, blendingMode: .withinWindow).ignoresSafeArea(edges: .top))
+            
+            Divider()
+            
+            // Main Content
+            VStack(spacing: 24) {
+                // Search Input Group
+                VStack(spacing: 8) {
+                    HStack {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.secondary)
+                        
+                        TextField("输入用户 ID 或昵称", text: $searchText)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 14))
+                            .onSubmit { performSearch() }
+                        
+                        if !searchText.isEmpty {
+                            Button(action: { performSearch() }) {
+                                Text("搜索")
+                                    .fontWeight(.medium)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .disabled(isSearching)
+                        }
+                    }
+                    .padding(12)
+                    .background(Color(NSColor.controlBackgroundColor))
+                    .cornerRadius(10)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+                    )
+                    
+                    Text("通过精确匹配用户 ID 或昵称来查找好友")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.leading, 4)
+                }
+                
+                // Result Area
+                ZStack {
+                    if isSearching {
+                        VStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("正在查找...")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if let errorMessage = lastErrorMessage {
+                         VStack(spacing: 12) {
+                            Image(systemName: "exclamationmark.circle")
+                                .font(.system(size: 32))
+                                .foregroundColor(.red.opacity(0.8))
+                            Text(errorMessage)
+                                .font(.callout)
+                                .foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if !searchResults.isEmpty {
+                        // User Response List
+                        ScrollView {
+                            VStack(spacing: 12) {
+                                ForEach(searchResults) { user in
+                                    UserResultRow(user: user, requestSent: $requestSent)
+                                }
+                            }
+                            .padding(.horizontal, 4)
+                        }
+                    } else if !searchText.isEmpty {
+                        // Empty State for Search
+                        VStack(spacing: 12) {
+                            Image(systemName: "person.slash.fill")
+                                .font(.system(size: 32))
+                                .foregroundColor(.secondary.opacity(0.5))
+                            Text("未找到该用户")
+                                .font(.headline)
+                                .foregroundColor(.secondary)
+                            Text("请检查输入的 ID 或昵称是否正确")
+                                .font(.caption)
+                                .foregroundColor(.secondary.opacity(0.8))
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        // Initial Empty State
+                        VStack(spacing: 12) {
+                            Image(systemName: "person.2.circle")
+                                .font(.system(size: 48))
+                                .foregroundStyle(LinearGradient(colors: [.blue.opacity(0.6), .purple.opacity(0.6)], startPoint: .top, endPoint: .bottom))
+                                .opacity(0.5)
+                            Text("寻找新朋友")
+                                .font(.headline)
+                                .foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
+                .frame(height: 160) // Increased height to accommodate list
+            }
+            .padding(24)
+        }
+        .frame(width: 600, height: 450) // Increased size for better text display
+        .background(VisualEffectBlur(material: .windowBackground, blendingMode: .behindWindow))
+    }
+    // 用户名搜索
+    private func performSearch() {
+        guard !searchText.isEmpty else { return }
+        
+        isSearching = true
+        searchResults = []
+        lastErrorMessage = nil
+        requestSent = false
+        
+        Task {
+            do {
+                let users = try await SocketManager.shared.searchUser(userName: searchText)
+                await MainActor.run {
+                    self.searchResults = users
+                    self.isSearching = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.lastErrorMessage = error.localizedDescription
+                    self.isSearching = false
+                }
+            }
+        }
+    }
+}
+
+// Subview for User Result Row 用户搜索结果行视图
+private struct UserResultRow: View {
+    let user: UserDto
+    @Binding var requestSent: Bool
+    @State private var isHovering = false
+    
+    @EnvironmentObject var socketManager: SocketManager
+    @State private var showingAlert = false
+    @State private var alertMessage = ""
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            // Avatar
+            if let avatarStr = user.avatar,
+               let avatarData = Data(base64Encoded: avatarStr),
+               let nsImage = NSImage(data: avatarData) {
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 40, height: 40)
+                    .clipShape(Circle())
+            } else {
+                Circle()
+                    .fill(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .frame(width: 40, height: 40)
+                    .overlay(Text(user.nickName.prefix(1)).foregroundColor(.white).font(.headline))
+            }
+            
+            VStack(alignment: .leading, spacing: 4) {
+                Text(user.nickName)
+                    .font(.headline)
+                    .foregroundColor(.primary)
+                HStack(spacing: 6) {
+                    Text("@\(user.userName)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    if let statusDesc = user.friendStatusDesc, !statusDesc.isEmpty {
+                        Text(statusDesc)
+                            .font(.caption2)
+                            .foregroundColor(statusColor(for: user.friendStatus))
+                    }
+                }
+            }
+            
+            Spacer()
+            
+            // 按钮逻辑状态机
+            Group {
+                if let status = user.friendStatus {
+                    switch status {
+                    case 0: // 已申请
+                        Button("已申请") {}
+                            .disabled(true)
+                            .controlSize(.small)
+                    case 1: // 已是好友
+                        Button("已是好友") {}
+                            .disabled(true)
+                            .controlSize(.small)
+                    case 2: // 对方拒绝 (允许再次申请)
+                        Button(action: sendFriendRequest) {
+                            Text(requestSent ? "已发送" : "添加")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .disabled(requestSent)
+                    default: // 陌生人/其他
+                        Button(action: sendFriendRequest) {
+                            Text(requestSent ? "已发送" : "添加")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .disabled(requestSent)
+                    }
+                } else {
+                    // 默认 (无状态返回时)
+                    Button(action: sendFriendRequest) {
+                        Text(requestSent ? "已发送" : "添加")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(requestSent)
+                }
+            }
+        }
+        .padding(12)
+        .background(isHovering ? Color.blue.opacity(0.1) : Color.clear)
+        .cornerRadius(8)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.2)) {
+                isHovering = hovering
+            }
+        }
+        .contentShape(Rectangle()) // Ensure hover works on the whole row
+        .alert("添加好友", isPresented: $showingAlert) {
+            Button("确定", role: .cancel) { }
+        } message: {
+            Text(alertMessage)
+        }
+    }
+    
+    private func statusColor(for status: Int?) -> Color {
+        switch status {
+        case 0: return .orange
+        case 1: return .green
+        case 2: return .red
+        default: return .secondary
+        }
+    }
+    
+    private func sendFriendRequest() {
+        Task {
+            do {
+                // 1. 构建默认验证消息
+                let displayName = user.nickName.isEmpty ? user.userName : user.nickName
+                let msg = "\(displayName)申请添加你为好友"
+                
+                // 2. 发送好友请求
+                print("📨 Sending friend request to \(user.userName) (ID: \(user.id)) with msg: \(msg)")
+                let success = try await socketManager.addFriend(remoteUserId: user.id, requestMsg: msg)
+                
+                await MainActor.run {
+                    if success {
+                        withAnimation {
+                            requestSent = true
+                        }
+                    } else {
+                        alertMessage = "请求发送失败"
+                        showingAlert = true
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    alertMessage = "发送失败: \(error.localizedDescription)"
+                    showingAlert = true
+                    print("❌ Friend request failed: \(error)")
+                }
+            }
+        }
+    }
+}
+
+// Helper for padding
+extension View {
+    func paddingStreamlined() -> some View {
+        self.padding(16)
+    }
+}
+
+// Blur Effect Helper
+struct VisualEffectBlur: NSViewRepresentable {
+    var material: NSVisualEffectView.Material
+    var blendingMode: NSVisualEffectView.BlendingMode
+    
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let visualEffectView = NSVisualEffectView()
+        visualEffectView.material = material
+        visualEffectView.blendingMode = blendingMode
+        visualEffectView.state = .active
+        return visualEffectView
+    }
+    
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.blendingMode = blendingMode
+    }
+}
+
+
+private struct FriendRow: View {
+    let friend: Friend
+    let isSelected: Bool
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            // Avatar
+            Circle()
+                .fill(friend.avatarColor)
+                .frame(width: 40, height: 40)
+                .overlay(
+                    Text(friend.name.prefix(1))
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundColor(.white)
+                )
+            
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(friend.name)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(isSelected ? .white : .primary)
+                    Spacer()
+                    Text(friend.lastTime)
+                        .font(.caption)
+                        .foregroundColor(isSelected ? .white.opacity(0.8) : .secondary)
+                }
+                
+                Text(friend.lastMessage)
+                    .font(.system(size: 12))
+                    .foregroundColor(isSelected ? .white.opacity(0.8) : .secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(isSelected ? Color.blue : Color.clear)
+    }
+}
+
+// 4. Friend Chat Split View (主容器)
+private struct FriendChatSplitView: View {
+    @State private var selectedFriendId: UUID?
+    @State private var friends: [Friend] = []
+    @EnvironmentObject var socketManager: SocketManager
+    
+    var body: some View {
+        HStack(spacing: 0) {
+            // Left Sidebar
+            OptimizedFriendSidebarView(selectedFriendId: $selectedFriendId, friends: friends)
+                .frame(width: 260)
+            
+            Divider()
+            
+            // Right Detail
+            if let selectedId = selectedFriendId {
+                if selectedId.uuidString == "00000000-0000-0000-0000-000000000000" {
+                    NewFriendView()
+                } else if let friend = friends.first(where: { $0.id == selectedId }) {
+                    ChatDetailView(friend: friend)
+                } else {
+                    // Placeholder
+                    VStack(spacing: 16) {
+                        Image(systemName: "bubble.left.and.bubble.right")
+                            .font(.system(size: 48))
+                            .foregroundColor(.secondary)
+                        Text("选择一个好友开始聊天")
+                            .font(.title3)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(NSColor.textBackgroundColor))
+                }
+            } else {
+                VStack(spacing: 16) {
+                    Image(systemName: "bubble.left.and.bubble.right")
+                        .font(.system(size: 48))
+                        .foregroundColor(.secondary)
+                    Text("选择一个好友开始聊天")
+                        .font(.title3)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(NSColor.textBackgroundColor))
+            }
+        }
+        .onAppear {
+            loadMockFriends()
+        }
+    }
+    
+    private func loadMockFriends() {
+        friends = [
+            Friend(name: "好友 1", status: "在线", avatarColor: .blue, lastMessage: "Chat Storage 看起来很不错！", lastTime: "12:30", unreadCount: 0),
+            Friend(name: "好友 2", status: "在线", avatarColor: .orange, lastMessage: "明天开会吗？", lastTime: "昨天", unreadCount: 2),
+            Friend(name: "好友 3", status: "离线", avatarColor: .purple, lastMessage: "[图片]", lastTime: "周一", unreadCount: 0),
+            Friend(name: "好友 4", status: "在线", avatarColor: .green, lastMessage: "文件已接收", lastTime: "10/01", unreadCount: 0),
+            Friend(name: "好友 5", status: "离线", avatarColor: .red, lastMessage: "好的，收到。", lastTime: "09/28", unreadCount: 0)
+        ]
+        // 默认选中第一个
+        if selectedFriendId == nil {
+            selectedFriendId = friends.first?.id
+        }
+        
+        // Fetch pending requests count on load
+        Task {
+            try? await socketManager.getPendingRequests()
         }
     }
 }

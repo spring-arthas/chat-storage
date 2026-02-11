@@ -87,13 +87,21 @@ class AuthenticationService: ObservableObject {
     ///   - userName: 用户名
     ///   - password: 密码
     ///   - mail: 邮箱
+    ///   - avatarData: 头像数据 (Base64)
+    ///   - avatarName: 头像文件名
     /// - Returns: 用户信息
     /// - Throws: AuthError
-    func register(userName: String, password: String, mail: String) async throws -> UserDO {
+    func register(userName: String, password: String, mail: String, avatarData: String? = nil, avatarName: String? = nil) async throws -> UserDO {
         print("📝 开始注册: \(userName)")
         
         // 1. 构建请求体
-        let request = UserRequest(userName: userName, password: password, mail: mail)
+        let request = UserRequest(
+            userName: userName,
+            password: password,
+            mail: mail,
+            avatarData: avatarData,
+            avatarName: avatarName
+        )
         
         // 2. 构建帧
         let frame = try FrameBuilder.build(

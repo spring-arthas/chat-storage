@@ -140,7 +140,7 @@ struct LoginView: View {
             .disabled(isLoading || username.isEmpty || password.isEmpty)
             
             // 注册链接
-            Button("还没有账号？立即注册") {
+            Button("还没有账号？立即注册 (新)") {
                 showRegister = true
             }
             .buttonStyle(.link)

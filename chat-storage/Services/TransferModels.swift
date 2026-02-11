@@ -436,3 +436,115 @@ public class TransferTaskManager: ObservableObject {
         }
     }
 }
+
+// MARK: - User Search Models
+
+/// 搜索用户请求
+public struct UserSearchRequest: Codable {
+    /// 搜索的用户名关键词
+    public let userName: String
+    
+    public init(userName: String) {
+        self.userName = userName
+    }
+}
+
+/// 搜索用户响应 (Data Transfer Object)
+public struct UserDto: Codable, Identifiable {
+    /// 服务端返回的唯一标识 (Long 类型)
+    public let id: Int64
+    
+    /// 用户名 (账号)
+    public let userName: String
+    
+    /// 昵称
+    public let nickName: String
+    
+    /// 头像 (Base64编码字符串)
+    public let avatar: String?
+    
+    /// 好友状态: 0=申请中, 1=已是好友, 2=已拒绝, 3=陌生人(可添加)
+    public let friendStatus: Int?
+    
+    /// 好友状态描述
+    public let friendStatusDesc: String?
+    
+    /// 兼容性: 将 id 转换为 String 类型的 userId
+    public var userId: String { String(id) }
+    
+    enum CodingKeys: String, CodingKey {
+        case id
+        case userName
+        case nickName
+        case avatar
+        case friendStatus
+        case friendStatusDesc
+    }
+}
+
+/// 好友申请状态
+public enum FriendRequestStatus: Int, Codable {
+    case pending = 0  // 待处理
+    case accepted = 1 // 已同意
+    case rejected = 2 // 已拒绝
+}
+
+/// 好友申请信息 (Data Transfer Object)
+public struct FriendRequestDto: Codable, Identifiable {
+    /// 申请记录唯一标识 (服务端数据库主键)
+    public let requestId: Int64
+    
+    /// 发送方用户ID
+    public let senderId: Int64
+    
+    /// 发送方用户名 (手机号/ID)
+    public let senderName: String
+    
+    /// 发送方昵称
+    public let senderNickName: String
+    
+    /// 发送方头像
+    public let senderAvatar: String?
+    
+    /// 验证消息
+    public let requestMsg: String
+    
+    /// 申请时间 (时间戳)
+    public let createTime: Int64
+    
+    /// 状态
+    public let status: FriendRequestStatus
+    
+    // Identifiable
+    public var id: String { String(requestId) }
+    
+    enum CodingKeys: String, CodingKey {
+        case requestId = "id"
+        case senderId
+        case senderName = "userName"
+        case senderNickName = "nickName"
+        case senderAvatar = "avatar"
+        case requestMsg
+        case createTime = "gmtCreated"
+        case status
+    }
+    
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        requestId = try container.decode(Int64.self, forKey: .requestId)
+        senderId = try container.decode(Int64.self, forKey: .senderId)
+        
+        // Robust decoding for senderName (userName): Handle Int or String
+        if let nameInt = try? container.decode(Int64.self, forKey: .senderName) {
+            senderName = String(nameInt)
+        } else {
+            senderName = try container.decode(String.self, forKey: .senderName)
+        }
+        
+        senderNickName = try container.decode(String.self, forKey: .senderNickName)
+        senderAvatar = try container.decodeIfPresent(String.self, forKey: .senderAvatar)
+        requestMsg = try container.decode(String.self, forKey: .requestMsg)
+        createTime = try container.decode(Int64.self, forKey: .createTime)
+        status = try container.decode(FriendRequestStatus.self, forKey: .status)
+    }
+}
