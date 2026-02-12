@@ -70,7 +70,8 @@ struct ConfigServerView: View {
                             Text("服务器地址")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text("\(currentServer.host):\(currentServer.port)")
+                            let (host, port) = currentServer
+                            Text("\(host):\(port)")
                                 .font(.body)
                                 .fontWeight(.medium)
                         }
@@ -206,8 +207,11 @@ struct ConfigServerView: View {
         .frame(width: 450, height: 480)  // 增加高度，避免内容被遮挡
         .onAppear {
             // 初始化为当前服务器地址
-            let current = socketManager.getCurrentServer()
-            serverAddress = "\(current.host):\(current.port)"
+            if isTesting {
+                return
+            }
+            let (host, port) = socketManager.getCurrentServer()
+            self.serverAddress = "\(host):\(port)"
         }
     }
     
@@ -220,11 +224,9 @@ struct ConfigServerView: View {
             return "checkmark.circle.fill"
         case .connecting:
             return "arrow.clockwise.circle.fill"
-        case .reconnecting:
-            return "arrow.triangle.2.circlepath.circle.fill"
         case .disconnected:
             return "xmark.circle.fill"
-        case .failed:
+        case .error:
             return "exclamationmark.triangle.fill"
         }
     }
@@ -236,11 +238,9 @@ struct ConfigServerView: View {
             return .green
         case .connecting:
             return .blue
-        case .reconnecting:
-            return .orange
         case .disconnected:
             return .gray
-        case .failed:
+        case .error:
             return .red
         }
     }
@@ -252,12 +252,10 @@ struct ConfigServerView: View {
             return "连接正常"
         case .connecting:
             return "连接中..."
-        case .reconnecting:
-            return "重连中..."
         case .disconnected:
             return "未连接"
-        case .failed:
-            return "连接失败"
+        case .error(let msg):
+            return "连接失败: \(msg)"
         }
     }
     
@@ -268,11 +266,9 @@ struct ConfigServerView: View {
             return "正常"
         case .connecting:
             return "连接中"
-        case .reconnecting:
-            return "重连中"
         case .disconnected:
             return "断开"
-        case .failed:
+        case .error:
             return "异常"
         }
     }
@@ -342,21 +338,33 @@ struct ConfigServerView: View {
                         }
                     }
                     
-                } else if socketManager.connectionState == .failed || checkCount >= maxChecks {
-                    // 连接失败或超时
-                    timer.invalidate()
-                    isTesting = false
-                    isNewConnectionReady = false
-                    
-                    // 停止旋转动画
-                    stopRotationAnimation()
-                    
-                    if checkCount >= maxChecks {
-                        statusMessage = "连接超时，请检查地址和网络"
-                    } else {
-                        statusMessage = "连接失败，请检查地址和网络"
+                } else {
+                     // Check for error state
+                     var isFailed = false
+                     if case .error = socketManager.connectionState {
+                         isFailed = true
+                     }
+                     
+                     if isFailed || checkCount >= maxChecks {
+                        // 连接失败或超时
+                        timer.invalidate()
+                        isTesting = false
+                        isNewConnectionReady = false
+                        
+                        // 停止旋转动画
+                        stopRotationAnimation()
+                        
+                        if checkCount >= maxChecks {
+                            statusMessage = "连接超时，请检查地址和网络"
+                        } else {
+                            if case .error(let msg) = socketManager.connectionState {
+                                statusMessage = "连接失败: \(msg)"
+                            } else {
+                                statusMessage = "连接失败，请检查地址和网络"
+                            }
+                        }
+                        statusColor = .red
                     }
-                    statusColor = .red
                 }
             }
         }

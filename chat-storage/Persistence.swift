@@ -177,19 +177,51 @@ class PersistenceManager {
         }
     }
     
+    /// Delete all completed tasks (status: "Completed" or "已完成")
+    func deleteCompletedTasks() {
+        context.perform {
+            let request: NSFetchRequest<TransferTaskEntity> = TransferTaskEntity.fetchRequest()
+            // 匹配两种状态: 英文 "Completed" 和 中文 "已完成"
+            request.predicate = NSPredicate(format: "status == %@ OR status == %@", "Completed", "已完成")
+            
+            do {
+                let entities = try self.context.fetch(request)
+                if !entities.isEmpty {
+                    for entity in entities {
+                        self.context.delete(entity)
+                    }
+                    self.saveContext()
+                    print("💾 Persistence: 已删除 \(entities.count) 个已完成任务")
+                } else {
+                    print("💾 Persistence: 没有已完成的任务需要删除")
+                }
+            } catch {
+                print("❌ Failed to delete completed tasks: \(error)")
+            }
+        }
+    }
+    
     // MARK: - Helpers
     
-    private func fetchEntity(taskId: String) -> TransferTaskEntity? {
-        let request: NSFetchRequest<TransferTaskEntity> = TransferTaskEntity.fetchRequest()
-        request.predicate = NSPredicate(format: "taskId == %@", taskId)
-        request.fetchLimit = 1
+    /// 获取任务实体（公开方法供 TransferTaskManager 访问，线程安全）
+    func fetchEntity(taskId: String) -> TransferTaskEntity? {
+        var result: TransferTaskEntity?
         
-        do {
-            return try context.fetch(request).first
-        } catch {
-            print("❌ Error fetching task \(taskId): \(error)")
-            return nil
+        // 使用 performAndWait 确保在正确的队列上执行，避免线程安全问题
+        context.performAndWait {
+            let request: NSFetchRequest<TransferTaskEntity> = TransferTaskEntity.fetchRequest()
+            request.predicate = NSPredicate(format: "taskId == %@", taskId)
+            request.fetchLimit = 1
+            
+            do {
+                result = try context.fetch(request).first
+            } catch {
+                print("❌ Error fetching task \(taskId): \(error)")
+                result = nil
+            }
         }
+        
+        return result
     }
     
     private func saveContext() {

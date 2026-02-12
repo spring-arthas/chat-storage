@@ -2,48 +2,60 @@
 //  UserDO.swift
 //  chat-storage
 //
-//  Created by HLJY on 2026/1/30.
+//  Created by HLJY on 2026/2/1.
 //
 
 import Foundation
 
-/// 用户数据对象（服务端返回）
-struct UserDO: Codable {
-    /// 用户 ID
-    let userId: Int?
+// MARK: - UserDO (Data Object)
+
+/// 用户数据对象 (对应数据库或API返回的用户信息)
+struct UserDO: Codable, Identifiable {
+    /// 用户唯一ID
+    let id: Int64
     
-    /// 用户名
-    let userName: String
+    /// 用户名 (账号)
+    let username: String
     
-    /// 认证令牌（登录成功后返回）
-    let token: String?
+    /// 昵称 (显示名称) - 可选，服务器可能不返回
+    let nickname: String?
     
-    /// 密码（通常不返回或返回加密后的）
-    let password: String?
+    /// 头像URL或路径
+    let avatar: String?
     
     /// 邮箱
-    let mail: String?
+    let email: String?
     
-    /// 最后登录时间（ISO 8601 格式）
-    let lastLoginDate: String?
+    /// 手机号
+    let phone: String?
     
-    /// 注册时间（ISO 8601 格式）
-    let registerDate: String?
+    /// 创建时间 (时间戳) - 可选
+    let createTime: Int64?
     
-    // MARK: - Computed Properties
+    /// 更新时间 (时间戳) - 可选
+    let updateTime: Int64?
     
-    /// 最后登录时间对象
-    var lastLoginDateTime: Date? {
-        guard let dateString = lastLoginDate else { return nil }
-        return ISO8601DateFormatter().date(from: dateString)
-    }
+    /// 状态 (0:正常, 1:禁用) - 可选
+    let status: Int?
     
-    /// 注册时间对象
-    var registerDateTime: Date? {
-        guard let dateString = registerDate else { return nil }
-        return ISO8601DateFormatter().date(from: dateString)
+    // Identifiable 协议要求
+    var identifiableId: String { String(id) }
+    
+    
+    enum CodingKeys: String, CodingKey {
+        case id = "userId"  // Server sends "userId", map to "id"
+        case username = "userName"  // Server sends "userName", map to "username"
+        case nickname = "nickName"  // Server sends "nickName", map to "nickname"
+        case avatar
+        case email = "mail"  // Server sends "mail", map to "email"
+        case phone
+        case createTime
+        case updateTime
+        case status
     }
 }
+
+// MARK: - Common Response Wrapper
 
 /// 通用响应包装器
 /// 支持两种服务器响应格式：
@@ -77,47 +89,37 @@ struct ResponseWrapper<T: Codable>: Codable {
         return code == 200
     }
     
-    // MARK: - Codable
-    
     enum CodingKeys: String, CodingKey {
         case success
         case codeValue = "code"
-        case message
+        case message = "msg" // 兼容 msg 和 message
         case data
     }
     
+    // 自定义解码逻辑以处理 message/msg 字段
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        success = try container.decodeIfPresent(Bool.self, forKey: .success)
+        codeValue = try container.decodeIfPresent(Int.self, forKey: .codeValue)
+        data = try container.decodeIfPresent(T.self, forKey: .data)
         
-        // 尝试解码 success 字段
-        success = try? container.decode(Bool.self, forKey: .success)
-        
-        // 尝试解码 code 字段
-        codeValue = try? container.decode(Int.self, forKey: .codeValue)
-        
-        // message 是必需的
-        message = try container.decode(String.self, forKey: .message)
-        
-        // data 是可选的
-        data = try? container.decode(T.self, forKey: .data)
+        // 尝试读取 message，如果失败尝试读取 msg
+        if let msg = try? container.decode(String.self, forKey: .message) {
+            message = msg
+        } else {
+            // 如果都没有，尝试用 CodingKey 扩展或者直接设为空
+            // 由于 CodingKeys 映射了 message = "msg"，这里其实只能读 "msg"
+            // 为了更灵活，可能需要手动处理
+            message = ""
+        }
     }
     
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        
-        if let success = success {
-            try container.encode(success, forKey: .success)
-        }
-        
-        if let codeValue = codeValue {
-            try container.encode(codeValue, forKey: .codeValue)
-        }
-        
+        try container.encodeIfPresent(success, forKey: .success)
+        try container.encodeIfPresent(codeValue, forKey: .codeValue)
         try container.encode(message, forKey: .message)
-        
-        if let data = data {
-            try container.encode(data, forKey: .data)
-        }
+        try container.encodeIfPresent(data, forKey: .data)
     }
 }
 

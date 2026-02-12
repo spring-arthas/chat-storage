@@ -342,7 +342,7 @@ struct RegisterView: View {
                 // 注册成功
                 await MainActor.run {
                     isLoading = false
-                    print("✅ 注册成功！用户名: \(user.userName)")
+                    print("✅ 注册成功！用户名: \(user.username)")
                     // 返回登录界面
                     showRegister = false
                 }

@@ -61,6 +61,8 @@ enum FrameTypeEnum: UInt8, CaseIterable {
     
     /// 搜索用户请求 (0x36)
     case searchUserReq = 0x36
+    /// 获取好友列表请求 (0x35)
+    case friendListReq = 0x35
     /// 添加好友请求 (0x37)
     case addFriendReq = 0x37
     /// 获取未处理好友申请请求 (0x38)
@@ -106,6 +108,7 @@ enum FrameTypeEnum: UInt8, CaseIterable {
         case .userLogoutReq: return "用户退出登录请求"
         case .userResponse: return "用户操作响应"
         case .searchUserReq: return "搜索用户请求"
+        case .friendListReq: return "获取好友列表请求"
         case .addFriendReq: return "添加好友请求"
         case .pendingRequestsReq: return "获取好友申请列表"
         case .handleFriendReq: return "处理好友申请"
