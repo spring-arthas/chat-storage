@@ -150,7 +150,7 @@ private struct FriendRequestRow: View {
             Spacer()
             
             // Action Buttons or Status
-            if request.status == .pending {
+            if request.status == 0 {
                 HStack(spacing: 8) {
                     if isProcessing {
                         ProgressView()
@@ -159,7 +159,7 @@ private struct FriendRequestRow: View {
                     } else {
                         Button(action: {
                             isProcessing = true
-                            onAction(request.requestId, 2) // Reject
+                            onAction(request.id, 2) // Reject
                         }) {
                             Text("拒绝")
                                 .font(.system(size: 12))
@@ -169,7 +169,7 @@ private struct FriendRequestRow: View {
                         
                         Button(action: {
                             isProcessing = true
-                            onAction(request.requestId, 1) // Accept
+                            onAction(request.id, 1) // Accept
                         }) {
                             Text("同意")
                                 .font(.system(size: 12))
@@ -179,7 +179,7 @@ private struct FriendRequestRow: View {
                     }
                 }
             } else {
-                Text(request.status == .accepted ? "已添加" : "已拒绝")
+                Text(request.status == 1 ? "已添加" : "已拒绝")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                     .padding(.trailing, 8)

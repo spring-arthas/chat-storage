@@ -635,6 +635,7 @@ enum DirectoryError: LocalizedError {
     }
 }
 
+
 // MARK: - FileTransferService (Merged)
 // Moved here because the original file was not included in the Xcode project target.
 
@@ -666,6 +667,7 @@ class FileTransferService: ObservableObject {
         userId: Int32,
         userName: String,
         taskId: String,
+        startOffset: Int64 = 0,
         progressHandler: ((Double, String) -> Void)? = nil
     ) async throws {
         print("🚀 开始上传文件: \(fileUrl.lastPathComponent) (TaskID: \(taskId))")
@@ -726,19 +728,20 @@ class FileTransferService: ObservableObject {
         print("🔍 发送断点检查请求...")
         
         // 构建字典类型的请求体，确保 userId 是数字，且可以在此处去掉 taskId 如果服务端不需要
-        let metaRequestDict: [String: Any] = [
-            "md5": md5,
-            "fileName": fileName,
+        // 发送上传请求元数据（包含startOffset用于断点续传）
+        let uploadRequest: [String: Any] = [
             "fileSize": fileSize,
-            "fileType": fileType,
             "dirId": targetDirId,
+            "fileName": fileName,
             "userId": userId,
             "userName": userName,
-            "taskId": taskId
+            "taskId": taskId,
+            "md5": md5,
+            "startOffset": startOffset
         ]
         
         // --- DEBUG LOG START ---
-        if let jsonData = try? JSONSerialization.data(withJSONObject: metaRequestDict), let jsonString = String(data: jsonData, encoding: .utf8) {
+        if let jsonData = try? JSONSerialization.data(withJSONObject: uploadRequest), let jsonString = String(data: jsonData, encoding: .utf8) {
             print("📤 [DEBUG] Meta Request JSON (Dict): \(jsonString)")
             
             // 使用字典构建 Frame
@@ -779,15 +782,18 @@ class FileTransferService: ObservableObject {
                 throw FileTransferError.serverError(resumeInfo.message ?? "未知状态")
             }
             
+            
             // --- Persistence Update Status ---
-            PersistenceManager.shared.updateStatus(taskId: finalTaskId, status: "Uploading")
+            // 关键修复: 使用原始 taskId 更新数据库，确保记录匹配
+            PersistenceManager.shared.updateStatus(taskId: taskId, status: "Uploading")
             // --- Persistence Update End ---
             
             // 5. 发送文件数据 (0x02)
             if offset < fileSize {
+                // 发送文件数据（从startOffset开始）
                 try await sendFileData(
                     fileUrl: fileUrl,
-                    offset: offset,
+                    offset: startOffset,
                     taskId: finalTaskId, // 使用 finalTaskId
                     fileSize: fileSize,
                     progressHandler: progressHandler
@@ -811,8 +817,8 @@ class FileTransferService: ObservableObject {
             
             // --- Persistence Complete ---
             // 任务完成，可以选择删除或标记为完成。 根据需求保留记录。
-            PersistenceManager.shared.updateStatus(taskId: finalTaskId, status: "Completed")
-            // PersistenceManager.shared.deleteTask(taskId: finalTaskId) // 暂时保留
+            PersistenceManager.shared.updateStatus(taskId: taskId, status: "Completed")
+            // PersistenceManager.shared.deleteTask(taskId: taskId) // 暂时保留
             // --- Persistence End ---
             
         } else {
@@ -820,7 +826,6 @@ class FileTransferService: ObservableObject {
         }
     }
     
-    /// 发送文件数据分块
     /// 发送文件数据分块
     private func sendFileData(
         fileUrl: URL,
@@ -859,7 +864,8 @@ class FileTransferService: ObservableObject {
                 if !outputStream.hasSpaceAvailable {
                     // 如果缓冲区已满，挂起等待直到可写 (基于事件驱动，不再使用 sleep)
                     // 同时释放 MainActor，让 UI 和其他事件（如心跳、ACK）能被处理
-                    await socketManager.waitForWritable()
+                    // await socketManager.waitForWritable()
+                    try? await Task.sleep(nanoseconds: 10_000_000)
                     
                     // 唤醒后再次检查，如果还是满的（极少情况），下次循环会再次等待
                     continue
@@ -977,7 +983,7 @@ class FileTransferService: ObservableObject {
                 switch frame.type {
                 case .ackFrame, .metaFrame:
                     if let jsonString = String(data: frame.data, encoding: .utf8),
-                       let data = jsonString.data(using: .utf8),
+                       let data = jsonString.data(using: String.Encoding.utf8),
                        let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                         
                         // 检查错误
@@ -997,7 +1003,7 @@ class FileTransferService: ObservableObject {
                             let readyAck: [String: Any] = ["taskId": taskId, "status": "ready"]
                             if let readyData = try? JSONSerialization.data(withJSONObject: readyAck) {
                                 let readyFrame = Frame(type: .ackFrame, data: readyData, flags: 0x00)
-                                _ = self.socketManager.send(data: readyFrame.toBytes())
+                                try? self.socketManager.sendFrame(readyFrame)
                             }
                         }
                     }

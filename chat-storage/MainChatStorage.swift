@@ -135,7 +135,7 @@ struct MainChatStorage: View {
     @State private var isLoadingDetail = false
     
     // MARK: - New Friend State
-    @State private var showingNewFriendView = false
+    @State public var showingNewFriendView = false
     @State private var newFriendBadgeCount = 3 // Mock count
 
     // MARK: - Body
@@ -191,19 +191,27 @@ struct MainChatStorage: View {
             // generateFakeData() // Removed demo data generation
             // 初始化目录服务
             directoryService = DirectoryService(socketManager: socketManager)
-            // 恢复挂起的任务 (Persistent Resumable Transfer)
-            directoryService?.resumePendingTasks()
             
-            // 延迟加载恢复的任务到 UI (等待 restore 完成)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                print("🔄 Syncing restored tasks to UI...")
-                loadRestoredTasks()
-            }
+            // 不在登录时恢复或启动任何任务，完全移除自动恢复逻辑
+            // 等待用户切换到网盘标签时再手动处理
+            // directoryService?.resumePendingTasks()
+            
+            // 不在登录时立即恢复任务，等待用户切换到网盘存储标签时再恢复
+            // 这样可以避免在登录界面就建立大量连接，提升用户体验
+            // DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            //     print("🔄 Syncing restored tasks to UI...")
+            //     loadRestoredTasks()
+            // }
         }
         .onChange(of: selectedTab) { newTab in
-            // 当切换到网盘存储标签页时，加载目录
-            // 使用 DispatchQueue 延迟执行，避免在视图初始化时立即创建 Task
+            // 当切换到网盘存储标签页时，恢复传输任务和加载目录
             if newTab == 1 {
+                // 只在第一次切换到网盘标签时恢复任务
+                if transferList.isEmpty {
+                    loadRestoredTasks()
+                }
+                
+                // 加载目录树（如果还未加载）
                 if directoryTree.isEmpty {
                     DispatchQueue.main.async {
                         Task {
@@ -230,7 +238,7 @@ struct MainChatStorage: View {
             var needReload = false
             
             for (id, info) in updates {
-                if let index = self.transferList.firstIndex(where: { $0.id == id }) {
+                if let index = self.transferList.firstIndex(where: { $0.id.uuidString == id }) {
                     let oldStatus = self.transferList[index].status
                     // 更新状态
                     self.transferList[index].status = info.0
@@ -746,22 +754,20 @@ struct MainChatStorage: View {
                 
                 // 清除已完成按钮
                 Button(action: {
-                    // 清除已完成的任务
-                    let completedTasks = transferList.filter { $0.status == "已完成" }
-                    print("🗑️ 清除已完成任务: \(completedTasks.count) 个")
+                    // 1. 调用管理器清除 (内存 + 数据库)
+                    transferManager.clearCompletedTasks()
                     
-                    for task in completedTasks {
-                        print("🗑️ 删除任务: \(task.name) (ID: \(task.id.uuidString))")
-                        // 从内存管理器中移除 (会自动删除数据库)
-                        transferManager.cancel(id: task.id)
+                    // 2. 从UI列表移除
+                    let beforeCount = transferList.count
+                    transferList.removeAll { $0.status == "已完成" || $0.status == "Completed" }
+                    let removedCount = beforeCount - transferList.count
+                    
+                    print("✅ [UI] 已移除 \(removedCount) 个已完成任务")
+                    
+                    // 3. 重新排序
+                    if isAutoSortEnabled {
+                        sortTransferList()
                     }
-                    
-                    // 从UI列表移除
-                    transferList.removeAll { $0.status == "已完成" }
-                    print("✅ 已从UI移除 \(completedTasks.count) 个已完成任务")
-                    
-                    // 重新排序剩余任务 (保持规则一致)
-                    sortTransferList()
                 }) {
                     Label("清除已完成", systemImage: "trash.circle")
                         .font(.system(size: 11))
@@ -982,8 +988,8 @@ struct MainChatStorage: View {
     }
     
     private func loadServerAddress() {
-        let server = socketManager.getCurrentServer()
-        serverAddress = "\(server.host):\(server.port)"
+        let (host, port) = socketManager.getCurrentServer()
+        serverAddress = "\(host):\(port)"
     }
     
     private func toggleSelection(_ id: Int64) {
@@ -1262,8 +1268,8 @@ struct MainChatStorage: View {
         let finalFileName = targetUrl.lastPathComponent
         
         // 获取当前用户ID
-        let currentUserId = Int64(authService.currentUser?.userId ?? 0)
-        let currentUserName = String(authService.currentUser?.userName ?? "default")
+        let currentUserId = Int64(authService.currentUser?.id ?? 0)
+        let currentUserName = String(authService.currentUser?.username ?? "default")
         
         let task = StorageTransferTask(
             id: UUID(), // Explicitly provide ID
@@ -1867,8 +1873,8 @@ struct MainChatStorage: View {
         
         // 2. 遍历列表，提交待处理任务
         var count = 0
-        let currentUserId = Int64(authService.currentUser?.userId ?? 0)
-        let currentUserName = String(authService.currentUser?.userName ?? "default")
+        let currentUserId = Int64(authService.currentUser?.id ?? 0)
+        let currentUserName = String(authService.currentUser?.username ?? "default")
         
         for item in transferList {
             // 只处理非“上传中”和非“已完成”的任务
@@ -1912,12 +1918,29 @@ struct MainChatStorage: View {
         switch action {
         case "start":
             // 检查当前状态，决定是 submit 还是 resume
-            if item.status == "暂停" {
+            if item.status == "暂停" || item.status == "已暂停" || item.status == "失败" {
                 addLog("▶️ 恢复任务: \(item.name)")
-                transferManager.resume(id: id)
+                
+                // 立即更新UI状态为"上传中"（如果是上传任务）
+                if item.taskType == .upload {
+                    transferList[index].status = "上传中"
+                } else {
+                    transferList[index].status = "下载中"
+                }
+                
+                // 后台执行恢复操作
+                DispatchQueue.global(qos: .userInitiated).async {
+                    transferManager.resume(id: id)
+                }
             } else {
                 addLog("🚀 提交任务至队列: \(item.name)")
-                transferList[index].status = "等待上传" // 立即更新UI响应
+                
+                // 根据任务类型设置初始状态
+                if item.taskType == .upload {
+                    transferList[index].status = "等待上传"
+                } else {
+                    transferList[index].status = "等待下载"
+                }
                 
                 guard let fileUrl = item.fileUrl else {
                     addLog("❌ 文件路径丢失: \(item.name)")
@@ -1926,8 +1949,8 @@ struct MainChatStorage: View {
                 }
                 
                 // 获取当前用户ID (从全局认证服务)
-                let currentUserId = Int64(authService.currentUser?.userId ?? 0)
-                let currentUserName = String(authService.currentUser?.userName ?? "default")
+                let currentUserId = Int64(authService.currentUser?.id ?? 0)
+                let currentUserName = String(authService.currentUser?.username ?? "default")
                 
                 
                 // 构建 TransferTaskd
@@ -1950,7 +1973,15 @@ struct MainChatStorage: View {
             
         case "pause":
             addLog("⏸️ 暂停任务: \(item.name)")
-            transferManager.pause(id: id)
+            
+            // 立即更新UI状态为"已暂停"
+            transferList[index].status = "已暂停"
+            transferList[index].speed = ""
+            
+            // 在后台线程执行暂停操作，避免阻塞主线程UI
+            DispatchQueue.global(qos: .userInitiated).async {
+                transferManager.pause(id: id)
+            }
             
         case "cancel":
             addLog("❌ 取消任务: \(item.name)")
@@ -2069,30 +2100,34 @@ struct MainChatStorage: View {
         let tasks = TransferTaskManager.shared.getAllTasks()
         if tasks.isEmpty { return }
         
-        print("📥 Loading \(tasks.count) tasks from service to UI")
+        print("📥 从本地恢复 \(tasks.count) 个传输任务")
         
         for task in tasks {
             // Check if already exists in UI
             if !transferList.contains(where: { $0.id == task.id }) {
-                // Get current status and progress from manager updates
-                // If update is missing, use task.progress (restored value) instead of 0.0
-                let (status, progress, speed) = TransferTaskManager.shared.taskUpdates[task.id] ?? ("已暂停", task.progress, "")
+                // 所有恢复的任务都设置为"已暂停"状态，由用户手动决定是否启动
+                let status = "已暂停"
                 
                 let newItem = TransferItem(
-                    id: task.id, // Explicitly set restored ID
+                    id: task.id,
                     name: task.name,
                     size: task.fileSize,
                     directoryName: task.directoryName,
                     fileUrl: task.fileUrl,
                     targetDirId: task.targetDirId,
-                    taskType: task.taskType == .upload ? .upload : .download, // Correctly map task type
+                    taskType: task.taskType == .upload ? .upload : .download,
                     status: status,
-                    progress: progress,
-                    speed: speed
+                    progress: task.progress,
+                    speed: ""
                 )
                 transferList.append(newItem)
+                
+                // 在 TransferTaskManager 中也更新为暂停状态
+                TransferTaskManager.shared.taskUpdates[task.id.uuidString] = (status, task.progress, "")
             }
         }
+        
+        print("✅ 任务恢复完成，所有任务均为暂停状态，请手动启动需要的任务")
         
         // Trigger sort
         if isAutoSortEnabled {
@@ -2526,12 +2561,8 @@ private struct ChatDetailView: View {
     }
     
     private func loadMockMessages() {
-        // 生成演示数据
-        messages = [
-            ChatMessage(content: "你好，最近怎么样？", isMe: false, timestamp: Date().addingTimeInterval(-3600), type: .text),
-            ChatMessage(content: "挺好的，在开发新功能。", isMe: true, timestamp: Date().addingTimeInterval(-3000), type: .text),
-            ChatMessage(content: "Chat Storage 看起来很不错！", isMe: false, timestamp: Date().addingTimeInterval(-60), type: .text)
-        ]
+        // TODO: Load real messages from database
+        messages = []
     }
 }
 
@@ -2629,8 +2660,8 @@ private struct OptimizedFriendSidebarView: View {
                             Spacer()
                             
                             // Badge with dynamic count
-                            if socketManager.pendingRequestCount > 0 {
-                                Text("\(socketManager.pendingRequestCount)")
+                            if socketManager.pendingFriendRequests.count > 0 {
+                                Text("\(socketManager.pendingFriendRequests.count)")
                                     .font(.caption)
                                     .foregroundColor(.white)
                                     .padding(.horizontal, 6)
@@ -2879,8 +2910,8 @@ private struct UserResultRow: View {
             
             // 按钮逻辑状态机
             Group {
-                if let status = user.friendStatus {
-                    switch status {
+                let status = user.friendStatus
+                switch status {
                     case 0: // 已申请
                         Button("已申请") {}
                             .disabled(true)
@@ -2904,17 +2935,10 @@ private struct UserResultRow: View {
                         .controlSize(.small)
                         .disabled(requestSent)
                     }
-                } else {
-                    // 默认 (无状态返回时)
-                    Button(action: sendFriendRequest) {
-                        Text(requestSent ? "已发送" : "添加")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(requestSent)
+
                 }
             }
-        }
+
         .padding(12)
         .background(isHovering ? Color.blue.opacity(0.1) : Color.clear)
         .cornerRadius(8)
@@ -2971,6 +2995,7 @@ private struct UserResultRow: View {
         }
     }
 }
+
 
 // Helper for padding
 extension View {
@@ -3090,21 +3115,63 @@ private struct FriendChatSplitView: View {
     }
     
     private func loadMockFriends() {
-        friends = [
-            Friend(name: "好友 1", status: "在线", avatarColor: .blue, lastMessage: "Chat Storage 看起来很不错！", lastTime: "12:30", unreadCount: 0),
-            Friend(name: "好友 2", status: "在线", avatarColor: .orange, lastMessage: "明天开会吗？", lastTime: "昨天", unreadCount: 2),
-            Friend(name: "好友 3", status: "离线", avatarColor: .purple, lastMessage: "[图片]", lastTime: "周一", unreadCount: 0),
-            Friend(name: "好友 4", status: "在线", avatarColor: .green, lastMessage: "文件已接收", lastTime: "10/01", unreadCount: 0),
-            Friend(name: "好友 5", status: "离线", avatarColor: .red, lastMessage: "好的，收到。", lastTime: "09/28", unreadCount: 0)
-        ]
-        // 默认选中第一个
-        if selectedFriendId == nil {
-            selectedFriendId = friends.first?.id
-        }
-        
-        // Fetch pending requests count on load
+        // Load real friends from server
         Task {
+            do {
+                let friendDtos = try await socketManager.getFriendList()
+                await MainActor.run {
+                    self.friends = friendDtos.map { dto in
+                        // Convert FriendDto to UI Model (Friend)
+                        // Use nickName if available, otherwise userName or alias
+                        let displayName = dto.alias ?? (dto.nickName.isEmpty ? dto.userName : dto.nickName)
+                        
+                        // Parse avatar color from name or id hash if needed, or use default
+                        let color = self.colorFor(name: displayName)
+                        
+                        return Friend(
+                            name: displayName,
+                            status: "在线", // Default status, real status needs another mechanism
+                            avatarColor: color,
+                            lastMessage: "点击开始聊天", // Placeholder
+                            lastTime: "",
+                            unreadCount: 0
+                        )
+                    }
+                }
+            } catch {
+                print("❌ Failed to load friend list: \(error)")
+            }
+            
+            // Fetch pending requests count on load
             try? await socketManager.getPendingRequests()
+        }
+    }
+    
+    private func colorFor(name: String) -> Color {
+        let colors: [Color] = [.blue, .orange, .purple, .green, .red, .pink, .teal]
+        let hash = abs(name.hashValue)
+        return colors[hash % colors.count]
+    }
+}
+
+// MARK: - UserDto Extension for Friend Status
+extension UserDto {
+    /// 好友状态: 0=非好友, 1=好友, 2=已申请
+    var friendStatus: Int {
+        // 1. Check if already friend
+        if SocketManager.shared.friendList.contains(where: { $0.friendId == self.id }) {
+            return 1
+        }
+        // 2. Check if request sent (Optional: needs mySentRequests list in SocketManager)
+        // For now, return 0
+        return 0
+    }
+    
+    var friendStatusDesc: String? {
+        switch friendStatus {
+        case 1: return "已添加"
+        case 2: return "已申请"
+        default: return nil
         }
     }
 }

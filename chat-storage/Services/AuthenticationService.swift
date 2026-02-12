@@ -78,7 +78,7 @@ class AuthenticationService: ObservableObject {
             self.isAuthenticated = true
         }
         
-        print("✅ 登录成功: \(user.userName)")
+        print("✅ 登录成功: \(user.username)")
         return user
     }
     
@@ -134,7 +134,7 @@ class AuthenticationService: ObservableObject {
             self.isAuthenticated = true
         }
         
-        print("✅ 注册成功: \(user.userName)")
+        print("✅ 注册成功: \(user.username)")
         return user
     }
     

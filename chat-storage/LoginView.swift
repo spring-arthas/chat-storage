@@ -164,7 +164,7 @@ struct LoginView: View {
                 
                 // 显示服务器地址和连接状态
                 let server = socketManager.getCurrentServer()
-                Text("服务器: \(server.host):\(server.port) \(socketManager.connectionState.description)")
+                Text("服务器: \(server.0):\(server.1) \(socketManager.connectionState.description)")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
@@ -216,7 +216,7 @@ struct LoginView: View {
                 // 登录成功
                 await MainActor.run {
                     isLoading = false
-                    print("✅ 登录成功！用户名: \(user.userName)")
+                    print("✅ 登录成功！用户名: \(user.username)")
                     // 导航到主界面
                     withAnimation {
                         isLoggedIn = true

@@ -68,6 +68,12 @@ public class FileDownloadService {
         print("🛑 [下载] 收到取消请求")
     }
     
+    /// 停止下载
+    public func stopDownload() {
+        cancel()
+        socketManager.disconnect(notifyUI: false)
+    }
+    
     /// 检查是否已取消
     private func checkCancellation() -> Bool {
         cancelLock.lock()
@@ -91,6 +97,14 @@ public class FileDownloadService {
         let fileId = task.remoteFileId
         let taskId = task.id.uuidString
         let localUrl = task.fileUrl
+        
+        // 🔹 开启安全访问 (针对 Bookmark 恢复的 URL)
+        let isSecurityScoped = localUrl.startAccessingSecurityScopedResource()
+        defer {
+            if isSecurityScoped {
+                localUrl.stopAccessingSecurityScopedResource()
+            }
+        }
         
         // 🔹 重置取消标志
         cancelLock.lock()
@@ -165,8 +179,9 @@ public class FileDownloadService {
         print("📤 [下载] 发送下载请求成功")
         
         // 3. 注册流式处理器并等待数据
-        return try await withCheckedThrowingContinuation { continuation in
-            var receivedSize: Int64 = startOffset
+        return try await withTaskCancellationHandler {
+            return try await withCheckedThrowingContinuation { continuation in
+                var receivedSize: Int64 = startOffset
             var totalSize: Int64 = 0
             var lastUpdateTime = Date()
             var lastBytesReceived: Int64 = startOffset
@@ -181,8 +196,8 @@ public class FileDownloadService {
                 case .ackFrame, .metaFrame:
                     // 服务端确认/元数据
                     // ACK帧可能携带文件信息
-                    if let jsonString = String(data: frame.data, encoding: .utf8),
-                       let data = jsonString.data(using: .utf8),
+                    if let jsonString = String(data: frame.data, encoding: String.Encoding.utf8),
+                       let data = jsonString.data(using: String.Encoding.utf8),
                        let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                         
                         // 1. 检查错误
@@ -208,7 +223,7 @@ public class FileDownloadService {
                             ]
                             if let readyData = try? JSONSerialization.data(withJSONObject: readyAck) {
                                 let readyFrame = Frame(type: .ackFrame, data: readyData, flags: 0x00)
-                                _ = self.socketManager.send(data: readyFrame.toBytes())
+                                try? self.socketManager.sendFrame(readyFrame)
                                 print("📤 [下载] 发送 Ready 确认帧")
                             }
                             
@@ -372,7 +387,11 @@ public class FileDownloadService {
                 }
             }
         }
+    } onCancel: {
+        print("⏸️ [下载] 任务被取消 (Task Cancellation)")
+        self.cancel()
     }
+}
     
     // MARK: - 辅助方法
     

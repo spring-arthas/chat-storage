@@ -7,21 +7,5 @@
 
 import Foundation
 
-/// 搜索用户请求
-struct UserSearchRequest: Codable {
-    /// 搜索的用户名关键词
-    let userName: String
-}
-
-/// 搜索用户响应 (Data Transfer Object)
-struct UserDto: Codable, Identifiable {
-    /// 用户ID
-    let userId: String
-    /// 昵称
-    let nickName: String
-    /// 头像 (Base64编码字符串)
-    let avatar: String?
-    
-    // Identifiable
-    var id: String { userId }
-}
+// 该文件内容已迁移至 TransferModels.swift 或 SocketManager.swift 以避免编译问题
+// This file is deprecated.
