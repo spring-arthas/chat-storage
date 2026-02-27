@@ -64,7 +64,7 @@
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "1224"
             endingLineNumber = "1224"
-            landmarkName = "handleBatchDownload()"
+            landmarkName = "handleBatchDelete()"
             landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>
@@ -240,8 +240,8 @@
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "847"
             endingLineNumber = "847"
-            landmarkName = "transferRow(_:)"
-            landmarkType = "7">
+            landmarkName = "transferListView"
+            landmarkType = "24">
          </BreakpointContent>
       </BreakpointProxy>
    </Breakpoints>

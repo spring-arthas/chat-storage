@@ -17,15 +17,49 @@ import Combine
 public struct UserDto: Codable, Identifiable {
     public let id: Int64
     public let userName: String
-    public let nickName: String
+    public let nickName: String?
     public let avatar: String?
-    public let status: Int // 0=正常, 1=禁用
+    public let status: Int? // 0=正常, 1=禁用
     
     public var identifiableId: String { String(id) }
+    
+    enum CodingKeys: String, CodingKey {
+        case id = "userId" // 兼容后端的 userId
+        case userName
+        case nickName
+        case avatar
+        case status
+    }
+    
+    // 增加一个备用的 CodingKeys 用于 fallback
+    enum FallbackCodingKeys: String, CodingKey {
+        case id
+    }
+    
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        // 尝试从 userId 读取
+        if let userId = try? container.decodeIfPresent(Int64.self, forKey: .id) {
+            self.id = userId
+        } else {
+            // fallback: 尝试直接从 id 读取
+            let fallbackContainer = try decoder.container(keyedBy: FallbackCodingKeys.self)
+            if let rawId = try? fallbackContainer.decodeIfPresent(Int64.self, forKey: .id) {
+                self.id = rawId
+            } else {
+                self.id = 0
+            }
+        }
+        
+        self.userName = try container.decodeIfPresent(String.self, forKey: .userName) ?? ""
+        self.nickName = try container.decodeIfPresent(String.self, forKey: .nickName)
+        self.avatar = try container.decodeIfPresent(String.self, forKey: .avatar)
+        self.status = try container.decodeIfPresent(Int.self, forKey: .status)
+    }
 }
 
 /// 好友信息响应 (Data Transfer Object)
-public struct FriendDto: Codable, Identifiable {
+public struct FriendDto: Codable, Identifiable, Equatable {
     /// 关联ID
     public let id: Int64
     /// 用户ID
