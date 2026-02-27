@@ -2382,6 +2382,7 @@ struct Friend: Identifiable, Hashable {
     let name: String
     let status: String // "在线", "离线"
     let avatarColor: Color
+    let avatarBase64: String?
     let lastMessage: String
     let lastTime: String
     let unreadCount: Int
@@ -2524,10 +2525,20 @@ private struct ChatDetailView: View {
                     .overlay(Text("我").font(.caption).foregroundColor(.white))
             } else {
                 // Avatar (Friend)
-                Circle()
-                    .fill(friend.avatarColor)
-                    .frame(width: 32, height: 32)
-                    .overlay(Text(friend.name.prefix(1)).font(.caption).foregroundColor(.white))
+                if let avatarStr = friend.avatarBase64,
+                   let avatarData = Data(base64Encoded: avatarStr, options: .ignoreUnknownCharacters),
+                   let nsImage = NSImage(data: avatarData) {
+                    Image(nsImage: nsImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 32, height: 32)
+                        .clipShape(Circle())
+                } else {
+                    Circle()
+                        .fill(friend.avatarColor)
+                        .frame(width: 32, height: 32)
+                        .overlay(Text(friend.name.prefix(1)).font(.caption).foregroundColor(.white))
+                }
                 
                 // Bubble (Friend)
                 Text(msg.content)
@@ -2886,11 +2897,11 @@ private struct UserResultRow: View {
                 Circle()
                     .fill(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
                     .frame(width: 40, height: 40)
-                    .overlay(Text(user.nickName.prefix(1)).foregroundColor(.white).font(.headline))
+                    .overlay(Text((user.nickName ?? user.userName).prefix(1)).foregroundColor(.white).font(.headline))
             }
             
             VStack(alignment: .leading, spacing: 4) {
-                Text(user.nickName)
+                Text(user.nickName ?? user.userName)
                     .font(.headline)
                     .foregroundColor(.primary)
                 HStack(spacing: 6) {
@@ -2968,7 +2979,7 @@ private struct UserResultRow: View {
         Task {
             do {
                 // 1. 构建默认验证消息
-                let displayName = user.nickName.isEmpty ? user.userName : user.nickName
+                let displayName = (user.nickName?.isEmpty ?? true) ? user.userName : user.nickName!
                 let msg = "\(displayName)申请添加你为好友"
                 
                 // 2. 发送好友请求
@@ -3031,14 +3042,24 @@ private struct FriendRow: View {
     var body: some View {
         HStack(spacing: 12) {
             // Avatar
-            Circle()
-                .fill(friend.avatarColor)
-                .frame(width: 40, height: 40)
-                .overlay(
-                    Text(friend.name.prefix(1))
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundColor(.white)
-                )
+            if let avatarStr = friend.avatarBase64,
+               let avatarData = Data(base64Encoded: avatarStr, options: .ignoreUnknownCharacters),
+               let nsImage = NSImage(data: avatarData) {
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 40, height: 40)
+                    .clipShape(Circle())
+            } else {
+                Circle()
+                    .fill(friend.avatarColor)
+                    .frame(width: 40, height: 40)
+                    .overlay(
+                        Text(friend.name.prefix(1))
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(.white)
+                    )
+            }
             
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
@@ -3112,6 +3133,22 @@ private struct FriendChatSplitView: View {
         .onAppear {
             loadMockFriends()
         }
+        .onChange(of: socketManager.friendList) { newFriendDtos in
+            // 当 socketManager.friendList 被更新（如同意好友后 0x35 刷新），同步更新本地 UI friends
+            self.friends = newFriendDtos.map { dto in
+                let displayName = dto.alias ?? (dto.nickName.isEmpty ? dto.userName : dto.nickName)
+                let color = self.colorFor(name: displayName)
+                return Friend(
+                    name: displayName,
+                    status: "在线",
+                    avatarColor: color,
+                    avatarBase64: dto.avatar,
+                    lastMessage: "点击开始聊天",
+                    lastTime: "",
+                    unreadCount: 0
+                )
+            }
+        }
     }
     
     private func loadMockFriends() {
@@ -3120,6 +3157,7 @@ private struct FriendChatSplitView: View {
             do {
                 let friendDtos = try await socketManager.getFriendList()
                 await MainActor.run {
+                    self.socketManager.friendList = friendDtos // 确保全局状态也能记录下拉取到的最新值
                     self.friends = friendDtos.map { dto in
                         // Convert FriendDto to UI Model (Friend)
                         // Use nickName if available, otherwise userName or alias
@@ -3132,6 +3170,7 @@ private struct FriendChatSplitView: View {
                             name: displayName,
                             status: "在线", // Default status, real status needs another mechanism
                             avatarColor: color,
+                            avatarBase64: dto.avatar,
                             lastMessage: "点击开始聊天", // Placeholder
                             lastTime: "",
                             unreadCount: 0

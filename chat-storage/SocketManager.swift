@@ -599,21 +599,26 @@ extension SocketManager {
         // 注意：服务端应该返回 0x34，Data 为 UserDto 列表
         let responseFrame = try await sendFrameAndWait(frame, expecting: .userResponse, timeout: 10.0)
         
+        // 打印调试信息，便于查看服务端实际返回的 JSON
+        if let jsonString = String(data: responseFrame.data, encoding: .utf8) {
+            print("🔍 [searchUser] 收到响应: \(jsonString)")
+        }
+        
         // 4. 解析响应数据
-        // 服务端可能返回 [UserDto] 或者 单个 UserDto
-        // 假设返回 [UserDto] JSON
-        
-        if let users = try? JSONDecoder().decode([UserDto].self, from: responseFrame.data) {
+        do {
+            // 先尝试解析为列表: ResponseWrapper<[UserDto]>
+            let users: [UserDto] = try parseDataResponse(responseFrame)
             return users
+        } catch {
+            do {
+                // 如果后端返回的是单个对象: ResponseWrapper<UserDto>
+                let user: UserDto = try parseDataResponse(responseFrame)
+                return [user]
+            } catch {
+                print("❌ [searchUser] 解析失败: \(error)")
+                throw SocketError.invalidResponse
+            }
         }
-        
-        // 尝试全量解析为单个对象 (如截图所示似乎是单个对象)
-        if let user = try? JSONDecoder().decode(UserDto.self, from: responseFrame.data) {
-            return [user]
-        }
-        
-        // 如果都失败，抛出错误
-        throw SocketError.invalidResponse
     }
     
     // MARK: - Friend Management
@@ -626,6 +631,10 @@ extension SocketManager {
         
         // 2. 发送并等待响应 (0x34)
         let responseFrame = try await sendFrameAndWait(frame, expecting: .userResponse, timeout: 10.0)
+        
+        if let rawJson = String(data: responseFrame.data, encoding: .utf8) {
+            print("🔍 [getFriendList] Raw JSON: \(rawJson)")
+        }
         
         // 3. 解析响应数据
         let friends: [FriendDto] = try parseDataResponse(responseFrame)
@@ -663,15 +672,54 @@ extension SocketManager {
         // 2. 发送并等待响应 (0x34)
         let responseFrame = try await sendFrameAndWait(frame, expecting: .userResponse, timeout: 10.0)
         
-        // 3. 解析
-        let requests: [FriendRequestDto] = try parseDataResponse(responseFrame)
-        
-        // 4. 更新 Published 属性 (UI 绑定)
-        await MainActor.run {
-            self.pendingFriendRequests = requests
+        if let rawJson = String(data: responseFrame.data, encoding: .utf8) {
+            print("🔍 [getPendingRequests] Raw JSON: \(rawJson)")
         }
         
-        return requests
+        // 3. 兼容性解析
+        var requests: [FriendRequestDto] = []
+        
+        if let jsonDict = try? JSONSerialization.jsonObject(with: responseFrame.data) as? [String: Any],
+           let success = jsonDict["success"] as? Bool, success == true {
+            
+            if let dataArray = jsonDict["data"] as? [[String: Any]] {
+                for item in dataArray {
+                    let id = (item["id"] as? NSNumber)?.int64Value ?? (item["applyId"] as? NSNumber)?.int64Value ?? 0
+                    let senderId = (item["userId"] as? NSNumber)?.int64Value ?? (item["senderId"] as? NSNumber)?.int64Value ?? 0
+                    let receiverId = (item["friendId"] as? NSNumber)?.int64Value ?? (item["receiverId"] as? NSNumber)?.int64Value ?? 0
+                    let requestMsg = (item["applyInfo"] as? String) ?? (item["requestMsg"] as? String) ?? (item["applyMsg"] as? String) ?? ""
+                    let status = (item["status"] as? NSNumber)?.intValue ?? 0
+                    let createTime = (item["createTime"] as? NSNumber)?.int64Value ?? (item["gmtCreated"] as? NSNumber)?.int64Value ?? 0
+                    
+                    let senderUserName = (item["userName"] as? String) ?? (item["senderUserName"] as? String) ?? ""
+                    let senderNickName = (item["nickName"] as? String) ?? (item["senderNickName"] as? String) ?? senderUserName
+                    let senderAvatar = (item["avatar"] as? String) ?? (item["senderAvatar"] as? String)
+                    
+                    let dto = FriendRequestDto(
+                        id: id,
+                        senderId: senderId,
+                        receiverId: receiverId,
+                        requestMsg: requestMsg,
+                        status: status,
+                        createTime: createTime,
+                        senderUserName: senderUserName,
+                        senderNickName: senderNickName,
+                        senderAvatar: senderAvatar
+                    )
+                    requests.append(dto)
+                }
+            }
+        } else {
+            throw SocketError.invalidResponse
+        }
+        
+        // 4. 更新 Published 属性 (UI 绑定)
+        let finalRequests = requests
+        await MainActor.run {
+            self.pendingFriendRequests = finalRequests
+        }
+        
+        return finalRequests
     }
     
     /// 处理好友申请
@@ -679,12 +727,16 @@ extension SocketManager {
     ///   - requestId: 申请ID
     ///   - action: 1=同意, 2=拒绝
     /// - Returns: 是否成功
-    func handleFriendRequest(requestId: Int64, action: Int) async throws -> Bool {
+    func handleFriendRequest(requestId: Int64, action: Int, alias: String? = nil) async throws -> Bool {
         // 1. 构建 Payload
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "requestId": requestId,
-            "status": action
+            "action": action
         ]
+        
+        if let alias = alias, !alias.isEmpty {
+            payload["alias"] = alias
+        }
         let jsonData = try JSONSerialization.data(withJSONObject: payload)
         
         // 2. 构建帧 (0x39)
@@ -703,7 +755,7 @@ extension SocketManager {
     ///   - accept: 是否同意
     /// - Returns: 是否成功
     func handleFriendRequest(requestId: Int64, accept: Bool) async throws -> Bool {
-        return try await handleFriendRequest(requestId: requestId, action: accept ? 1 : 2)
+        return try await handleFriendRequest(requestId: requestId, action: accept ? 1 : 2, alias: nil)
     }
 }
 
