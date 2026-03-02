@@ -89,6 +89,15 @@ public class SocketManager: NSObject, ObservableObject {
     @Published var pendingFriendRequests: [FriendRequestDto] = []
     @Published var friendList: [FriendDto] = []
     
+    /// 聊天历史记录词典，Key 为 friendId，Value 为该好友的消息数组
+    @Published var chatHistory: [Int64: [ChatMessage]] = [:]
+    
+    /// 朋友的未读消息计数，Key 为 friendId
+    @Published var unreadCounts: [Int64: Int] = [:]
+    
+    /// 当前正在与其聊天的朋友ID（用于控制未读消息红点）
+    @Published var activeChatFriendId: Int64? = nil
+    
     /// 上行速度字符串
     @Published var uploadSpeedStr: String = "0 KB/s"
     /// 下行速度字符串
@@ -127,6 +136,7 @@ public class SocketManager: NSObject, ObservableObject {
     
     override init() {
         super.init()
+        setupChatHandlers()
     }
     
     // MARK: - Connection Management
@@ -244,18 +254,33 @@ public class SocketManager: NSObject, ObservableObject {
             throw SocketError.notConnected
         }
         
-        guard let outputStream = outputStream, outputStream.streamStatus == .open else {
+        guard let outputStream = outputStream, 
+              [.open, .writing].contains(outputStream.streamStatus) else {
             throw SocketError.notConnected
         }
         
         let data = frame.toBytes()
-        let bytesWritten = data.withUnsafeBytes { buffer in
-            guard let baseAddress = buffer.baseAddress else { return 0 }
-            return outputStream.write(baseAddress.assumingMemoryBound(to: UInt8.self), maxLength: data.count)
-        }
+        var totalBytesWritten = 0
         
-        if bytesWritten < 0 {
-            throw SocketError.sendFailed
+        while totalBytesWritten < data.count {
+            if outputStream.hasSpaceAvailable {
+                let bytesWritten = data.withUnsafeBytes { buffer -> Int in
+                    guard let baseAddress = buffer.baseAddress else { return 0 }
+                    let advancedAddress = baseAddress.assumingMemoryBound(to: UInt8.self).advanced(by: totalBytesWritten)
+                    return outputStream.write(advancedAddress, maxLength: data.count - totalBytesWritten)
+                }
+                
+                if bytesWritten < 0 {
+                    print("❌ Socket 写入失败: \(outputStream.streamError?.localizedDescription ?? "未知错误")")
+                    throw SocketError.sendFailed
+                }
+                
+                totalBytesWritten += bytesWritten
+            } else {
+                // 发送缓冲区已满，挂起当前线程极短时间，避免 CPU 空转
+                // 这里使用的是非常短的同步 sleep，因为 sendFrame 可能在普通队列中调用
+                Thread.sleep(forTimeInterval: 0.005) // 5 毫秒
+            }
         }
         
         // print("📤 发送帧: \(frame.type.description), 长度: \(data.count) 字节")
@@ -467,7 +492,8 @@ extension SocketManager {
     func receiveAndProcessFrames() {
         guard isReceiving else { return }
         
-        guard let inputStream = inputStream, inputStream.streamStatus == .open else {
+        guard let inputStream = inputStream, 
+              [.open, .reading].contains(inputStream.streamStatus) else {
             return
         }
         
@@ -641,6 +667,91 @@ extension SocketManager {
         return friends
     }
     
+    /// 获取历史聊天记录
+    /// - Parameters:
+    ///   - friendId: 好友用户ID
+    ///   - offset: 偏移量
+    ///   - limit: 获取条数
+    /// - Returns: 历史聊天记录列表
+    func getChatHistory(friendId: Int32, offset: Int32 = 0, limit: Int32 = 20) async throws -> [ChatHistoryItemDto] {
+        let request = ChatHistoryRequestDto(friendId: friendId, offset: offset, limit: limit)
+        guard let jsonData = try? JSONEncoder().encode(request) else {
+            throw SocketError.invalidResponse
+        }
+        
+        let frame = Frame(type: .chatHistoryReq, data: jsonData)
+        
+        // 发送 0x53 并等待 0x54 成功或 0x52 失败响应
+        let responseFrame = try await sendFrameAndWait(frame, expectingOneOf: [.chatHistoryRes, .chatReceiptReq], timeout: 10.0)
+        
+        if let rawJson = String(data: responseFrame.data, encoding: .utf8) {
+            print("🔍 [getChatHistory] Raw JSON: \(rawJson)")
+        }
+        
+        if responseFrame.type == .chatReceiptReq {
+            if let receipt = try? JSONDecoder().decode(ChatReceiptDto.self, from: responseFrame.data) {
+                print("❌ 服务端返回 0x52 回执错误: \(receipt.status)")
+            } else if let json = try? JSONSerialization.jsonObject(with: responseFrame.data) as? [String: Any],
+                      let msg = json["msg"] as? String {
+                print("❌ 服务端返回 0x52 回执错误: \(msg)")
+            } else {
+                print("❌ 服务端返回了 0x52 回执错误，但无法解析具体原因。")
+            }
+            throw SocketError.invalidResponse
+        }
+        
+        let responseData: ChatHistoryResponseDataDto = try parseDataResponse(responseFrame)
+        
+        // 组装历史消息并注入从字典提取的压缩头像
+        let history: [ChatHistoryItemDto] = responseData.list.map { item in
+            var mappedItem = item
+            if let avatarsDict = responseData.avatars, let avatarStr = avatarsDict[String(item.senderId)] {
+                mappedItem.avatar = avatarStr
+            }
+            return mappedItem
+        }
+        
+        return history
+    }
+    
+    /// 消除未读消息红点 (0x55)
+    /// - Parameter friendId: 好友用户ID
+    /// - Returns: 是否消除成功
+    func clearUnreadCount(friendId: Int32) async throws -> Bool {
+        let request = ChatClearUnreadRequestDto(friendId: friendId)
+        guard let jsonData = try? JSONEncoder().encode(request) else {
+            throw SocketError.invalidResponse
+        }
+        
+        // 构建 0x55 帧
+        let frame = Frame(type: .chatClearUnreadReq, data: jsonData)
+        
+        // 发送 0x55 并等待 0x56 响应
+        let responseFrame = try await sendFrameAndWait(frame, expecting: .chatClearUnreadRes, timeout: 5.0)
+        
+        if let rawJson = String(data: responseFrame.data, encoding: .utf8) {
+            print("🔍 [clearUnreadCount] Receive 0x56 Raw JSON: \\(rawJson)")
+        }
+        
+        // 解析 {"status":"SUCCESS/FALSE"} 或通用结构
+        if let jsonDict = try? JSONSerialization.jsonObject(with: responseFrame.data) as? [String: Any] {
+            // 直接读取 status
+            if let status = jsonDict["status"] as? String {
+                return status.uppercased() == "SUCCESS"
+            }
+            // 尝试读取嵌套的 data 包
+            if let dataMap = jsonDict["data"] as? [String: Any], let status = dataMap["status"] as? String {
+                return status.uppercased() == "SUCCESS"
+            }
+            // 针对标准的 code=200 进行后备放行
+            if let code = jsonDict["code"] as? Int, code == 200 {
+                return true
+            }
+        }
+        
+        return false
+    }
+    
     /// 发送好友申请
     /// - Parameter remoteUserId: 目标用户ID
     /// - Parameter requestMsg: 验证消息
@@ -785,7 +896,9 @@ extension SocketManager {
     /// 解析数据响应 (泛型)
     func parseDataResponse<T: Codable>(_ frame: Frame) throws -> T {
         // 尝试解析为标准响应结构 (code, msg, data)
-        if let responseWrapper = try? JSONDecoder().decode(ResponseWrapper<T>.self, from: frame.data) {
+        // 必须确保它确实是 Wrapper 结构（含有 code, success, 或 data）
+        if let responseWrapper = try? JSONDecoder().decode(ResponseWrapper<T>.self, from: frame.data),
+           (responseWrapper.codeValue != nil || responseWrapper.success != nil || responseWrapper.data != nil) {
             if responseWrapper.code == 200 {
                 if let data = responseWrapper.data {
                     return data
@@ -804,5 +917,101 @@ extension SocketManager {
         }
         
         throw SocketError.invalidResponse
+    }
+}
+
+// MARK: - Chat Handlers
+extension SocketManager {
+    
+    /// 注册后台聊天消息监听（0x51 / 0x52）
+    internal func setupChatHandlers() {
+        // 注册 0x51 推送消息监听
+        self.registerStreamHandler(for: [.chatPushReq]) { [weak self] frame in
+            guard let self = self else { return false }
+            
+            do {
+                let pushDto: ChatPushDto = try self.parseDataResponse(frame)
+                let date = Date(timeIntervalSince1970: TimeInterval(pushDto.gmtCreated) / 1000.0)
+                let message = ChatMessage(messageId: pushDto.messageId, content: pushDto.content, isMe: false, timestamp: date, type: pushDto.msgType, sendStatus: .success, avatar: pushDto.avatar)
+                let senderId64 = Int64(pushDto.senderId)
+                
+                // 放回主线程同步 UI 状态
+                DispatchQueue.main.async {
+                    var history = self.chatHistory[senderId64] ?? []
+                    history.append(message)
+                    self.chatHistory[senderId64] = history
+                    
+                    if self.activeChatFriendId != senderId64 {
+                        self.unreadCounts[senderId64] = (self.unreadCounts[senderId64] ?? 0) + 1
+                    }
+                    
+                    // TODO: Trigger a global redraw on the friend list so the last message is visible
+                }
+            } catch {
+                print("❌ 解析聊天推送 0x51 失败: \(error)")
+            }
+            return true // 保留 handler
+        }
+        
+        // 注册 0x52 消息回执监听
+        self.registerStreamHandler(for: [.chatReceiptReq]) { [weak self] frame in
+            guard let self = self else { return false }
+            
+            do {
+                let receiptDto: ChatReceiptDto = try self.parseDataResponse(frame)
+                
+                DispatchQueue.main.async {
+                    // 遍历所有会话的历史记录，找到并更新状态
+                    for (friendId, history) in self.chatHistory {
+                        if let index = history.firstIndex(where: { $0.messageId == receiptDto.messageId || $0.messageId == nil /* 如果可以匹配到临时ID更好，目前先模糊匹配 */ }) {
+                            var mutableHistory = history
+                            var msg = mutableHistory[index]
+                            msg.sendStatus = (receiptDto.status.uppercased() == "SUCCESS") ? .success : .failed
+                            // 赋值服务端返回的正式 messageId 替换临时 nil
+                            msg.messageId = receiptDto.messageId
+                            mutableHistory[index] = msg
+                            self.chatHistory[friendId] = mutableHistory
+                            break
+                        }
+                    }
+                }
+            } catch {
+                print("❌ 解析聊天回执 0x52 失败: \(error)")
+            }
+            return true // 保留 handler
+        }
+    }
+    
+    /// 主动发送聊天消息 (0x50)
+    func sendChatMessage(receiverId: Int64, content: String, msgType: String = "TEXT", avatar: String? = nil) {
+        // 1. 本地乐观更新UI气泡
+        let localMessage = ChatMessage(messageId: nil, content: content, isMe: true, timestamp: Date(), type: msgType, sendStatus: .sending, avatar: avatar)
+        var history = self.chatHistory[receiverId] ?? []
+        history.append(localMessage)
+        self.chatHistory[receiverId] = history
+        
+        // 2. 构造 DTO 并发送网络请求
+        let dto = ChatSendRequestDto(receiverId: Int32(receiverId), content: content, msgType: msgType)
+        guard let jsonData = try? JSONEncoder().encode(dto) else {
+            print("❌ 构造 0x50 消息 JSON 失败")
+            return
+        }
+        
+        let frame = Frame(type: .chatSendReq, data: jsonData)
+        
+        // 异步发送不阻塞主线程
+        Task {
+            do {
+                try self.sendFrame(frame) // 仅发送 0x50，不需要 Wait 因为有 0x52 推送回执
+            } catch {
+                print("❌ 发送 0x50 失败: \(error)")
+                // 发送失败直接标记
+                await MainActor.run {
+                    if let index = self.chatHistory[receiverId]?.firstIndex(of: localMessage) {
+                        self.chatHistory[receiverId]?[index].sendStatus = .failed
+                    }
+                }
+            }
+        }
     }
 }

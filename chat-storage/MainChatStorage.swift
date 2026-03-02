@@ -2378,35 +2378,74 @@ struct DirectoryTreeSelector: View {
 
 // 1. Data Models (Mock)
 struct Friend: Identifiable, Hashable {
-    let id = UUID()
+    let id: Int64
     let name: String
     let status: String // "在线", "离线"
     let avatarColor: Color
     let avatarBase64: String?
-    let lastMessage: String
-    let lastTime: String
-    let unreadCount: Int
+    let serverUnreadCount: Int32?
+    let serverLatestMsg: String?
 }
 
-struct ChatMessage: Identifiable, Hashable {
-    let id = UUID()
+struct ChatMessage: Identifiable, Equatable {
+    var id: String {
+        if let mid = messageId {
+            return "msg-\(mid)"
+        }
+        return localId.uuidString
+    }
+    let localId = UUID()
+    var messageId: Int32? // 服务端分配的实际ID
     let content: String
     let isMe: Bool // true = 我发的, false = 对方发的
     let timestamp: Date
-    let type: MessageType
+    let type: String // "TEXT", "IMAGE", "FILE"
+    var sendStatus: SendStatus
     
-    enum MessageType {
-        case text
-        case image
-        case file
+    var groupTime: String?
+    var msgTimeStr: String?
+    var avatar: String?
+    
+    enum SendStatus: Equatable {
+        case sending
+        case success
+        case failed
     }
 }
+
 
 // 2. Chat Detail View (右侧聊天窗口)
 private struct ChatDetailView: View {
     let friend: Friend
     @State private var messageText = ""
-    @State private var messages: [ChatMessage] = []
+    @EnvironmentObject var socketManager: SocketManager
+    @EnvironmentObject var authService: AuthenticationService
+    
+    // Pagination states
+    @State private var currentOffset: Int32 = 0
+    let pageSize: Int32 = 20
+    @State private var hasMore: Bool = true
+    @State private var isLoadingHistory: Bool = false
+    @State private var topMessageIdBeforeLoad: String? = nil
+    @State private var shouldScrollToBottom: Bool = false
+    @State private var isInitialProcessing: Bool = true // 防止最初始化时Scroll在顶部意外触发分页请求
+    
+    var messages: [ChatMessage] {
+        socketManager.chatHistory[friend.id] ?? []
+    }
+    
+    var groupedMessages: [(String, [ChatMessage])] {
+        var result: [(String, [ChatMessage])] = []
+        for msg in messages {
+            let group = msg.groupTime ?? "未知时间"
+            if let last = result.last, last.0 == group {
+                result[result.count - 1].1.append(msg)
+            } else {
+                result.append((group, [msg]))
+            }
+        }
+        return result
+    }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -2444,15 +2483,89 @@ private struct ChatDetailView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 12) {
-                        ForEach(messages) { msg in
-                            messageBubble(msg)
+                        // Top loading or "No more messages" indicator
+                        if isLoadingHistory {
+                            ProgressView()
+                                .padding()
+                        } else if !hasMore {
+                            Text("【暂无更多消息】")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .padding()
+                        } else {
+                            // Invisible view to trigger load more
+                            Color.clear
+                                .frame(height: 1)
+                                .onAppear {
+                                    // 添加 debounce 和状态锁，防止 ScrollView 初次渲染或自动挤压连续触发
+                                    if !isLoadingHistory && hasMore && !shouldScrollToBottom && !isInitialProcessing {
+                                        Task {
+                                            try? await Task.sleep(nanoseconds: 300_000_000)
+                                            if !isLoadingHistory && hasMore && !shouldScrollToBottom && !isInitialProcessing {
+                                                await loadMoreHistory()
+                                            }
+                                        }
+                                    }
+                                }
+                        }
+                        
+                        // Grouped Messages display
+                        ForEach(groupedMessages, id: \.0) { groupInfo in
+                            let (groupTime, msgs) = groupInfo
+                            if !groupTime.isEmpty {
+                                Text(groupTime)
+                                    .font(.caption2)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(Color.gray.opacity(0.2))
+                                    .cornerRadius(8)
+                                    .padding(.top, 8)
+                            }
+                            
+                            ForEach(msgs) { msg in
+                                messageBubble(msg)
+                            }
+                        }
+                        
+                        // 垫底的 Spacer 锚点，用于滚轴强制触底时制造完美距离
+                        Rectangle()
+                            .fill(Color.clear)
+                            .frame(height: 30) // 强实体占位保证至少 30px 空隙
+                            .id("BOTTOM_ANCHOR")
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 16)
+                    .padding(.bottom, 8)
+                }
+                .onChange(of: messages.count) { newCount in
+                    if newCount > 0 {
+                        // 1. 如果是从顶部加载历史，只恢复到记录的旧位置
+                        if let topId = topMessageIdBeforeLoad {
+                            topMessageIdBeforeLoad = nil
+                            DispatchQueue.main.async {
+                                proxy.scrollTo(topId, anchor: .top)
+                            }
+                        } else {
+                            // 2. 否则只要消息总数变多（发送/接收新消息/初次进列表），无脑滚底
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                proxy.scrollTo("BOTTOM_ANCHOR", anchor: .bottom)
+                            }
+                            // 延时增补锁定，防止由于图文渲染或分页首渲时的 Lazy 膨胀挤走滚轴核心点
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                proxy.scrollTo("BOTTOM_ANCHOR", anchor: .bottom)
+                            }
                         }
                     }
-                    .padding(16)
                 }
-                .onChange(of: messages.count) { _ in
-                    if let lastId = messages.last?.id {
-                        proxy.scrollTo(lastId, anchor: .bottom)
+                .onChange(of: shouldScrollToBottom) { act in
+                    if act {
+                        shouldScrollToBottom = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                            proxy.scrollTo("BOTTOM_ANCHOR", anchor: .bottom)
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            proxy.scrollTo("BOTTOM_ANCHOR", anchor: .bottom)
+                        }
                     }
                 }
             }
@@ -2474,19 +2587,25 @@ private struct ChatDetailView: View {
                 .padding(.horizontal, 12)
                 .padding(.top, 8)
                 
-                // Text Editor
-                TextEditor(text: $messageText)
+                // Text Field (支持多行及回车发送)
+                TextField("请输入消息...", text: $messageText, axis: .vertical)
+                    .textFieldStyle(.plain)
                     .font(.system(size: 14))
-                    .frame(minHeight: 60)
-                    .scrollContentBackground(.hidden) // 透明背景适配
-                    .background(Color.clear)
+                    .frame(minHeight: 60, alignment: .topLeading)
                     .padding(8)
+                    .onSubmit {
+                        Task {
+                            await sendMessage()
+                        }
+                    }
                 
                 // Send Button
                 HStack {
                     Spacer()
                     Button("发送") {
-                        sendMessage()
+                        Task {
+                            await sendMessage()
+                        }
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.regular)
@@ -2499,10 +2618,13 @@ private struct ChatDetailView: View {
             .frame(height: 150)
         }
         .onAppear {
-            loadMockMessages()
-        }
-        .onChange(of: friend) { _ in
-            loadMockMessages() // 切换好友时重载消息
+            isInitialProcessing = true
+            Task { 
+                await loadInitialHistory() 
+                // 数据加载完毕后，给予0.6秒的UI触底锁定时间，之后再放开顶部下拉刷新拦截
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                isInitialProcessing = false
+            }
         }
     }
     
@@ -2512,44 +2634,40 @@ private struct ChatDetailView: View {
                 Spacer()
                 
                 // Bubble (Me)
-                Text(msg.content)
-                    .padding(10)
-                    .background(Color.blue)
-                    .foregroundColor(.white)
-                    .cornerRadius(8)
-                
-                // Avatar (Me)
-                Circle()
-                    .fill(Color.gray)
-                    .frame(width: 32, height: 32)
-                    .overlay(Text("我").font(.caption).foregroundColor(.white))
-            } else {
-                // Avatar (Friend)
-                if let avatarStr = friend.avatarBase64,
-                   let avatarData = Data(base64Encoded: avatarStr, options: .ignoreUnknownCharacters),
-                   let nsImage = NSImage(data: avatarData) {
-                    Image(nsImage: nsImage)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: 32, height: 32)
-                        .clipShape(Circle())
-                } else {
-                    Circle()
-                        .fill(friend.avatarColor)
-                        .frame(width: 32, height: 32)
-                        .overlay(Text(friend.name.prefix(1)).font(.caption).foregroundColor(.white))
+                HStack(alignment: .bottom, spacing: 4) {
+                    if msg.sendStatus == .failed {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .foregroundColor(.red)
+                    } else if msg.sendStatus == .sending {
+                        ProgressView()
+                            .controlSize(.small)
+                            .padding(.trailing, 2)
+                    }
+                    
+                    Text(msg.content)
+                        .padding(10)
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(8)
                 }
                 
+                // Avatar (Me)
+                renderAvatar(base64String: msg.avatar, fallbacName: "我", fallbackColor: .gray)
+            } else {
+                // Avatar (Friend)
+                renderAvatar(base64String: msg.avatar ?? friend.avatarBase64, fallbacName: String(friend.name.prefix(1)), fallbackColor: friend.avatarColor)
                 // Bubble (Friend)
-                Text(msg.content)
-                    .padding(10)
-                    .background(Color(NSColor.controlBackgroundColor))
-                    .foregroundColor(.primary)
-                    .cornerRadius(8)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.secondary.opacity(0.1), lineWidth: 1)
-                    )
+                HStack(alignment: .bottom, spacing: 4) {
+                    Text(msg.content)
+                        .padding(10)
+                        .background(Color(NSColor.controlBackgroundColor))
+                        .foregroundColor(.primary)
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.secondary.opacity(0.1), lineWidth: 1)
+                        )
+                }
                 
                 Spacer()
             }
@@ -2557,23 +2675,214 @@ private struct ChatDetailView: View {
         .id(msg.id)
     }
     
-    private func sendMessage() {
-        guard !messageText.isEmpty else { return }
-        
-        let newMsg = ChatMessage(content: messageText, isMe: true, timestamp: Date(), type: .text)
-        messages.append(newMsg)
-        messageText = ""
-        
-        // Mock reply
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            let reply = ChatMessage(content: "收到: " + newMsg.content, isMe: false, timestamp: Date(), type: .text)
-            messages.append(reply)
+    // 全局头像缓存，避免滚动时主线程频繁且重复解析长 Base64 字符串导致的掉帧卡顿
+    fileprivate static let avatarCache = NSCache<NSString, NSImage>()
+    
+    // Abstracted avatar renderer to support URL/Base64 strings flexibly
+    @ViewBuilder
+    private func renderAvatar(base64String: String?, fallbacName: String, fallbackColor: Color) -> some View {
+        if let base64 = base64String, !base64.isEmpty {
+            // 1. 尝试从缓存读取
+            if let cachedImage = Self.avatarCache.object(forKey: base64 as NSString) {
+                Image(nsImage: cachedImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 32, height: 32)
+                    .clipShape(Circle())
+            } else {
+                // 2. 缓存未命中，进行解析 (异步到后台或至少只执行一次)
+                // 由于这是 ViewBuilder，我们使用一个本地简单 View 结构提取并展示
+                AvatarDecodeView(base64: base64, fallbacName: fallbacName, fallbackColor: fallbackColor, cache: Self.avatarCache)
+            }
+        } else {
+            Circle()
+                .fill(fallbackColor)
+                .frame(width: 32, height: 32)
+                .overlay(Text(fallbacName).font(.caption).foregroundColor(.white))
         }
     }
     
-    private func loadMockMessages() {
-        // TODO: Load real messages from database
-        messages = []
+    private func sendMessage() async {
+        guard !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        
+        let contentToSend = messageText
+        messageText = ""
+        
+        // 发送前预声明滚动到最底
+        shouldScrollToBottom = true
+        
+        let avatar = authService.currentUser?.avatar
+        socketManager.sendChatMessage(receiverId: friend.id, content: contentToSend, msgType: "TEXT", avatar: avatar)
+    }
+    
+    private func loadInitialHistory() async {
+        var currentUnreadCount: Int32 = 0
+        
+        await MainActor.run {
+            currentUnreadCount = Int32(socketManager.unreadCounts[friend.id] ?? 0)
+            
+            // 切换好友时先清空记录，保证 UI 界面是一个干净的状态接收新数据
+            var history = socketManager.chatHistory
+            history[friend.id] = []
+            socketManager.chatHistory = history
+            
+            currentOffset = 0
+            hasMore = true
+            isLoadingHistory = false
+        }
+        
+        await fetchHistory(offset: 0, limit: pageSize, isInitial: true)
+        
+        // 按照需求，如果加载完历史且未读数量大于0，发起0x55帧请求
+        print("🔍 [loadInitialHistory] friend.id=\\(friend.id), currentUnreadCount=\\(currentUnreadCount)")
+        if currentUnreadCount > 0 {
+            do {
+                print("📨 发起清除红点请求 0x55...")
+                let success = try await socketManager.clearUnreadCount(friendId: Int32(friend.id))
+                print("✅ 0x55 请求响应成功标识: \\(success)")
+                
+                if success {
+                    await MainActor.run {
+                        print("🔄 正在更新本地 UI unreadCounts 字典...")
+                        var counts = socketManager.unreadCounts
+                        counts[friend.id] = 0
+                        // 强制赋值全新的字典以触发 @Published
+                        socketManager.unreadCounts = counts
+                        print("✨ unreadCounts 本地更新完成: \\(socketManager.unreadCounts[friend.id] ?? -1)")
+                    }
+                } else {
+                    print("❌ 服务端返回清除红点失败 (业务失败，非抛错)")
+                }
+            } catch {
+                print("❌ 发送清除红点请求 0x55 失败(抛出异常): \\(error)")
+            }
+        }
+    }
+    
+    private func loadMoreHistory() async {
+        guard hasMore, !isLoadingHistory else { return }
+        await MainActor.run {
+            currentOffset += pageSize
+        }
+        await fetchHistory(offset: currentOffset, limit: pageSize, isInitial: false)
+    }
+    
+    private func fetchHistory(offset: Int32, limit: Int32, isInitial: Bool) async {
+        if !isInitial {
+            await MainActor.run {
+                topMessageIdBeforeLoad = messages.first?.id
+            }
+        }
+        await MainActor.run { isLoadingHistory = true }
+        defer { Task { @MainActor in isLoadingHistory = false } }
+        
+        do {
+            let historyDtos = try await socketManager.getChatHistory(friendId: Int32(friend.id), offset: offset, limit: limit)
+            
+            await MainActor.run {
+                if historyDtos.count < limit {
+                    hasMore = false
+                }
+                
+                let newMessages = historyDtos.map { dto in
+                    let amIMe = (dto.senderId != Int32(friend.id))
+                    
+                    return ChatMessage(
+                        messageId: Int32(dto.id),
+                        content: dto.content,
+                        isMe: amIMe,
+                        timestamp: Date(),
+                        type: "TEXT",
+                        sendStatus: .success,
+                        groupTime: dto.groupTime,
+                        msgTimeStr: dto.msgTimeStr,
+                        avatar: dto.avatar
+                    )
+                }
+                
+                var history = socketManager.chatHistory
+                let currentList = history[friend.id] ?? []
+                
+                let localSendingMessages = currentList.filter { $0.messageId == nil }
+                var finalMessages: [ChatMessage]
+                
+                if isInitial {
+                    finalMessages = newMessages + localSendingMessages
+                    shouldScrollToBottom = true
+                } else {
+                    let existingServerMessages = currentList.filter { $0.messageId != nil }
+                    // 假设服务端依然按时间正序返回（最早的在前面，或者根据 offset 拼接在最前面最合适）
+                    finalMessages = newMessages + existingServerMessages + localSendingMessages
+                }
+                
+                history[friend.id] = finalMessages
+                socketManager.chatHistory = history
+            }
+        } catch {
+            print("❌ 获取历史消息失败: \(error)")
+            // To prevent infinite loop of onAppear trying to reload indefinitely if the server crashes
+            await MainActor.run {
+                hasMore = false
+            }
+        }
+    }
+}
+
+private struct AvatarDecodeView: View {
+    let base64: String
+    let fallbacName: String
+    let fallbackColor: Color
+    let cache: NSCache<NSString, NSImage>
+    
+    @State private var decodedImage: NSImage?
+    
+    var body: some View {
+        Group {
+            if let nsImage = decodedImage {
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 32, height: 32)
+                    .clipShape(Circle())
+            } else {
+                Circle()
+                    .fill(fallbackColor)
+                    .frame(width: 32, height: 32)
+                    .overlay(Text(fallbacName).font(.caption).foregroundColor(.white))
+            }
+        }
+        .task {
+            // Asynchronous decoding off the main thread
+            await decodeImageAsync()
+        }
+    }
+    
+    private func decodeImageAsync() async {
+        // 先检查是否已经被其他 Cell 缓存
+        if let cached = cache.object(forKey: base64 as NSString) {
+            await MainActor.run { self.decodedImage = cached }
+            return
+        }
+        
+        // 提取并去除头
+        let pureBase64 = base64.components(separatedBy: ",").last?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !pureBase64.isEmpty else { return }
+        
+        // 在后台线程执行沉重的 base64 和图片解码工作
+        let image = await Task.detached(priority: .userInitiated) { () -> NSImage? in
+            if let avatarData = Data(base64Encoded: pureBase64, options: .ignoreUnknownCharacters),
+               let nsImage = NSImage(data: avatarData) {
+                return nsImage
+            }
+            return nil
+        }.value
+        
+        if let validImage = image {
+            cache.setObject(validImage, forKey: base64 as NSString)
+            await MainActor.run {
+                self.decodedImage = validImage
+            }
+        }
     }
 }
 
@@ -2581,7 +2890,7 @@ private struct ChatDetailView: View {
 // 3. Friend Sidebar View (左侧列表)
 // 3. Friend Sidebar View (左侧列表)
 private struct OptimizedFriendSidebarView: View {
-    @Binding var selectedFriendId: UUID?
+    @Binding var selectedFriendId: Int64?
     let friends: [Friend]
     @State private var searchText = ""
     @State private var showingAddFriendSheet = false
@@ -2654,7 +2963,7 @@ private struct OptimizedFriendSidebarView: View {
                 LazyVStack(spacing: 0) {
                     // New Friend Item
                     Button(action: {
-                        selectedFriendId = UUID(uuidString: "00000000-0000-0000-0000-000000000000") // Special ID for New Friend
+                        selectedFriendId = -1 // Special ID for New Friend
                     }) {
                         HStack(spacing: 12) {
                             Image(systemName: "person.badge.plus")
@@ -2684,7 +2993,7 @@ private struct OptimizedFriendSidebarView: View {
                         .padding(.horizontal, 12)
                         .padding(.vertical, 10)
                         .contentShape(Rectangle()) // Make entire area clickable
-                        .background(selectedFriendId?.uuidString == "00000000-0000-0000-0000-000000000000" ? Color.blue : Color.clear)
+                        .background(selectedFriendId == -1 ? Color.blue : Color.clear)
                     }
                     .buttonStyle(.plain)
 
@@ -2885,8 +3194,9 @@ private struct UserResultRow: View {
     var body: some View {
         HStack(spacing: 12) {
             // Avatar
-            if let avatarStr = user.avatar,
-               let avatarData = Data(base64Encoded: avatarStr),
+            let cleanAvatar = user.avatar?.components(separatedBy: ",").last?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let avatarStr = cleanAvatar, !avatarStr.isEmpty,
+               let avatarData = Data(base64Encoded: avatarStr, options: .ignoreUnknownCharacters),
                let nsImage = NSImage(data: avatarData) {
                 Image(nsImage: nsImage)
                     .resizable()
@@ -3038,27 +3348,61 @@ struct VisualEffectBlur: NSViewRepresentable {
 private struct FriendRow: View {
     let friend: Friend
     let isSelected: Bool
+    @EnvironmentObject var socketManager: SocketManager
+    
+    var unreadCount: Int {
+        // 优先使用 SocketManager 中的实时未读数
+        if let realTime = socketManager.unreadCounts[friend.id] {
+            return realTime // 实时数值哪怕是 0 也应该应用
+        }
+        return Int(friend.serverUnreadCount ?? 0)
+    }
+    
+    var lastMessageText: String {
+        // 优先使用实时的最新一条记录文本，如果没有再降级到服务端下发的 lastUnreadMsg
+        if let msg = socketManager.chatHistory[friend.id]?.last {
+            return msg.content
+        } else if let serverMsg = friend.serverLatestMsg, !serverMsg.isEmpty {
+            return serverMsg
+        }
+        return "点击开始聊天"
+    }
     
     var body: some View {
         HStack(spacing: 12) {
-            // Avatar
-            if let avatarStr = friend.avatarBase64,
-               let avatarData = Data(base64Encoded: avatarStr, options: .ignoreUnknownCharacters),
-               let nsImage = NSImage(data: avatarData) {
-                Image(nsImage: nsImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: 40, height: 40)
-                    .clipShape(Circle())
-            } else {
-                Circle()
-                    .fill(friend.avatarColor)
-                    .frame(width: 40, height: 40)
-                    .overlay(
-                        Text(friend.name.prefix(1))
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundColor(.white)
-                    )
+            // Avatar with Unread Badge
+            ZStack(alignment: .topTrailing) {
+                let cleanAvatar = friend.avatarBase64?.components(separatedBy: ",").last?.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let avatarStr = cleanAvatar, !avatarStr.isEmpty,
+                   let avatarData = Data(base64Encoded: avatarStr, options: .ignoreUnknownCharacters),
+                   let nsImage = NSImage(data: avatarData) {
+                    Image(nsImage: nsImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 40, height: 40)
+                        .clipShape(Circle())
+                } else {
+                    Circle()
+                        .fill(friend.avatarColor)
+                        .frame(width: 40, height: 40)
+                        .overlay(
+                            Text(friend.name.prefix(1))
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundColor(.white)
+                        )
+                }
+                
+                // Unread Badge
+                if unreadCount > 0 {
+                    Text("\(unreadCount > 99 ? "99+" : "\(unreadCount)")")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .background(Color.red)
+                        .clipShape(Capsule())
+                        .offset(x: 6, y: -4)
+                }
             }
             
             VStack(alignment: .leading, spacing: 4) {
@@ -3067,12 +3411,14 @@ private struct FriendRow: View {
                         .font(.system(size: 14, weight: .medium))
                         .foregroundColor(isSelected ? .white : .primary)
                     Spacer()
-                    Text(friend.lastTime)
-                        .font(.caption)
-                        .foregroundColor(isSelected ? .white.opacity(0.8) : .secondary)
+                    if let lastMsg = socketManager.chatHistory[friend.id]?.last {
+                        Text(formatTime(lastMsg.timestamp))
+                            .font(.caption)
+                            .foregroundColor(isSelected ? .white.opacity(0.8) : .secondary)
+                    }
                 }
                 
-                Text(friend.lastMessage)
+                Text(lastMessageText)
                     .font(.system(size: 12))
                     .foregroundColor(isSelected ? .white.opacity(0.8) : .secondary)
                     .lineLimit(1)
@@ -3082,11 +3428,22 @@ private struct FriendRow: View {
         .padding(.vertical, 10)
         .background(isSelected ? Color.blue : Color.clear)
     }
+    
+    private func formatTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        if Calendar.current.isDateInToday(date) {
+            formatter.dateFormat = "HH:mm"
+        } else {
+            formatter.dateFormat = "MM-dd"
+        }
+        return formatter.string(from: date)
+    }
 }
+
 
 // 4. Friend Chat Split View (主容器)
 private struct FriendChatSplitView: View {
-    @State private var selectedFriendId: UUID?
+    @State private var selectedFriendId: Int64?
     @State private var friends: [Friend] = []
     @EnvironmentObject var socketManager: SocketManager
     
@@ -3100,10 +3457,11 @@ private struct FriendChatSplitView: View {
             
             // Right Detail
             if let selectedId = selectedFriendId {
-                if selectedId.uuidString == "00000000-0000-0000-0000-000000000000" {
+                if selectedId == -1 {
                     NewFriendView()
                 } else if let friend = friends.first(where: { $0.id == selectedId }) {
                     ChatDetailView(friend: friend)
+                        .id(friend.id) // 确保切换好友时重建 View，清空所有的 @State (如 currentOffset 等)
                 } else {
                     // Placeholder
                     VStack(spacing: 16) {
@@ -3133,19 +3491,31 @@ private struct FriendChatSplitView: View {
         .onAppear {
             loadMockFriends()
         }
+        .onChange(of: selectedFriendId) { newValue in
+            // 通知 SocketManager 当前活跃聊天窗口，以消除红点累加
+            socketManager.activeChatFriendId = newValue
+            
+            // 下面的点击直接清除本地状态去掉了，交给 loadInitialHistory 去做真正的 0x55 清除
+        }
         .onChange(of: socketManager.friendList) { newFriendDtos in
             // 当 socketManager.friendList 被更新（如同意好友后 0x35 刷新），同步更新本地 UI friends
             self.friends = newFriendDtos.map { dto in
                 let displayName = dto.alias ?? (dto.nickName.isEmpty ? dto.userName : dto.nickName)
                 let color = self.colorFor(name: displayName)
+                
+                // 同步未读数到全局状态，以便 ChatDetailView 判断是否需要触发 0x55
+                if let unreadCount = dto.unreadCount {
+                    self.socketManager.unreadCounts[dto.friendId] = Int(unreadCount)
+                }
+                
                 return Friend(
+                    id: dto.friendId,
                     name: displayName,
                     status: "在线",
                     avatarColor: color,
                     avatarBase64: dto.avatar,
-                    lastMessage: "点击开始聊天",
-                    lastTime: "",
-                    unreadCount: 0
+                    serverUnreadCount: dto.unreadCount,
+                    serverLatestMsg: dto.latestUnreadMsg
                 )
             }
         }
@@ -3166,14 +3536,19 @@ private struct FriendChatSplitView: View {
                         // Parse avatar color from name or id hash if needed, or use default
                         let color = self.colorFor(name: displayName)
                         
+                        // 同步未读数到全局状态
+                        if let unreadCount = dto.unreadCount {
+                            self.socketManager.unreadCounts[dto.friendId] = Int(unreadCount)
+                        }
+                        
                         return Friend(
+                            id: dto.friendId,
                             name: displayName,
                             status: "在线", // Default status, real status needs another mechanism
                             avatarColor: color,
                             avatarBase64: dto.avatar,
-                            lastMessage: "点击开始聊天", // Placeholder
-                            lastTime: "",
-                            unreadCount: 0
+                            serverUnreadCount: dto.unreadCount,
+                            serverLatestMsg: dto.latestUnreadMsg
                         )
                     }
                 }

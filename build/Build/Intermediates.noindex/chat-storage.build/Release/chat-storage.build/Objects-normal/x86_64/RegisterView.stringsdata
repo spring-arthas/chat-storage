@@ -4,7 +4,15 @@
     "Localizable": [
       {
         "comment": "",
-        "key": "创建新账号"
+        "key": "创建新账号 (UI v2.0)"
+      },
+      {
+        "comment": "",
+        "key": "点击选择头像"
+      },
+      {
+        "comment": "",
+        "key": "上传头像"
       },
       {
         "comment": "",

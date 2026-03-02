@@ -61,6 +61,20 @@
 - 核心采用 **CoreData** (实体 `TransferTaskEntity`)，存储未完成和已完成的传输任务进度。
 - **Security-Scoped Bookmark（安全范围书签）**: 在 macOS 中带有沙盒机制的应用，一旦进程重启就会丢失用户选择的文件读写权限。代码中在用户选择下载目录或上传文件时，通过 `bookmarkData(options: .withSecurityScope)` 持久化存储权限令牌到数据库。在 App 重启执行 `resumePendingTasks` 恢复任务时，通过 `resolveBookmark` 兑换回 `URL` 并调用 `startAccessingSecurityScopedResource()` 重新激活磁盘读写权限。
 
+### 6. 消息与好友管理 (Friend & Chat System)
+- **UI 容器架构 (`FriendChatSplitView`)**:
+  - 作为消息 Tab 的顶级视图，采用经典的 SplitView 结构。左侧是 `OptimizedFriendSidebarView`（好友与搜索侧边栏），右侧依据左侧的选中状态动态切换为 `NewFriendView`（新的朋友/待处理请求申请）或 `ChatDetailView`（具体聊天详情面板）。
+- **状态流转与响应式更新**:
+  - 全局唯一的数据源持有者是 `SocketManager`，它通过 `@Published var friendList: [FriendDto]` 和 `@Published var pendingFriendRequests` 为全 App 广播核心状态。
+  - 左侧边栏维护一个适用于 UI 渲染的 `@State private var friends: [Friend]`。该状态不仅在视图 `onAppear` 时通过调用 `loadMockFriends` 进行初始拉取 (0x35)，还通过 `.onChange(of: socketManager.friendList)` 进行严格同步。这种单向数据流保证了当好友列表在应用任何角落发生变更时，边栏都能自动重绘。
+  - `FriendDto` 严格遵循了 `Equatable` 协议，以配合 SwiftUI 的 Diffing 机制触发变更。
+- **好友申请与同意链路 (防竞态设计)**:
+  - 触发添加好友：`MacAddFriendSheet` 负责搜索用户 (0x36) 并发送好友申请 (0x37)。
+  - 待处理请求展示与处理：`NewFriendView` 获取未处理申请 (0x38)，并在用户点击同意时允许输入备注别名（居中弹窗）。
+  - 处理动作与刷新链路：用户提交后发送同意帧 (0x39)。为了防止服务端数据库事务 Commit 延迟，客户端在收到 0x39 的 200 成功响应后，会主动发起 `Task.sleep(500ms)` 微小停顿，随后再主动发送通讯录刷新帧 (0x35)，并将结果覆写至 `socketManager.friendList`。
+- **聊天详情 (`ChatDetailView`)**:
+  - 目前展示基于本地 Mock 数据，支持基础的图文展示（左侧对方，右侧自己），气泡设计，预留了附件和表情输入框入口，后续将通过专属数据帧接入真正的双向 Socket 实时聊天历史及回显。
+
 ---
 
 ## 三、 总结与后续开发建议

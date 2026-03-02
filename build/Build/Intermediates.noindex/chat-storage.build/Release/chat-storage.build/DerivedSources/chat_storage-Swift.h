@@ -300,8 +300,7 @@ SWIFT_CLASS_NAMED("Item")
 @end
 
 
-/// 全局 Socket 连接管理器
-/// 负责维护与服务器的 TCP Socket 长连接
+
 SWIFT_CLASS("_TtC12chat_storage13SocketManager")
 @interface SocketManager : NSObject
 - (nonnull instancetype)init OBJC_DESIGNATED_INITIALIZER;
@@ -313,6 +312,9 @@ SWIFT_CLASS("_TtC12chat_storage13SocketManager")
 @interface SocketManager (SWIFT_EXTENSION(chat_storage)) <NSStreamDelegate>
 - (void)stream:(NSStream * _Nonnull)aStream handleEvent:(NSStreamEvent)eventCode;
 @end
+
+
+
 
 
 
@@ -663,8 +665,7 @@ SWIFT_CLASS_NAMED("Item")
 @end
 
 
-/// 全局 Socket 连接管理器
-/// 负责维护与服务器的 TCP Socket 长连接
+
 SWIFT_CLASS("_TtC12chat_storage13SocketManager")
 @interface SocketManager : NSObject
 - (nonnull instancetype)init OBJC_DESIGNATED_INITIALIZER;
@@ -676,6 +677,9 @@ SWIFT_CLASS("_TtC12chat_storage13SocketManager")
 @interface SocketManager (SWIFT_EXTENSION(chat_storage)) <NSStreamDelegate>
 - (void)stream:(NSStream * _Nonnull)aStream handleEvent:(NSStreamEvent)eventCode;
 @end
+
+
+
 
 
 

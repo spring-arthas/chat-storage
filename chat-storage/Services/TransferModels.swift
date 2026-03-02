@@ -74,6 +74,10 @@ public struct FriendDto: Codable, Identifiable, Equatable {
     public let nickName: String
     /// 头像 (Base64编码字符串)
     public let avatar: String?
+    /// 未读消息数
+    public let unreadCount: Int32?
+    /// 最新未读消息内容
+    public let latestUnreadMsg: String?
     
     // Identifiable (使用好友ID作为唯一标识)
     public var identifiableId: String { String(friendId) }
@@ -94,4 +98,112 @@ public struct FriendRequestDto: Codable, Identifiable {
     public let senderAvatar: String?
     
     public var identifiableId: String { String(id) }
+}
+
+
+// MARK: - Chat Models
+
+/// 发送聊天请求 (0x50)
+public struct ChatSendRequestDto: Codable {
+    public let receiverId: Int32
+    public let content: String
+    public let msgType: String // TEXT, IMAGE, FILE
+}
+
+/// 接收聊天消息推送 (0x51)
+public struct ChatPushDto: Codable, Identifiable {
+    public let messageId: Int32
+    public let senderId: Int32
+    public let content: String
+    public let msgType: String
+    public let avatar: String?
+    public let gmtCreated: Int64
+    
+    public var id: Int32 { messageId }
+}
+
+/// 接收聊天消息回执 (0x52)
+public struct ChatReceiptDto: Codable {
+    public let messageId: Int32
+    public let status: String // "success" or "false"
+}
+
+/// 历史聊天记录请求 (0x53)
+public struct ChatHistoryRequestDto: Codable {
+    public let friendId: Int32
+    public let offset: Int32
+    public let limit: Int32
+    
+    public init(friendId: Int32, offset: Int32 = 0, limit: Int32 = 20) {
+        self.friendId = friendId
+        self.offset = offset
+        self.limit = limit
+    }
+}
+
+/// 历史聊天记录响应单条 (0x53)
+public struct ChatHistoryItemDto: Codable {
+    public var id: Int64 = 0
+    public var senderId: Int32 = 0
+    public var receiverId: Int32 = 0
+    public var content: String = ""
+    public var msgType: String = ""
+    public var status: Int32 = 0
+    public var avatar: String?
+    public var groupTime: String = ""
+    public var msgTimeStr: String = ""
+    
+    // 自定义解码器增加容错性，防止某个字段类型不匹配导致整个 0x54 接包失败
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        
+        // 尝试解析 ID
+        if let intId = try? container.decodeIfPresent(Int64.self, forKey: .id) {
+            self.id = intId
+        } else if let strId = try? container.decodeIfPresent(String.self, forKey: .id), let intId = Int64(strId) {
+            self.id = intId
+        }
+        
+        self.senderId = (try? container.decodeIfPresent(Int32.self, forKey: .senderId)) ?? 0
+        self.receiverId = (try? container.decodeIfPresent(Int32.self, forKey: .receiverId)) ?? 0
+        self.content = (try? container.decodeIfPresent(String.self, forKey: .content)) ?? ""
+        
+        // msgType 兼容 String 和 Int32
+        if let intMsgType = try? container.decodeIfPresent(Int32.self, forKey: .msgType) {
+            self.msgType = String(intMsgType)
+        } else if let strMsgType = try? container.decodeIfPresent(String.self, forKey: .msgType) {
+            self.msgType = strMsgType
+        }
+        
+        // status 兼容 Int 和 String
+        if let intStatus = try? container.decodeIfPresent(Int32.self, forKey: .status) {
+            self.status = intStatus
+        } else if let strStatus = try? container.decodeIfPresent(String.self, forKey: .status), let intStatus = Int32(strStatus) {
+            self.status = intStatus
+        }
+        
+        self.avatar = try? container.decodeIfPresent(String.self, forKey: .avatar)
+        self.groupTime = (try? container.decodeIfPresent(String.self, forKey: .groupTime)) ?? ""
+        self.msgTimeStr = (try? container.decodeIfPresent(String.self, forKey: .msgTimeStr)) ?? ""
+    }
+}
+
+/// 历史聊天记录响应体 (0x54) 优化后的 Data 包装层
+public struct ChatHistoryResponseDataDto: Codable {
+    public let list: [ChatHistoryItemDto]
+    public let avatars: [String: String]?
+    
+    public init(list: [ChatHistoryItemDto] = [], avatars: [String: String]? = nil) {
+        self.list = list
+        self.avatars = avatars
+    }
+}
+
+/// 清除未读红点请求 (0x55)
+public struct ChatClearUnreadRequestDto: Codable {
+    public let friendId: Int32
+    
+    public init(friendId: Int32) {
+        self.friendId = friendId
+    }
 }
