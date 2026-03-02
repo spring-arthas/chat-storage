@@ -80,6 +80,22 @@ enum FrameTypeEnum: UInt8, CaseIterable {
     /// 文件操作响应
     case fileResponse = 0x43
     
+    // ========== 聊天操作帧 (0x50-0x5F) ==========
+    /// 发送聊天请求
+    case chatSendReq = 0x50
+    /// 接收聊天消息推送
+    case chatPushReq = 0x51
+    /// 接收聊天消息回执
+    case chatReceiptReq = 0x52
+    /// 请求聊天历史记录
+    case chatHistoryReq = 0x53
+    /// 响应聊天历史记录
+    case chatHistoryRes = 0x54
+    /// 清除未读消息红点请求
+    case chatClearUnreadReq = 0x55
+    /// 清除未读消息红点响应
+    case chatClearUnreadRes = 0x56
+    
     /// 帧类型描述
     var description: String {
         switch self {
@@ -117,6 +133,14 @@ enum FrameTypeEnum: UInt8, CaseIterable {
         case .fileDetailReq: return "文件详情请求"
         case .fileDeleteReq: return "文件删除请求"
         case .fileResponse: return "文件操作响应"
+            
+        case .chatSendReq: return "发送聊天请求"
+        case .chatPushReq: return "接收聊天消息推送"
+        case .chatReceiptReq: return "接收聊天消息回执"
+        case .chatHistoryReq: return "请求聊天历史记录"
+        case .chatHistoryRes: return "响应聊天历史记录"
+        case .chatClearUnreadReq: return "清除未读消息请求"
+        case .chatClearUnreadRes: return "清除未读消息响应"
         }
     }
     

@@ -106,7 +106,8 @@ struct NewFriendView: View {
                         
                         VStack(spacing: 16) {
                             // Large Avatar
-                            if let avatarStr = selectedRequestAvatar,
+                            let cleanAvatar = selectedRequestAvatar?.components(separatedBy: ",").last?.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if let avatarStr = cleanAvatar, !avatarStr.isEmpty,
                                let avatarData = Data(base64Encoded: avatarStr, options: .ignoreUnknownCharacters),
                                let nsImage = NSImage(data: avatarData) {
                                 Image(nsImage: nsImage)
@@ -241,8 +242,9 @@ private struct FriendRequestRow: View {
     var body: some View {
         HStack(spacing: 12) {
             // Avatar
-            if let avatarStr = request.senderAvatar,
-               let avatarData = Data(base64Encoded: avatarStr),
+            let cleanAvatar = request.senderAvatar?.components(separatedBy: ",").last?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let avatarStr = cleanAvatar, !avatarStr.isEmpty,
+               let avatarData = Data(base64Encoded: avatarStr, options: .ignoreUnknownCharacters),
                let nsImage = NSImage(data: avatarData) {
                 Image(nsImage: nsImage)
                     .resizable()

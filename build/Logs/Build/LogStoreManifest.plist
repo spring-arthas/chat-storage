@@ -6,7 +6,7 @@
 	<integer>10</integer>
 	<key>logs</key>
 	<dict>
-		<key>C7A10F1B-587D-480B-ACC1-EE0F80AE3C74</key>
+		<key>1BFBEEE0-7992-4BBE-9218-AD4F4C493CA8</key>
 		<dict>
 			<key>className</key>
 			<string>IDECommandLineBuildLog</string>
@@ -15,13 +15,13 @@
 			<key>domainType</key>
 			<string>Xcode.IDEActivityLogDomainType.BuildLog</string>
 			<key>fileName</key>
-			<string>C7A10F1B-587D-480B-ACC1-EE0F80AE3C74.xcactivitylog</string>
+			<string>1BFBEEE0-7992-4BBE-9218-AD4F4C493CA8.xcactivitylog</string>
 			<key>hasPrimaryLog</key>
 			<true/>
 			<key>primaryObservable</key>
 			<dict>
 				<key>highLevelStatus</key>
-				<string>W</string>
+				<string>S</string>
 			</dict>
 			<key>schemeIdentifier-containerName</key>
 			<string>chat-storage project</string>
@@ -32,13 +32,13 @@
 			<key>signature</key>
 			<string>Building project chat-storage with scheme chat-storage and configuration Release</string>
 			<key>timeStartedRecording</key>
-			<real>792320212.70870805</real>
+			<real>794123075.06737304</real>
 			<key>timeStoppedRecording</key>
-			<real>792320236.02157104</real>
+			<real>794123076.85392499</real>
 			<key>title</key>
 			<string>Building project chat-storage with scheme chat-storage and configuration Release</string>
 			<key>uniqueIdentifier</key>
-			<string>C7A10F1B-587D-480B-ACC1-EE0F80AE3C74</string>
+			<string>1BFBEEE0-7992-4BBE-9218-AD4F4C493CA8</string>
 		</dict>
 	</dict>
 </dict>
