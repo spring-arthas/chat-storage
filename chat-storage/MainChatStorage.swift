@@ -2430,6 +2430,9 @@ private struct ChatDetailView: View {
     @State private var shouldScrollToBottom: Bool = false
     @State private var isInitialProcessing: Bool = true // 防止最初始化时Scroll在顶部意外触发分页请求
     
+    // Emoji Picker State
+    @State private var showEmojiPicker: Bool = false
+    
     var messages: [ChatMessage] {
         socketManager.chatHistory[friend.id] ?? []
     }
@@ -2577,7 +2580,14 @@ private struct ChatDetailView: View {
             VStack(spacing: 0) {
                 // Toolbar
                 HStack(spacing: 12) {
-                    Button(action: {}) { Image(systemName: "face.smiling") }
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showEmojiPicker.toggle()
+                        }
+                    }) {
+                        Image(systemName: "face.smiling")
+                            .foregroundColor(showEmojiPicker ? .accentColor : .secondary)
+                    }
                     Button(action: {}) { Image(systemName: "paperclip") }
                     Button(action: {}) { Image(systemName: "folder") }
                     Spacer()
@@ -2587,17 +2597,44 @@ private struct ChatDetailView: View {
                 .padding(.horizontal, 12)
                 .padding(.top, 8)
                 
+                // Emoji Picker Panel
+                if showEmojiPicker {
+                    EmojiPickerPanel { emoji in
+                        let avatar = authService.currentUser?.avatar
+                        showEmojiPicker = false
+                        shouldScrollToBottom = true
+                        socketManager.sendChatMessage(
+                            receiverId: friend.id,
+                            content: emoji,
+                            msgType: "TEXT",
+                            avatar: avatar
+                        )
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                }
+                
                 // Text Field (支持多行及回车发送)
-                TextField("请输入消息...", text: $messageText, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 14))
-                    .frame(minHeight: 60, alignment: .topLeading)
-                    .padding(8)
-                    .onSubmit {
+                ZStack(alignment: .topLeading) {
+                    if messageText.isEmpty {
+                        Text("请输入消息...")
+                            .foregroundColor(.secondary)
+                            .padding(.leading, 12)
+                            .padding(.top, 8)
+                            .font(.system(size: 14))
+                            .allowsHitTesting(false)
+                    }
+                    MacResponsiveTextView(text: $messageText) {
                         Task {
                             await sendMessage()
                         }
                     }
+                    .frame(minHeight: 36, maxHeight: 150)
+                }
+                .background(Color(NSColor.textBackgroundColor).opacity(0.3))
+                .cornerRadius(8)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.2), lineWidth: 1))
+                .padding(.horizontal, 12)
+                .padding(.top, 4)
                 
                 // Send Button
                 HStack {
@@ -2615,7 +2652,7 @@ private struct ChatDetailView: View {
                 .padding(.bottom, 8)
             }
             .background(Color(NSColor.controlBackgroundColor))
-            .frame(height: 150)
+            .frame(minHeight: 150)
         }
         .onAppear {
             isInitialProcessing = true
@@ -2631,7 +2668,7 @@ private struct ChatDetailView: View {
     private func messageBubble(_ msg: ChatMessage) -> some View {
         HStack(alignment: .top, spacing: 8) {
             if msg.isMe {
-                Spacer()
+                Spacer(minLength: 60)
                 
                 // Bubble (Me)
                 HStack(alignment: .bottom, spacing: 4) {
@@ -2645,10 +2682,12 @@ private struct ChatDetailView: View {
                     }
                     
                     Text(msg.content)
+                        .font(.system(size: 14))
                         .padding(10)
                         .background(Color.blue)
                         .foregroundColor(.white)
-                        .cornerRadius(8)
+                        .clipShape(TailChatBubbleShape(isMe: true))
+                        .textSelection(.enabled)
                 }
                 
                 // Avatar (Me)
@@ -2659,19 +2698,22 @@ private struct ChatDetailView: View {
                 // Bubble (Friend)
                 HStack(alignment: .bottom, spacing: 4) {
                     Text(msg.content)
+                        .font(.system(size: 14))
                         .padding(10)
                         .background(Color(NSColor.controlBackgroundColor))
                         .foregroundColor(.primary)
-                        .cornerRadius(8)
+                        .clipShape(TailChatBubbleShape(isMe: false))
+                        .textSelection(.enabled)
                         .overlay(
-                            RoundedRectangle(cornerRadius: 8)
+                            TailChatBubbleShape(isMe: false)
                                 .stroke(Color.secondary.opacity(0.1), lineWidth: 1)
                         )
                 }
                 
-                Spacer()
+                Spacer(minLength: 60)
             }
         }
+        .padding(.vertical, 2)
         .id(msg.id)
     }
     
@@ -2803,7 +2845,24 @@ private struct ChatDetailView: View {
                 var history = socketManager.chatHistory
                 let currentList = history[friend.id] ?? []
                 
-                let localSendingMessages = currentList.filter { $0.messageId == nil }
+                // ────────────────────────────────────────────────────────────
+                // 直接从历史消息中提取当前用户自己的 base64 头像（无条件覆盖）
+                // 服务端 avatars 字典里的是 base64，比登录响应的文件路径更可靠
+                // ────────────────────────────────────────────────────────────
+                if let myMsg = newMessages.first(where: { $0.isMe && $0.avatar != nil && !($0.avatar!.isEmpty) }) {
+                    socketManager.myAvatar = myMsg.avatar
+                    print("✅ [fetchHistory] myAvatar 已从历史 base64 头像更新")
+                }
+                
+                // 把头像补充给还在等待中的本地乐观消息（发出去但还没回执的）
+                let effectiveMyAvatar = socketManager.myAvatar
+                let localSendingMessages = currentList.filter { $0.messageId == nil }.map { msg -> ChatMessage in
+                    guard msg.isMe, msg.avatar == nil, let av = effectiveMyAvatar else { return msg }
+                    var updated = msg
+                    updated.avatar = av          // ChatMessage.avatar 需要 var
+                    return updated
+                }
+                
                 var finalMessages: [ChatMessage]
                 
                 if isInitial {
@@ -2817,6 +2876,7 @@ private struct ChatDetailView: View {
                 
                 history[friend.id] = finalMessages
                 socketManager.chatHistory = history
+
             }
         } catch {
             print("❌ 获取历史消息失败: \(error)")
@@ -2825,6 +2885,153 @@ private struct ChatDetailView: View {
                 hasMore = false
             }
         }
+    }
+}
+
+// MARK: - Emoji Picker Panel
+
+/// 表情选择面板 - 分类展示常用 emoji，点击后触发回调
+private struct EmojiPickerPanel: View {
+    let onEmojiSelected: (String) -> Void
+
+    private let categories: [(String, String, [String])] = [
+        ("笑脸", "face.smiling", [
+            "😀","😁","😂","🤣","😃","😄","😅","😆","😉","😊",
+            "😋","😎","😍","🥰","😘","😗","😙","😚","🙂","🤗",
+            "🤩","🤔","🤨","😐","😑","😶","🙄","😏","😣","😥",
+            "😮","🤐","😯","😪","😫","🥱","😴","😌","😛","😜",
+            "😝","🤤","😒","😓","😔","😕","🙃","🤑","😲","☹️",
+            "🙁","😖","😞","😟","😤","😢","😭","😦","😧","😨",
+            "😩","🤯","😬","😰","😱","🥵","🥶","😳","🤪","😠"
+        ]),
+        ("手势", "hand.raised", [
+            "👋","🤚","🖐","✋","🖖","👌","🤏","✌️","🤞","🤟",
+            "🤘","🤙","👈","👉","👆","🖕","👇","☝️","👍","👎",
+            "✊","👊","🤛","🤜","👏","🙌","👐","🤲","🤝","🙏",
+            "✍️","💪","🦾","🦿","🦵","🦶","👂","🦻"
+        ]),
+        ("人物", "person", [
+            "👶","🧒","👦","👧","🧑","👱","👨","🧔","👩","🧓",
+            "👴","👵","🙍","🙎","🙅","🙆","💁","🙋","🧏","🙇",
+            "🤦","🤷","👮","💂","👷","🤴","👸","🦸","🦹"
+        ]),
+        ("动物", "pawprint", [
+            "🐶","🐱","🐭","🐹","🐰","🦊","🐻","🐼","🐨","🐯",
+            "🦁","🐮","🐷","🐸","🐵","🙈","🙉","🙊","🐔","🐧",
+            "🐦","🐤","🦆","🦅","🦉","🦇","🐺","🐴","🦄","🐢",
+            "🐍","🦎","🐊","🦕","🦖","🦈","🐋","🐬","🦭","🐘"
+        ]),
+        ("食物", "fork.knife", [
+            "🍎","🍊","🍋","🍇","🍓","🍈","🍒","🍑","🥭","🍍",
+            "🥥","🥝","🍅","🍆","🥑","🥦","🌽","🥕","🧄","🧅",
+            "🍔","🍟","🍕","🌮","🌯","🥪","🥙","🧆","🥚","🍳",
+            "🍿","🧂","🥞","🧇","🧈","🍱","🍜","🍣","🍦","☕️"
+        ]),
+        ("活动", "sportscourt", [
+            "⚽️","🏀","🏈","⚾️","🎾","🏐","🏉","🎱","🏓","🏸",
+            "🥊","🥋","🎽","🛹","🛷","⛸","🏂","🏋️","🤸","🤺",
+            "🏊","🚴","🧘","🎯","🎳","🎲","🎮","🎸","🎺","🎻"
+        ]),
+        ("旅行", "car", [
+            "🚗","🚕","🚙","🚌","🏎","🚓","🚒","🚐","🚚","✈️",
+            "🚀","🛸","🚁","🛶","⛵️","🚢","🚂","🏠","🏢","🗼",
+            "🗽","⛩","🎡","🎢","🎠","🌍","🌏","🌙","☀️","🌈"
+        ]),
+        ("符号", "heart", [
+            "❤️","🧡","💛","💚","💙","💜","🖤","🤍","🤎","💔",
+            "❣️","💕","💞","💓","💗","💖","💘","💝","💯","✅",
+            "❎","🔴","🟠","🟡","🟢","🔵","🟣","⚫️","⚪️","🟤",
+            "🔶","🔷","🔸","🔹","🔺","🔻","💠","🔘","🔲","🔳"
+        ]),
+        ("物品", "star", [
+            "🎁","🎈","🎉","🎊","🎀","🏆","🥇","🥈","🥉","🎖",
+            "🔑","🗝","🔒","🔓","🔔","🔕","🎵","🎶","💡","🔦",
+            "📱","💻","⌨️","🖥","🖨","📷","📸","📹","🎥","📺",
+            "📚","📖","✏️","🖊","📝","💼","🎒","🌂","☂️","🧲"
+        ])
+    ]
+
+    @State private var selectedCategoryIndex: Int = 0
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // 分类标签栏 —— 均匀分布，无需滚动
+            HStack(spacing: 0) {
+                ForEach(Array(categories.enumerated()), id: \.offset) { index, cat in
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            selectedCategoryIndex = index
+                        }
+                    }) {
+                        VStack(spacing: 2) {
+                            Image(systemName: cat.1)
+                                .font(.system(size: 13))
+                            Text(cat.0)
+                                .font(.system(size: 9, weight: .medium))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 5)
+                        .background(
+                            selectedCategoryIndex == index
+                                ? Color.accentColor.opacity(0.15)
+                                : Color.clear
+                        )
+                        .foregroundColor(selectedCategoryIndex == index ? .accentColor : .secondary)
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+            .background(Color(NSColor.controlBackgroundColor))
+
+            Divider()
+
+            // Emoji 网格 —— adaptive 列宽，自动铺满
+            ScrollView(.vertical, showsIndicators: false) {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 38, maximum: 46), spacing: 0)],
+                    spacing: 0
+                ) {
+                    ForEach(categories[selectedCategoryIndex].2, id: \.self) { emoji in
+                        EmojiCell(emoji: emoji, onTap: onEmojiSelected)
+                    }
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+            }
+            .frame(height: 160)
+            .background(Color(NSColor.windowBackgroundColor))
+        }
+        .background(Color(NSColor.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.15), radius: 8, y: -3)
+        .padding(.horizontal, 8)
+        .padding(.bottom, 2)
+    }
+}
+
+/// 单个 Emoji 格子，带 hover 高亮
+private struct EmojiCell: View {
+    let emoji: String
+    let onTap: (String) -> Void
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: { onTap(emoji) }) {
+            Text(emoji)
+                .font(.system(size: 24))
+                .frame(width: 40, height: 40)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isHovering ? Color.secondary.opacity(0.15) : Color.clear)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .onHover { isHovering = $0 }
     }
 }
 
@@ -3218,12 +3425,6 @@ private struct UserResultRow: View {
                     Text("@\(user.userName)")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    
-                    if let statusDesc = user.friendStatusDesc, !statusDesc.isEmpty {
-                        Text(statusDesc)
-                            .font(.caption2)
-                            .foregroundColor(statusColor(for: user.friendStatus))
-                    }
                 }
             }
             
@@ -3231,33 +3432,36 @@ private struct UserResultRow: View {
             
             // 按钮逻辑状态机
             Group {
-                let status = user.friendStatus
+                let status = user.friendStatus ?? -1
+                let statusDesc = user.friendStatusDesc ?? "添加"
+                
                 switch status {
-                    case 0: // 已申请
-                        Button("已申请") {}
+                    case 0: // 已投递申请 (对应后端可能返回 0:申请中)
+                        Button(statusDesc) {}
                             .disabled(true)
                             .controlSize(.small)
+                            .buttonStyle(.bordered)
                     case 1: // 已是好友
-                        Button("已是好友") {}
+                        Button(statusDesc) {}
                             .disabled(true)
                             .controlSize(.small)
-                    case 2: // 对方拒绝 (允许再次申请)
+                            .buttonStyle(.bordered)
+                    case 2: // 对方拒绝 或 陌生人 (允许申请)
                         Button(action: sendFriendRequest) {
-                            Text(requestSent ? "已发送" : "添加")
+                            Text(requestSent ? "已发送" : statusDesc)
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
                         .disabled(requestSent)
-                    default: // 陌生人/其他
+                    default: // 默认情况/陌生人
                         Button(action: sendFriendRequest) {
-                            Text(requestSent ? "已发送" : "添加")
+                            Text(requestSent ? "已发送" : statusDesc)
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
                         .disabled(requestSent)
-                    }
-
                 }
+            }
             }
 
         .padding(12)
@@ -3568,24 +3772,118 @@ private struct FriendChatSplitView: View {
     }
 }
 
-// MARK: - UserDto Extension for Friend Status
-extension UserDto {
-    /// 好友状态: 0=非好友, 1=好友, 2=已申请
-    var friendStatus: Int {
-        // 1. Check if already friend
-        if SocketManager.shared.friendList.contains(where: { $0.friendId == self.id }) {
-            return 1
-        }
-        // 2. Check if request sent (Optional: needs mySentRequests list in SocketManager)
-        // For now, return 0
-        return 0
+// MARK: - Mac Responsive Text View (Custom NSTextView Integration)
+/// 封装 AppKit 的 NSTextView，以支持：1. 真正的换行拦截与回车发送；2. 内容自适应高度。
+struct MacResponsiveTextView: NSViewRepresentable {
+    @Binding var text: String
+    var onSendTriggered: () -> Void
+    
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSTextView.scrollableTextView()
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        
+        guard let textView = scrollView.documentView as? NSTextView else { return scrollView }
+        
+        // 替换为自定义的 CustomNSTextView
+        let customTextView = CustomNSTextView()
+        customTextView.delegate = context.coordinator
+        customTextView.drawsBackground = false
+        customTextView.isRichText = false
+        customTextView.font = NSFont.systemFont(ofSize: 14)
+        customTextView.autoresizingMask = [.width]
+        customTextView.isHorizontallyResizable = false
+        customTextView.isVerticallyResizable = true
+        customTextView.textContainerInset = NSSize(width: 8, height: 8)
+        
+        scrollView.documentView = customTextView
+        return scrollView
     }
     
-    var friendStatusDesc: String? {
-        switch friendStatus {
-        case 1: return "已添加"
-        case 2: return "已申请"
-        default: return nil
+    func updateNSView(_ nsView: NSScrollView, context: Context) {
+        guard let textView = nsView.documentView as? CustomNSTextView else { return }
+        if textView.string != text {
+            textView.string = text
         }
+    }
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: MacResponsiveTextView
+        
+        init(_ parent: MacResponsiveTextView) {
+            self.parent = parent
+        }
+        
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            self.parent.text = textView.string
+        }
+        
+        func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+                let event = NSApp.currentEvent
+                let flags = event?.modifierFlags ?? []
+                if flags.contains(.shift) || flags.contains(.option) || flags.contains(.control) {
+                    // 修饰键+Enter，允许换行
+                    textView.insertNewlineIgnoringFieldEditor(nil)
+                    return true
+                } else {
+                    // 单击回车，触发发送逻辑
+                    self.parent.onSendTriggered()
+                    return true
+                }
+            }
+            return false
+        }
+    }
+}
+
+class CustomNSTextView: NSTextView {
+    // 留出扩展接口供日后处理剪贴板图片等
+}
+
+// MARK: - Chat Bubble Tail Shape
+struct TailChatBubbleShape: Shape {
+    var isMe: Bool
+    var cornerRadius: CGFloat = 8
+    
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        
+        let w = rect.width
+        let h = rect.height
+        let r = cornerRadius
+        
+        if isMe {
+            // Tail at bottom right
+            path.move(to: CGPoint(x: 0, y: r))
+            path.addArc(center: CGPoint(x: r, y: r), radius: r, startAngle: .degrees(180), endAngle: .degrees(270), clockwise: false)
+            path.addLine(to: CGPoint(x: w - r, y: 0))
+            path.addArc(center: CGPoint(x: w - r, y: r), radius: r, startAngle: .degrees(270), endAngle: .degrees(360), clockwise: false)
+            
+            // Draw tail
+            path.addLine(to: CGPoint(x: w, y: h)) // Sharp bottom right corner
+            path.addLine(to: CGPoint(x: w - r, y: h)) // Go left
+            
+            path.addArc(center: CGPoint(x: r, y: h - r), radius: r, startAngle: .degrees(90), endAngle: .degrees(180), clockwise: false)
+            path.closeSubpath()
+        } else {
+            // Tail at bottom left
+            path.move(to: CGPoint(x: w, y: h - r))
+            path.addArc(center: CGPoint(x: w - r, y: h - r), radius: r, startAngle: .degrees(0), endAngle: .degrees(90), clockwise: false)
+            path.addLine(to: CGPoint(x: r, y: h)) // Go left
+            path.addLine(to: CGPoint(x: 0, y: h)) // Sharp bottom left corner
+            path.addLine(to: CGPoint(x: 0, y: r)) // Go up
+            path.addArc(center: CGPoint(x: r, y: r), radius: r, startAngle: .degrees(180), endAngle: .degrees(270), clockwise: false)
+            path.addLine(to: CGPoint(x: w - r, y: 0))
+            path.addArc(center: CGPoint(x: w - r, y: r), radius: r, startAngle: .degrees(270), endAngle: .degrees(360), clockwise: false)
+            path.closeSubpath()
+        }
+        
+        return path
     }
 }
