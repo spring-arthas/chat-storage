@@ -134,6 +134,14 @@ struct MainChatStorage: View {
     @State private var fileDetail: FileDto?
     @State private var isLoadingDetail = false
     
+    // MARK: - Cloud Storage UI Innovation & Theme
+    /// 视图模式: 0 = 列表, 1 = 网格 (Cloud Hub Grid)
+    @State private var storageViewMode: Int = 1 
+    /// 网格项悬停状态，Key 为文件 ID
+    @State private var gridHoverStates: [Int64: Bool] = [:]
+    /// 是否开启网格背景网格动画
+    @State private var isMeshAnimating = true
+    
     // MARK: - New Friend State
     @State public var showingNewFriendView = false
     @State private var newFriendBadgeCount = 3 // Mock count
@@ -153,14 +161,14 @@ struct MainChatStorage: View {
                     // 第一个标签页：好友列表与聊天
                     FriendChatSplitView()
                         .tabItem {
-                            Label("消息", systemImage: "bubble.left.and.bubble.right.fill")
+                            Label("会话", systemImage: "bubble.left.and.bubble.right.fill")
                         }
                         .tag(0)
                     
                     // 第二个标签页：网盘存储
                     storageView
                         .tabItem {
-                            Label("网盘存储", systemImage: "externaldrive.fill")
+                            Label("云盘", systemImage: "externaldrive.fill")
                         }
                         .tag(1)
                 }
@@ -231,6 +239,16 @@ struct MainChatStorage: View {
                 self.searchKeyword = ""
                 self.currentPage = 1
                 loadCurrentFiles()
+            }
+        }
+        // 监听来自桌面通知的自动跳转事件
+        .onReceive(NotificationCenter.default.publisher(for: .switchToChat)) { notification in
+            if let userInfo = notification.userInfo, let senderId = userInfo["senderId"] as? Int64 {
+                print("🔄 接收到跳转会话事件，目标好友ID: \(senderId)")
+                // 1. 切换到“会话” Tab页
+                self.selectedTab = 0
+                // 2. 选中对应的好友聊天面板
+                self.socketManager.activeChatFriendId = senderId
             }
         }
         // 监听传输任务更新
@@ -376,38 +394,30 @@ struct MainChatStorage: View {
             // 标题栏
             HStack {
                 Text("目录导航")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 14, weight: .bold))
                     .foregroundColor(.primary)
                 
                 Spacer()
                 
-                // 刷新按钮
                 Button(action: {
-                    Task {
-                        await loadDirectoryFromServer()
-                    }
+                    Task { await loadDirectoryFromServer() }
                 }) {
                     Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 12, weight: .semibold))
                 }
-                .buttonStyle(.borderless)
-                .controlSize(.small)
+                .buttonStyle(.plain)
                 .help("刷新目录")
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color(NSColor.controlBackgroundColor))
-            
-            Divider()
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
             
             // 树形列表
-            // 树形列表 (使用自定义递归视图以支持展开控制)
             List {
                 RecursiveDirectoryView(
                     nodes: directoryTree,
                     selectedId: $selectedDirectoryId,
                     expandedIds: $expandedDirectoryIds,
                     onCreate: { item in
-                        addLog("在 [\(item.fileName)] 下新建目录")
                         self.createDirParentId = item.id
                         self.newDirName = ""
                         self.showingCreateDirDialog = true
@@ -427,16 +437,10 @@ struct MainChatStorage: View {
                         handleSelectFiles(targetDirectory: item)
                     }
                 )
+                .listRowBackground(Color.clear)
             }
-            .listStyle(SidebarListStyle())
-            .alert("确认删除目录", isPresented: $showingDeleteAlert) {
-                Button("取消", role: .cancel) { }
-                Button("删除", role: .destructive) {
-                    handleDeleteDirectory()
-                }
-            } message: {
-                Text("确定要删除目录 [\(deleteTargetName)] 吗？此操作无法撤销。")
-            }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
         }
     }
     
@@ -448,19 +452,46 @@ struct MainChatStorage: View {
         VSplitView {
             // 上半部分：文件浏览区
             VStack(spacing: 0) {
-                // 上传控制栏
+                // 上传控制栏 (Floating style)
                 uploadControlBar
+                    .background(.ultraThinMaterial)
                 
                 Divider()
                 
-                // 文件列表
-                fileListView
+                // 文件列表 / 网格视图切换
+                ZStack {
+                    if storageViewMode == 0 {
+                        fileListView
+                            .transition(.opacity)
+                    } else {
+                        CloudGridView(
+                            items: currentFiles,
+                            selectedFiles: $selectedFiles,
+                            selectedFileId: $selectedFileId,
+                            onFileTapped: { file in
+                                self.selectedFileId = file.id
+                                loadFileDetail(fileId: file.id)
+                            },
+                            onFileDoubleTapped: { file in
+                                if !file.isFile {
+                                    handleEnterDirectory(file)
+                                }
+                            },
+                            onAction: { file, action in
+                                handleFileAction(file, action: action)
+                            }
+                        )
+                        .transition(.scale(scale: 0.95).combined(with: .opacity))
+                    }
+                }
+                .animation(.spring(), value: storageViewMode)
             }
-            .frame(minHeight: 300)
+            .frame(minWidth: 300, minHeight: 300)
             
             // 下半部分：文件传输区
             transferListView
                 .frame(minHeight: 150)
+                .background(.ultraThinMaterial)
         }
     }
     
@@ -475,20 +506,20 @@ struct MainChatStorage: View {
                 handleBatchDelete()
             }) {
                 Label("批量删除", systemImage: "trash")
+                    .foregroundColor(selectedFiles.isEmpty ? .secondary : .red)
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .tint(.red)
             .disabled(selectedFiles.isEmpty)
             
             Button(action: {
                 handleBatchDownload()
             }) {
                 Label("批量下载", systemImage: "arrow.down.circle")
+                    .foregroundColor(selectedFiles.isEmpty ? .secondary : .blue)
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .tint(.blue)
             .disabled(selectedFiles.isEmpty)
 
 
@@ -546,37 +577,26 @@ struct MainChatStorage: View {
     
     private var fileListView: some View {
         VStack(spacing: 0) {
-            // 表头
+            // 表头 (现代优化版)
             HStack(spacing: 0) {
-                //复选框列 (全选)
                 Toggle("", isOn: Binding(
                     get: { isAllSelected },
                     set: { _ in toggleAllSelection() }
                 ))
                 .toggleStyle(.checkbox)
                 .frame(width: 30, alignment: .center)
+                .padding(.leading, 14)
                 
-                Label("文件名称", systemImage: "doc")
-                    .frame(minWidth: 200, maxWidth: .infinity, alignment: .leading)
-                
-                Label("文件大小", systemImage: "externaldrive")
-                    .frame(width: 80, alignment: .leading)
-                
-                Label("所属目录", systemImage: "folder")
-                    .frame(width: 100, alignment: .leading)
-                
-                Label("上传时间", systemImage: "clock")
-                    .frame(width: 140, alignment: .leading)
-                
-                Text("操作")
-                    .frame(width: 80, alignment: .center)
+                FileTableHeaderView(items: [
+                    HeaderItem(title: "文件名称", icon: "doc", isSpacer: true),
+                    HeaderItem(title: "文件大小", icon: "externaldrive", width: 80),
+                    HeaderItem(title: "所属目录", icon: "folder", width: 100),
+                    HeaderItem(title: "上传时间", icon: "clock", width: 140),
+                    HeaderItem(title: "操作", width: 80, alignment: .center)
+                ], leadingPadding: 8)
             }
-            .font(.system(size: 11, weight: .medium))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(Color(NSColor.controlBackgroundColor))
-            
-            Divider()
+            .background(VisualEffectView(material: .headerView, blendingMode: .withinWindow))
+
             
             // 文件列表内容区域
             ScrollView {
@@ -658,78 +678,22 @@ struct MainChatStorage: View {
     // MARK: - File Row (文件行 - 浏览)
     
     private func fileRow(_ file: DirectoryItem) -> some View {
-        HStack(spacing: 0) {
-            // 复选框 (单选)
-            Toggle("", isOn: Binding(
-                get: { selectedFiles.contains(file.id) },
-                set: { _ in toggleSelection(file.id) }
-            ))
-            .toggleStyle(.checkbox)
-            .frame(width: 30, alignment: .center)
-            
-            // 文件名
-            HStack(spacing: 6) {
-                Image(systemName: !file.isFile ? "folder.fill" : "doc.fill")
-                    .foregroundColor(!file.isFile ? .blue : .gray)
-                Text(file.fileName)
-                    .font(.system(size: 11))
-            }
-            .frame(minWidth: 200, maxWidth: .infinity, alignment: .leading)
-            
-            // 文件大小
-            Text(file.sizeString)
-                .font(.system(size: 11))
-                .frame(width: 80, alignment: .leading)
-            
-            // 所属目录
-            Text(file.directoryName ?? "-")
-                .font(.system(size: 11))
-                .foregroundColor(.secondary)
-                .frame(width: 100, alignment: .leading)
-            
-            // 上传时间
-            Text(file.uploadTimeString)
-                .font(.system(size: 11))
-                .foregroundColor(.secondary)
-                .frame(width: 140, alignment: .leading)
-            
-            // 操作按钮
-            HStack(spacing: 4) {
-                Button(action: {
-                    handleFileAction(file, action: 1) // 1: 删除
-                }) {
-                    Image(systemName: "trash")
-                    .foregroundColor(.red)
+        FileListRowView(
+            file: file,
+            isSelected: selectedFileId == file.id,
+            isChecked: selectedFiles.contains(file.id),
+            onToggle: { toggleSelection(file.id) },
+            onTap: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    self.selectedFileId = file.id
+                    loadFileDetail(fileId: file.id)
                 }
-                .buttonStyle(.borderless)
-                .controlSize(.small)
-                .help("删除")
-                
-                Button(action: {
-                    handleFileAction(file, action: 2) // 2: 下载
-                }) {
-                    Image(systemName: "arrow.down.circle")
-                    .foregroundColor(.blue)
-                }
-                .buttonStyle(.borderless)
-                .controlSize(.small)
-                .help("下载")
-            }
-            .frame(width: 80, alignment: .center)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(
-            (selectedFileId == file.id) ? Color.accentColor.opacity(0.2) :
-            (selectedFiles.contains(file.id) ? Color.secondary.opacity(0.1) : Color.clear)
+            },
+            onDownload: { handleFileAction(file, action: 2) },
+            onDelete: { handleFileAction(file, action: 1) }
         )
-        .contentShape(Rectangle()) // 确保点击区域覆盖整行
-        .onTapGesture {
-            // 点击行：选中查看详情 (不触发批量选择)
-            self.selectedFileId = file.id
-            loadFileDetail(fileId: file.id)
-        }
     }
+
     
     // MARK: - Transfer List View (文件传输区) 传输列表UI以及相关逻辑
     private var transferListView: some View {
@@ -791,35 +755,17 @@ struct MainChatStorage: View {
             
             Divider()
             
-            // 表头
-            HStack(spacing: 0) {
-                Label("文件名称", systemImage: "doc")
-                    .frame(minWidth: 200, maxWidth: .infinity, alignment: .leading)
-                
-                Label("文件大小", systemImage: "externaldrive")
-                    .frame(width: 80, alignment: .leading)
-                
-                Label("所属目录", systemImage: "folder")
-                    .frame(width: 100, alignment: .leading)
-                
-                Label("传输类型", systemImage: "arrow.up.arrow.down") // New Column
-                    .frame(width: 80, alignment: .leading)
-                
-                Label("状态", systemImage: "waveform.path.ecg")
-                    .frame(width: 80, alignment: .leading)
-                
-                Label("传输进度", systemImage: "timer")
-                    .frame(width: 200, alignment: .leading)
-                
-                Text("操作")
-                    .frame(width: 80, alignment: .center)
-            }
-            .font(.system(size: 11, weight: .medium))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(Color(NSColor.controlBackgroundColor))
-            
-            Divider()
+            // 表头 (现代优化版)
+            FileTableHeaderView(items: [
+                HeaderItem(title: "文件名称", icon: "doc", isSpacer: true),
+                HeaderItem(title: "文件大小", icon: "externaldrive", width: 80),
+                HeaderItem(title: "所属目录", icon: "folder", width: 100),
+                HeaderItem(title: "传输类型", icon: "arrow.up.arrow.down", width: 100),
+                HeaderItem(title: "状态", icon: "waveform.path.ecg", width: 80),
+                HeaderItem(title: "传输进度", icon: "timer", width: 200),
+                HeaderItem(title: "操作", width: 80, alignment: .center)
+            ], leadingPadding: 0)
+
             
             // 列表内容
             ScrollView {
@@ -849,98 +795,14 @@ struct MainChatStorage: View {
     }
     // 文件传输列表一行记录的状态
     private func transferRow(_ item: TransferItem) -> some View {
-        HStack(spacing: 0) {
-            // 文件名
-            HStack(spacing: 6) {
-                Image(systemName: "doc.fill")
-                    .foregroundColor(.blue)
-                Text(item.name)
-                    .font(.system(size: 11))
-            }
-            .frame(minWidth: 200, maxWidth: .infinity, alignment: .leading)
-            
-            // 文件大小
-            Text(item.sizeString)
-                .font(.system(size: 11))
-                .frame(width: 80, alignment: .leading)
-            
-            // 所属目录
-            Text(item.directoryName)
-                .font(.system(size: 11))
-                .foregroundColor(.secondary)
-                .frame(width: 100, alignment: .leading)
-            
-            // 传输类型
-            HStack(spacing: 4) {
-                Image(systemName: item.taskType == .upload ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
-                .foregroundColor(item.taskType == .upload ? .blue : .green)
-                Text(item.taskType.rawValue)
-            }
-            .font(.system(size: 11))
-            .frame(width: 80, alignment: .leading)
-            
-            // 状态
-            Text(item.status)
-                .font(.system(size: 11))
-                .foregroundColor(statusColorForTransfer(item.status))
-                .frame(width: 80, alignment: .leading)
-            
-            // 传输进度
-            HStack(spacing: 8) {
-                ProgressView(value: item.progress, total: 1.0)
-                    .progressViewStyle(.linear)
-                    .tint(.blue)
-                    .scaleEffect(x: 1, y: 0.8, anchor: .center)
-                
-                VStack(alignment: .trailing, spacing: 0) {
-                    Text(item.progressPercent)
-                        .font(.system(size: 10))
-                    
-                    if item.status == "上传中" || item.status == "下载中" {
-                        Text(item.speed)
-                            .font(.system(size: 9))
-                            .foregroundColor(.secondary)
-                    }
-                }
-                .frame(width: 50, alignment: .trailing)
-            }
-            .frame(width: 200, alignment: .leading)
-            
-            // 操作按钮
-            HStack(spacing: 4) {
-                // 🔹 修复: 等待下载时显示暂停按钮 (任务已启动,只是在队列中等待)
-                if item.status == "等待上传" || item.status == "暂停" || item.status == "已暂停" || item.status == "失败" {
-                    // Start/Resume Button (仅上传的等待状态、暂停、失败显示)
-                    Button(action: { handleTransferAction(id: item.id, action: "start") }) {
-                        Image(systemName: item.taskType == .upload ? "arrow.up.circle" : "arrow.down.circle")
-                        .foregroundColor(.blue)
-                    }
-                    .buttonStyle(.borderless)
-                    .help(item.taskType == .upload ? "开始上传" : "开始下载")
-                } else if item.status == "上传中" || item.status == "下载中" || item.status == "等待下载" {
-                    // Pause Button (上传中、下载中、等待下载都显示暂停按钮)
-                    Button(action: { handleTransferAction(id: item.id, action: "pause") }) {
-                        Image(systemName: "pause.circle")
-                        .foregroundColor(.orange)
-                    }
-                    .buttonStyle(.borderless)
-                    .help("暂停")
-                }
-                
-                // Cancel Button (Always visible)
-                Button(action: { handleTransferAction(id: item.id, action: "cancel") }) {
-                    Image(systemName: "xmark.circle")
-                    .foregroundColor(.red)
-                }
-                .buttonStyle(.borderless)
-                .help("取消")
-            }
-            .controlSize(.small)
-            .frame(width: 80, alignment: .center)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        TransferListRowView(
+            item: item,
+            onStart:  { handleTransferAction(id: item.id, action: "start") },
+            onPause:  { handleTransferAction(id: item.id, action: "pause") },
+            onCancel: { handleTransferAction(id: item.id, action: "cancel") }
+        )
     }
+
     
     private func statusColorForTransfer(_ status: String) -> Color {
         switch status {
@@ -1010,6 +872,12 @@ struct MainChatStorage: View {
     private func handleDirectory() {
         print("打开目录")
         // TODO: 实现目录选择
+    }
+    
+    private func handleEnterDirectory(_ directory: DirectoryItem) {
+        self.selectedDirectoryId = directory.id
+        self.expandedDirectoryIds.insert(directory.id)
+        addLog("进入目录: \(directory.fileName)")
     }
     
     private func handleRefresh() {
@@ -1485,21 +1353,28 @@ struct MainChatStorage: View {
     
     /// 网盘存储视图
     private var storageView: some View {
-        GeometryReader { geometry in
-            HSplitView {
-                // 左侧边栏 (18%)
-                sidebar
-                    .frame(minWidth: 150, maxWidth: .infinity)
-                    .frame(width: geometry.size.width * 0.18)
-                
-                // 右侧主内容 (52%)
-                mainContent
-                    .frame(minWidth: 300, maxWidth: .infinity)
-                
-                // 详情侧边栏 (30%)
-                detailSidebar
-                    .frame(minWidth: 200, maxWidth: .infinity)
-                    .frame(width: geometry.size.width * 0.3)
+        ZStack {
+            // New Dynamic Background
+            MeshGradientBackground()
+            
+            GeometryReader { geometry in
+                HSplitView {
+                    // 左侧边栏 (18%) - Added glassmorphism effect
+                    sidebar
+                        .frame(minWidth: 150, maxWidth: .infinity)
+                        .frame(width: geometry.size.width * 0.18)
+                        .background(.ultraThinMaterial)
+                    
+                    // 右侧主内容 (52%)
+                    mainContent
+                        .frame(minWidth: 300, maxWidth: .infinity)
+                    
+                    // 详情侧边栏 (30%) - Added glassmorphism effect
+                    detailSidebar
+                        .frame(minWidth: 200, maxWidth: .infinity)
+                        .frame(width: geometry.size.width * 0.3)
+                        .background(.ultraThinMaterial)
+                }
             }
         }
     }
@@ -1511,93 +1386,94 @@ struct MainChatStorage: View {
             // Header
             HStack {
                 Text("文件详情")
-                    .font(.headline)
+                    .font(.system(size: 16, weight: .bold))
                 Spacer()
                 if isLoadingDetail {
-                    ProgressView()
-                        .controlSize(.small)
+                    ProgressView().controlSize(.small)
                 }
             }
-            .padding()
-            .background(Color(NSColor.controlBackgroundColor))
+            .padding(16)
             
-            Divider()
+            Divider().opacity(0.1)
             
             if let detail = fileDetail {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
-                        // File Icon & Name
-                        HStack(spacing: 15) {
-                            Image(systemName: detail.iconName)
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(width: 48, height: 48)
-                                .foregroundColor(.blue)
+                    VStack(alignment: .center, spacing: 24) {
+                        // Large File Icon
+                        VStack(spacing: 12) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 24)
+                                    .fill(Color.accentColor.opacity(0.05))
+                                    .frame(width: 120, height: 120)
+                                
+                                Image(systemName: detail.iconName)
+                                    .font(.system(size: 64))
+                                    .foregroundColor(.accentColor)
+                                    .symbolRenderingMode(.hierarchical)
+                            }
                             
                             Text(detail.fileName)
-                                .font(.title3)
-                                .bold()
-                                .lineLimit(2)
+                                .font(.system(size: 18, weight: .bold))
+                                .multilineTextAlignment(.center)
+                                .lineLimit(3)
                         }
-                        .padding(.top, 10)
+                        .padding(.top, 24)
                         
-                        Divider()
-                        
-                        // Properties
-                        Group {
+                        // Properties Group
+                        VStack(alignment: .leading, spacing: 16) {
                             DetailRow(label: "文件大小", value: detail.sizeString)
                             DetailRow(label: "文件类型", value: detail.fileType.uppercased())
                             DetailRow(label: "上传时间", value: detail.uploadTime)
-                            DetailRow(label: "所属目录", value: detail.directoryName)
-                            if let md5 = detail.md5, !md5.isEmpty {
-                                DetailRow(label: "MD5", value: md5)
-                            }
+                            DetailRow(label: "存储目录", value: detail.directoryName)
                         }
+                        .padding(16)
+                        .background(Color.white.opacity(0.05))
+                        .cornerRadius(16)
                         
-                        Spacer()
+                        Spacer(minLength: 20)
                         
                         // Actions
-                        HStack(spacing: 20) {
+                        VStack(spacing: 12) {
                             Button(action: {
                                 if let item = directoryTree.first(where: { $0.id == detail.id }) ?? findDirectoryItem(id: detail.id, nodes: directoryTree) {
-                                     // 使用找到的 item (以获取完整的 DirectoryItem 结构)
-                                     // 或者临时构造一个 (只要包含下载所需信息)
                                      submitDownloadTask(for: item)
                                 } else {
-                                     // Fallback: Construct from detail
-                                     let item = detail.toDirectoryItem()
-                                     submitDownloadTask(for: item)
+                                     submitDownloadTask(for: detail.toDirectoryItem())
                                 }
                             }) {
-                                Label("下载", systemImage: "arrow.down.circle.fill")
+                                Label("立即下载", systemImage: "arrow.down.circle.fill")
                                     .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
                             }
+                            .buttonStyle(.borderedProminent)
                             .controlSize(.large)
                             
                             Button(action: {
-                                handleFileAction(detail.toDirectoryItem(), action: 1) // 1: Delete
+                                handleFileAction(detail.toDirectoryItem(), action: 1)
                             }) {
-                                Label("删除", systemImage: "trash.fill")
+                                Label("删除文件", systemImage: "trash")
                                     .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
                             }
+                            .buttonStyle(.bordered)
                             .controlSize(.large)
-                            // .role(.destructive) // macOS 12+ API, remove if targeting lower or just remove to fix build
+                            .foregroundColor(.red)
                         }
                     }
-                    .padding()
+                    .padding(16)
                 }
             } else {
-                VStack(spacing: 15) {
+                VStack(spacing: 20) {
                     Image(systemName: "doc.text.magnifyingglass")
                         .font(.system(size: 48))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.secondary.opacity(0.3))
                     Text("选择文件查看详情")
+                        .font(.system(size: 14))
                         .foregroundColor(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .background(Color(NSColor.windowBackgroundColor))
     }
     
     // Helper View for Detail
@@ -1606,13 +1482,14 @@ struct MainChatStorage: View {
         let value: String
         
         var body: some View {
-            VStack(alignment: .leading, spacing: 4) {
+            HStack {
                 Text(label)
-                    .font(.caption)
+                    .font(.system(size: 12))
                     .foregroundColor(.secondary)
+                Spacer()
                 Text(value)
-                    .font(.body)
-                    .textSelection(.enabled)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.primary)
             }
         }
     }
@@ -1621,26 +1498,45 @@ struct MainChatStorage: View {
     // MARK: - Helper Views
     
     private func statusView(status: String) -> some View {
-        HStack(spacing: 4) {
-            switch status {
-            case "已完成":
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundColor(.green)
-            case "失败":
-                Image(systemName: "exclamationmark.circle.fill")
-                    .foregroundColor(.red)
-            case "上传中":
-                Image(systemName: "arrow.up.circle.fill")
-                    .foregroundColor(.blue)
-            case "等待上传":
-                Image(systemName: "clock.fill")
-                    .foregroundColor(.gray)
-            default:
-                Image(systemName: "questionmark.circle")
-                    .foregroundColor(.secondary)
+        HStack(spacing: 6) {
+            Group {
+                switch status {
+                case "已完成":
+                    Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
+                case "失败":
+                    Image(systemName: "exclamationmark.circle.fill").foregroundColor(.red)
+                case "上传中", "下载中":
+                    Image(systemName: "arrow.up.circle.fill").foregroundColor(.blue)
+                case "等待中":
+                    Image(systemName: "clock.fill").foregroundColor(.secondary)
+                default:
+                    Image(systemName: "circle").foregroundColor(.secondary)
+                }
             }
+            .font(.system(size: 11))
+            
             Text(status)
-                .font(.system(size: 11))
+                .font(.system(size: 10, weight: .semibold))
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            Capsule()
+                .fill(statusColor(for: status).opacity(0.12))
+        )
+        .overlay(
+            Capsule()
+                .strokeBorder(statusColor(for: status).opacity(0.24), lineWidth: 0.5)
+        )
+    }
+    
+    private func statusColor(for status: String) -> Color {
+        switch status {
+        case "已完成": return .green
+        case "失败": return .red
+        case "上传中", "下载中": return .blue
+        case "等待中": return .secondary
+        default: return .secondary
         }
     }
     
@@ -2379,6 +2275,7 @@ struct DirectoryTreeSelector: View {
 // 1. Data Models (Mock)
 struct Friend: Identifiable, Hashable {
     let id: Int64
+    let friendshipId: Int64
     let name: String
     let status: String // "在线", "离线"
     let avatarColor: Color
@@ -2428,10 +2325,20 @@ private struct ChatDetailView: View {
     @State private var isLoadingHistory: Bool = false
     @State private var topMessageIdBeforeLoad: String? = nil
     @State private var shouldScrollToBottom: Bool = false
-    @State private var isInitialProcessing: Bool = true // 防止最初始化时Scroll在顶部意外触发分页请求
+    @State private var isInitialProcessing: Bool = true 
     
     // Emoji Picker State
     @State private var showEmojiPicker: Bool = false
+    
+    // Alias Update State
+    @State private var showingAliasPopover: Bool = false
+    @State private var newAliasInput: String = ""
+    @State private var isUpdatingAlias: Bool = false
+    
+    // Nudge/Reaction States
+    @State private var nudgeOffset: CGFloat = 0
+    @State private var reactionOpacity: Double = 0
+    @State private var reactionScale: CGFloat = 0.5
     
     var messages: [ChatMessage] {
         socketManager.chatHistory[friend.id] ?? []
@@ -2465,202 +2372,223 @@ private struct ChatDetailView: View {
                 
                 Spacer()
                 
-                Button(action: {}) {
-                    Image(systemName: "video")
+                Menu {
+                    Button("修改好友别名") {
+                        newAliasInput = friend.name
+                        showingAliasPopover = true
+                    }
+                    Button("更改聊天背景") {
+                        // TODO: Implement background change
+                    }
+                    Button("清空聊天记录") {
+                        // TODO: Implement clear history
+                        socketManager.chatHistory[friend.id]?.removeAll()
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .rotationEffect(.degrees(90))
+                        .font(.system(size: 16))
                 }
-                .buttonStyle(.borderless)
-                
-                Button(action: {}) {
-                    Image(systemName: "phone")
-                }
-                .buttonStyle(.borderless)
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
                 .padding(.leading, 8)
+                .popover(isPresented: $showingAliasPopover, attachmentAnchor: .point(.bottom), arrowEdge: .top) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("修改好友备注")
+                            .font(.headline)
+                        
+                        TextField("备注姓名", text: $newAliasInput)
+                            .textFieldStyle(RoundedBorderTextFieldStyle())
+                        
+                        HStack {
+                            Spacer()
+                            Button("取消") {
+                                showingAliasPopover = false
+                            }
+                            Button("确定") {
+                                handleUpdateAlias()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(isUpdatingAlias)
+                        }
+                    }
+                    .padding()
+                    .frame(width: 240)
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
-            .background(Color(NSColor.controlBackgroundColor))
+            .background(.ultraThinMaterial)
             
             Divider()
             
             // Messages Area
             ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 12) {
-                        // Top loading or "No more messages" indicator
-                        if isLoadingHistory {
-                            ProgressView()
-                                .padding()
-                        } else if !hasMore {
-                            Text("【暂无更多消息】")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .padding()
-                        } else {
-                            // Invisible view to trigger load more
-                            Color.clear
-                                .frame(height: 1)
-                                .onAppear {
-                                    // 添加 debounce 和状态锁，防止 ScrollView 初次渲染或自动挤压连续触发
-                                    if !isLoadingHistory && hasMore && !shouldScrollToBottom && !isInitialProcessing {
-                                        Task {
-                                            try? await Task.sleep(nanoseconds: 300_000_000)
-                                            if !isLoadingHistory && hasMore && !shouldScrollToBottom && !isInitialProcessing {
-                                                await loadMoreHistory()
+                ZStack {
+                    // Mesh Gradient Placeholder Background
+                    LinearGradient(colors: [.clear, .blue.opacity(0.05), .clear], startPoint: .topLeading, endPoint: .bottomTrailing)
+                        .ignoresSafeArea()
+                    
+                    ScrollView {
+                        LazyVStack(spacing: 12) {
+                            if isLoadingHistory {
+                                ProgressView()
+                                    .padding(.top, 8)
+                            } else if !hasMore && messages.count > 0 {
+                                Text("没有更多历史消息了")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .padding(.top, 8)
+                            } else {
+                                Color.clear
+                                    .frame(height: 1)
+                                    .onAppear {
+                                        if !isLoadingHistory && hasMore && !shouldScrollToBottom && !isInitialProcessing {
+                                            Task {
+                                                try? await Task.sleep(nanoseconds: 300_000_000)
+                                                if !isLoadingHistory && hasMore && !shouldScrollToBottom && !isInitialProcessing {
+                                                    await loadMoreHistory()
+                                                }
                                             }
                                         }
                                     }
-                                }
-                        }
-                        
-                        // Grouped Messages display
-                        ForEach(groupedMessages, id: \.0) { groupInfo in
-                            let (groupTime, msgs) = groupInfo
-                            if !groupTime.isEmpty {
-                                Text(groupTime)
-                                    .font(.caption2)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(Color.gray.opacity(0.2))
-                                    .cornerRadius(8)
-                                    .padding(.top, 8)
                             }
                             
-                            ForEach(msgs) { msg in
-                                messageBubble(msg)
+                            ForEach(groupedMessages, id: \.0) { groupInfo in
+                                let (groupTime, msgs) = groupInfo
+                                if !groupTime.isEmpty {
+                                    Text(groupTime)
+                                        .font(.caption2)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(Color.gray.opacity(0.2))
+                                        .cornerRadius(8)
+                                        .padding(.top, 8)
+                                }
+                                
+                                ForEach(msgs) { msg in
+                                    messageBubble(msg)
+                                }
+                            }
+                            
+                            Rectangle()
+                                .fill(Color.clear)
+                                .frame(height: 30)
+                                .id("BOTTOM_ANCHOR")
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.top, 16)
+                        .padding(.bottom, 8)
+                    }
+                    .onChange(of: messages.count) { newCount in
+                        if newCount > 0 {
+                            if let topId = topMessageIdBeforeLoad {
+                                topMessageIdBeforeLoad = nil
+                                DispatchQueue.main.async { proxy.scrollTo(topId, anchor: .top) }
+                            } else {
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                    proxy.scrollTo("BOTTOM_ANCHOR", anchor: .bottom)
+                                }
                             }
                         }
-                        
-                        // 垫底的 Spacer 锚点，用于滚轴强制触底时制造完美距离
-                        Rectangle()
-                            .fill(Color.clear)
-                            .frame(height: 30) // 强实体占位保证至少 30px 空隙
-                            .id("BOTTOM_ANCHOR")
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 16)
-                    .padding(.bottom, 8)
-                }
-                .onChange(of: messages.count) { newCount in
-                    if newCount > 0 {
-                        // 1. 如果是从顶部加载历史，只恢复到记录的旧位置
-                        if let topId = topMessageIdBeforeLoad {
-                            topMessageIdBeforeLoad = nil
-                            DispatchQueue.main.async {
-                                proxy.scrollTo(topId, anchor: .top)
-                            }
-                        } else {
-                            // 2. 否则只要消息总数变多（发送/接收新消息/初次进列表），无脑滚底
+                    .onChange(of: shouldScrollToBottom) { act in
+                        if act {
+                            shouldScrollToBottom = false
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                                 proxy.scrollTo("BOTTOM_ANCHOR", anchor: .bottom)
                             }
-                            // 延时增补锁定，防止由于图文渲染或分页首渲时的 Lazy 膨胀挤走滚轴核心点
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                proxy.scrollTo("BOTTOM_ANCHOR", anchor: .bottom)
-                            }
                         }
                     }
-                }
-                .onChange(of: shouldScrollToBottom) { act in
-                    if act {
-                        shouldScrollToBottom = false
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                            proxy.scrollTo("BOTTOM_ANCHOR", anchor: .bottom)
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                            proxy.scrollTo("BOTTOM_ANCHOR", anchor: .bottom)
-                        }
+                    
+                    // Floating Reaction Overlay
+                    if reactionOpacity > 0 {
+                        Text("❤️")
+                            .font(.system(size: 60))
+                            .scaleEffect(reactionScale)
+                            .opacity(reactionOpacity)
+                            .shadow(radius: 10)
                     }
                 }
+                .offset(x: nudgeOffset)
             }
-            .background(Color(NSColor.textBackgroundColor)) // 白色或深色背景
+            .background(Color(NSColor.textBackgroundColor).opacity(0.8))
             
             Divider()
             
             // Input Area
             VStack(spacing: 0) {
-                // Toolbar
-                HStack(spacing: 12) {
+                Divider()
+                HStack(spacing: 16) {
                     Button(action: {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            showEmojiPicker.toggle()
-                        }
+                        withAnimation(.easeInOut(duration: 0.2)) { showEmojiPicker.toggle() }
                     }) {
                         Image(systemName: "face.smiling")
+                            .font(.system(size: 18))
                             .foregroundColor(showEmojiPicker ? .accentColor : .secondary)
                     }
-                    Button(action: {}) { Image(systemName: "paperclip") }
-                    Button(action: {}) { Image(systemName: "folder") }
+                    Button(action: {}) { Image(systemName: "folder").font(.system(size: 18)) }
+                    Button(action: {}) { Image(systemName: "scissors").font(.system(size: 18)) }
+                    Button(action: {}) { Image(systemName: "mic").font(.system(size: 18)) }
                     Spacer()
+                    Button(action: { sendNudge() }) { Image(systemName: "hand.tap").font(.system(size: 18)).help("抖一抖") }
+                    Button(action: {}) { Image(systemName: "phone").font(.system(size: 18)) }
+                    Button(action: {}) { Image(systemName: "video").font(.system(size: 18)) }
                 }
-                .foregroundColor(.secondary)
-                .buttonStyle(.borderless)
-                .padding(.horizontal, 12)
-                .padding(.top, 8)
+                .foregroundColor(.secondary).buttonStyle(.borderless).padding(.horizontal, 16).padding(.vertical, 10)
                 
-                // Emoji Picker Panel
                 if showEmojiPicker {
                     EmojiPickerPanel { emoji in
-                        let avatar = authService.currentUser?.avatar
                         showEmojiPicker = false
                         shouldScrollToBottom = true
-                        socketManager.sendChatMessage(
-                            receiverId: friend.id,
-                            content: emoji,
-                            msgType: "TEXT",
-                            avatar: avatar
-                        )
+                        socketManager.sendChatMessage(receiverId: friend.id, content: emoji, msgType: "TEXT", avatar: authService.currentUser?.avatar)
                     }
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
                 
-                // Text Field (支持多行及回车发送)
                 ZStack(alignment: .topLeading) {
                     if messageText.isEmpty {
-                        Text("请输入消息...")
-                            .foregroundColor(.secondary)
-                            .padding(.leading, 12)
-                            .padding(.top, 8)
-                            .font(.system(size: 14))
-                            .allowsHitTesting(false)
+                        Text("请输入消息...").foregroundColor(.secondary).padding(.leading, 8).padding(.top, 4).font(.system(size: 14)).allowsHitTesting(false)
                     }
-                    MacResponsiveTextView(text: $messageText) {
-                        Task {
-                            await sendMessage()
-                        }
-                    }
+                    MacResponsiveTextView(text: $messageText) { Task { await sendMessage() } }
                     .frame(minHeight: 36, maxHeight: 150)
                 }
-                .background(Color(NSColor.textBackgroundColor).opacity(0.3))
-                .cornerRadius(8)
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.2), lineWidth: 1))
-                .padding(.horizontal, 12)
-                .padding(.top, 4)
-                
-                // Send Button
-                HStack {
-                    Spacer()
-                    Button("发送") {
-                        Task {
-                            await sendMessage()
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.regular)
-                    .disabled(messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 8)
+                .background(Color.clear).padding(.horizontal, 12).padding(.bottom, 16)
             }
-            .background(Color(NSColor.controlBackgroundColor))
-            .frame(minHeight: 150)
+            .background(Color(NSColor.textBackgroundColor)).frame(minHeight: 150)
         }
         .onAppear {
             isInitialProcessing = true
-            Task { 
-                await loadInitialHistory() 
-                // 数据加载完毕后，给予0.6秒的UI触底锁定时间，之后再放开顶部下拉刷新拦截
+            Task {
+                await loadInitialHistory()
                 try? await Task.sleep(nanoseconds: 600_000_000)
                 isInitialProcessing = false
+            }
+        }
+    }
+    
+    private func sendNudge() {
+        withAnimation(.spring(response: 0.2, dampingFraction: 0.2, blendDuration: 0)) { nudgeOffset = 10 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            withAnimation(.spring(response: 0.2, dampingFraction: 0.2, blendDuration: 0)) { nudgeOffset = -10 }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                withAnimation(.spring(response: 0.2, dampingFraction: 0.2, blendDuration: 0)) { nudgeOffset = 0 }
+            }
+        }
+        socketManager.sendChatMessage(receiverId: friend.id, content: "【抖了你一下】", msgType: "NUDGE", avatar: authService.currentUser?.avatar)
+    }
+    
+    private func handleUpdateAlias() {
+        let trimmedAlias = newAliasInput.trimmingCharacters(in: .whitespaces)
+        guard !trimmedAlias.isEmpty else { return }
+        isUpdatingAlias = true
+        Task {
+            do {
+                _ = try await socketManager.updateFriendAlias(friendshipId: friend.friendshipId, newAlias: trimmedAlias)
+                await MainActor.run { isUpdatingAlias = false; showingAliasPopover = false }
+            } catch {
+                await MainActor.run { isUpdatingAlias = false; print("❌ 修改备注失败: \(error.localizedDescription)") }
             }
         }
     }
@@ -2669,79 +2597,55 @@ private struct ChatDetailView: View {
         HStack(alignment: .top, spacing: 8) {
             if msg.isMe {
                 Spacer(minLength: 60)
-                
-                // Bubble (Me)
                 HStack(alignment: .bottom, spacing: 4) {
-                    if msg.sendStatus == .failed {
-                        Image(systemName: "exclamationmark.circle.fill")
-                            .foregroundColor(.red)
-                    } else if msg.sendStatus == .sending {
-                        ProgressView()
-                            .controlSize(.small)
-                            .padding(.trailing, 2)
-                    }
-                    
                     Text(msg.content)
-                        .font(.system(size: 14))
-                        .padding(10)
-                        .background(Color.blue)
-                        .foregroundColor(.white)
-                        .clipShape(TailChatBubbleShape(isMe: true))
-                        .textSelection(.enabled)
+                        .font(.system(size: 14)).padding(10)
+                        .background(LinearGradient(colors: [Color.accentColor, Color.accentColor.opacity(0.8)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .foregroundColor(.white).clipShape(TailChatBubbleShape(isMe: true)).textSelection(.enabled).shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1)
                 }
-                
-                // Avatar (Me)
                 renderAvatar(base64String: msg.avatar, fallbacName: "我", fallbackColor: .gray)
             } else {
-                // Avatar (Friend)
                 renderAvatar(base64String: msg.avatar ?? friend.avatarBase64, fallbacName: String(friend.name.prefix(1)), fallbackColor: friend.avatarColor)
-                // Bubble (Friend)
                 HStack(alignment: .bottom, spacing: 4) {
                     Text(msg.content)
-                        .font(.system(size: 14))
-                        .padding(10)
-                        .background(Color(NSColor.controlBackgroundColor))
-                        .foregroundColor(.primary)
-                        .clipShape(TailChatBubbleShape(isMe: false))
-                        .textSelection(.enabled)
-                        .overlay(
-                            TailChatBubbleShape(isMe: false)
-                                .stroke(Color.secondary.opacity(0.1), lineWidth: 1)
-                        )
+                        .font(.system(size: 14)).padding(10).background(Color(NSColor.controlBackgroundColor)).foregroundColor(.primary)
+                        .clipShape(TailChatBubbleShape(isMe: false)).textSelection(.enabled).overlay(TailChatBubbleShape(isMe: false).stroke(Color.secondary.opacity(0.1), lineWidth: 1))
                 }
-                
                 Spacer(minLength: 60)
             }
         }
-        .padding(.vertical, 2)
-        .id(msg.id)
+        .transition(.asymmetric(
+            insertion: .move(edge: .bottom).combined(with: .opacity).combined(with: .scale(scale: 0.9, anchor: msg.isMe ? .trailing : .leading)),
+            removal: .opacity
+        ))
+        .padding(.vertical, 2).id(msg.id).onTapGesture(count: 2) { triggerReaction() }
+    }
+    
+    private func triggerReaction() {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.5)) { reactionScale = 1.2; reactionOpacity = 1.0 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            withAnimation(.easeIn(duration: 0.4)) {
+                reactionScale = 1.5
+                reactionOpacity = 0
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                reactionScale = 0.5
+            }
+        }
     }
     
     // 全局头像缓存，避免滚动时主线程频繁且重复解析长 Base64 字符串导致的掉帧卡顿
-    fileprivate static let avatarCache = NSCache<NSString, NSImage>()
+    fileprivate static let globalAvatarCache = NSCache<NSString, NSImage>()
     
     // Abstracted avatar renderer to support URL/Base64 strings flexibly
     @ViewBuilder
     private func renderAvatar(base64String: String?, fallbacName: String, fallbackColor: Color) -> some View {
-        if let base64 = base64String, !base64.isEmpty {
-            // 1. 尝试从缓存读取
-            if let cachedImage = Self.avatarCache.object(forKey: base64 as NSString) {
-                Image(nsImage: cachedImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: 32, height: 32)
-                    .clipShape(Circle())
-            } else {
-                // 2. 缓存未命中，进行解析 (异步到后台或至少只执行一次)
-                // 由于这是 ViewBuilder，我们使用一个本地简单 View 结构提取并展示
-                AvatarDecodeView(base64: base64, fallbacName: fallbacName, fallbackColor: fallbackColor, cache: Self.avatarCache)
-            }
-        } else {
-            Circle()
-                .fill(fallbackColor)
-                .frame(width: 32, height: 32)
-                .overlay(Text(fallbacName).font(.caption).foregroundColor(.white))
-        }
+        InteractiveAvatarView(
+            base64String: base64String,
+            fallbacName: fallbacName,
+            fallbackColor: fallbackColor,
+            cache: Self.globalAvatarCache
+        )
     }
     
     private func sendMessage() async {
@@ -3035,11 +2939,80 @@ private struct EmojiCell: View {
     }
 }
 
+
+private struct InteractiveAvatarView: View {
+    let base64String: String?
+    let fallbacName: String
+    let fallbackColor: Color
+    let cache: NSCache<NSString, NSImage>
+    
+    @State private var showingPopover = false
+    
+    private var cachedImage: NSImage? {
+        guard let base64 = base64String, !base64.isEmpty else { return nil }
+        return cache.object(forKey: base64 as NSString)
+    }
+    
+    var body: some View {
+        Group {
+            if let image = cachedImage {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .antialiased(true)
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 32, height: 32)
+                    .clipShape(Circle())
+            } else if let base64 = base64String, !base64.isEmpty {
+                AvatarDecodeView(base64: base64, fallbacName: fallbacName, fallbackColor: fallbackColor, cache: cache)
+            } else {
+                Circle()
+                    .fill(fallbackColor)
+                    .frame(width: 32, height: 32)
+                    .overlay(Text(fallbacName).font(.caption).foregroundColor(.white))
+            }
+        }
+        .contentShape(Circle())
+        .onTapGesture {
+            showingPopover = true
+        }
+        .popover(isPresented: $showingPopover, arrowEdge: .trailing) {
+            VStack {
+                if let image = cachedImage {
+                    Image(nsImage: image)
+                        .resizable()
+                        .interpolation(.high)
+                        .antialiased(true)
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 256, height: 256)
+                        .cornerRadius(8)
+                        .shadow(color: .black.opacity(0.2), radius: 10, x: 0, y: 5)
+                } else if let base64 = base64String, !base64.isEmpty {
+                    // 如果缓存没命中（可能还没解码完），回退到基础解码显示
+                    AvatarDecodeView(base64: base64, fallbacName: fallbacName, fallbackColor: fallbackColor, cache: cache, customSize: 256)
+                } else {
+                    Circle()
+                        .fill(fallbackColor)
+                        .frame(width: 256, height: 256)
+                        .overlay(
+                            Text(fallbacName)
+                                .font(.system(size: 80, weight: .bold))
+                                .foregroundColor(.white)
+                        )
+                        .shadow(color: .black.opacity(0.2), radius: 10, x: 0, y: 5)
+                }
+            }
+            .padding(12)
+        }
+    }
+}
+
 private struct AvatarDecodeView: View {
     let base64: String
     let fallbacName: String
     let fallbackColor: Color
     let cache: NSCache<NSString, NSImage>
+    var customSize: CGFloat = 32
     
     @State private var decodedImage: NSImage?
     
@@ -3048,14 +3021,16 @@ private struct AvatarDecodeView: View {
             if let nsImage = decodedImage {
                 Image(nsImage: nsImage)
                     .resizable()
+                    .interpolation(.high)
+                    .antialiased(true)
                     .aspectRatio(contentMode: .fill)
-                    .frame(width: 32, height: 32)
-                    .clipShape(Circle())
+                    .frame(width: customSize, height: customSize)
+                    .clipShape(RoundedRectangle(cornerRadius: customSize > 32 ? 8 : customSize / 2))
             } else {
                 Circle()
                     .fill(fallbackColor)
-                    .frame(width: 32, height: 32)
-                    .overlay(Text(fallbacName).font(.caption).foregroundColor(.white))
+                    .frame(width: customSize, height: customSize)
+                    .overlay(Text(fallbacName).font(customSize > 32 ? .system(size: 80) : .caption).foregroundColor(.white))
             }
         }
         .task {
@@ -3162,6 +3137,7 @@ private struct OptimizedFriendSidebarView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
+            .background(.ultraThinMaterial) // Added vibrancy to header as well
             
             Divider()
             
@@ -3217,7 +3193,7 @@ private struct OptimizedFriendSidebarView: View {
                 }
             }
         }
-        .background(Color(NSColor.windowBackgroundColor))
+        .background(.ultraThinMaterial)
         .sheet(isPresented: $showingAddFriendSheet) {
             MacAddFriendSheet(isPresented: $showingAddFriendSheet)
         }
@@ -3576,25 +3552,42 @@ private struct FriendRow: View {
         HStack(spacing: 12) {
             // Avatar with Unread Badge
             ZStack(alignment: .topTrailing) {
-                let cleanAvatar = friend.avatarBase64?.components(separatedBy: ",").last?.trimmingCharacters(in: .whitespacesAndNewlines)
-                if let avatarStr = cleanAvatar, !avatarStr.isEmpty,
-                   let avatarData = Data(base64Encoded: avatarStr, options: .ignoreUnknownCharacters),
-                   let nsImage = NSImage(data: avatarData) {
-                    Image(nsImage: nsImage)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: 40, height: 40)
-                        .clipShape(Circle())
-                } else {
-                    Circle()
-                        .fill(friend.avatarColor)
-                        .frame(width: 40, height: 40)
-                        .overlay(
-                            Text(friend.name.prefix(1))
-                                .font(.system(size: 14, weight: .bold))
-                                .foregroundColor(.white)
-                        )
+                Group {
+                    let cleanAvatar = friend.avatarBase64?.components(separatedBy: ",").last?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if let avatarStr = cleanAvatar, !avatarStr.isEmpty {
+                        if let cachedImage = ChatDetailView.globalAvatarCache.object(forKey: avatarStr as NSString) {
+                            Image(nsImage: cachedImage)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: 40, height: 40)
+                                .clipShape(Circle())
+                        } else {
+                            AvatarDecodeView(
+                                base64: avatarStr,
+                                fallbacName: String(friend.name.prefix(1)),
+                                fallbackColor: friend.avatarColor,
+                                cache: ChatDetailView.globalAvatarCache
+                            )
+                            .frame(width: 40, height: 40)
+                        }
+                    } else {
+                        Circle()
+                            .fill(friend.avatarColor)
+                            .frame(width: 40, height: 40)
+                            .overlay(Text(String(friend.name.prefix(1))).foregroundColor(.white))
+                    }
                 }
+                .overlay(
+                    Circle()
+                        .stroke(
+                            friend.status == "在线" ? 
+                            LinearGradient(colors: [.green, .cyan], startPoint: .topLeading, endPoint: .bottomTrailing) : 
+                            LinearGradient(colors: [.clear], startPoint: .top, endPoint: .bottom),
+                            lineWidth: 2
+                        )
+                        .padding(-2)
+                )
+                .shadow(color: friend.status == "在线" ? .green.opacity(0.4) : .clear, radius: 4)
                 
                 // Unread Badge
                 if unreadCount > 0 {
@@ -3714,6 +3707,7 @@ private struct FriendChatSplitView: View {
                 
                 return Friend(
                     id: dto.friendId,
+                    friendshipId: dto.id,
                     name: displayName,
                     status: "在线",
                     avatarColor: color,
@@ -3747,6 +3741,7 @@ private struct FriendChatSplitView: View {
                         
                         return Friend(
                             id: dto.friendId,
+                            friendshipId: dto.id,
                             name: displayName,
                             status: "在线", // Default status, real status needs another mechanism
                             avatarColor: color,
@@ -3885,5 +3880,612 @@ struct TailChatBubbleShape: Shape {
         }
         
         return path
+    }
+}
+
+// MARK: - Cloud Storage Components
+
+/// 动态背景：磨砂渐变效果
+private struct MeshGradientBackground: View {
+    @State private var animate = false
+    
+    var body: some View {
+        ZStack {
+            // 基础渐变
+            LinearGradient(
+                colors: [
+                    Color.blue.opacity(0.1),
+                    Color.purple.opacity(0.1),
+                    Color.cyan.opacity(0.1)
+                ],
+                startPoint: animate ? .topLeading : .bottomTrailing,
+                endPoint: animate ? .bottomTrailing : .topLeading
+            )
+            .ignoresSafeArea()
+            .onAppear {
+                withAnimation(.easeInOut(duration: 10).repeatForever(autoreverses: true)) {
+                    animate.toggle()
+                }
+            }
+            
+            // 模糊层
+            VisualEffectView(material: .underWindowBackground, blendingMode: .withinWindow)
+                .ignoresSafeArea()
+        }
+    }
+}
+
+/// 网格视图：卡片式文件展示
+private struct CloudGridView: View {
+    let items: [DirectoryItem]
+    @Binding var selectedFiles: Set<Int64>
+    @Binding var selectedFileId: Int64?
+    var onFileTapped: (DirectoryItem) -> Void
+    var onFileDoubleTapped: (DirectoryItem) -> Void
+    var onAction: (DirectoryItem, Int) -> Void
+    
+    private let columns = [GridItem(.adaptive(minimum: 140, maximum: 180), spacing: 20)]
+    
+    var body: some View {
+        ScrollView {
+            LazyVGrid(columns: columns, spacing: 20) {
+                ForEach(items) { item in
+                    FileCard(
+                        item: item,
+                        isSelected: selectedFiles.contains(item.id) || selectedFileId == item.id,
+                        onTap: { onFileTapped(item) },
+                        onDoubleTap: { onFileDoubleTapped(item) },
+                        onAction: { action in onAction(item, action) }
+                    )
+                }
+            }
+            .padding(24)
+        }
+    }
+}
+
+/// 文件卡片：生动形象的单个文件/文件夹展示
+private struct FileCard: View {
+    let item: DirectoryItem
+    let isSelected: Bool
+    let onTap: () -> Void
+    let onDoubleTap: () -> Void
+    let onAction: (Int) -> Void
+    
+    @State private var isHovering = false
+    
+    var body: some View {
+        VStack(spacing: 12) {
+            // 图标区域
+            ZStack(alignment: .topTrailing) {
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(isSelected ? Color.accentColor.opacity(0.15) : Color.white.opacity(0.05))
+                    .frame(height: 100)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16)
+                            .stroke(isSelected ? Color.accentColor : Color.secondary.opacity(0.2), lineWidth: isSelected ? 2 : 1)
+                    )
+                
+                Image(systemName: item.isFile ? item.iconName : "folder.fill")
+                    .font(.system(size: 44))
+                    .foregroundColor(item.isFile ? .blue : .orange)
+                    .symbolRenderingMode(.hierarchical)
+                    .scaleEffect(isHovering ? 1.1 : 1.0)
+                
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.accentColor)
+                        .background(Circle().fill(Color.white))
+                        .offset(x: 6, y: -6)
+                }
+            }
+            .shadow(color: .black.opacity(isHovering ? 0.2 : 0.05), radius: isHovering ? 10 : 4, y: isHovering ? 5 : 2)
+            
+            // 文字区域
+            VStack(spacing: 4) {
+                Text(item.fileName)
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .foregroundColor(isSelected ? .accentColor : .primary)
+                
+                Text(item.isFile ? item.sizeString : "\(item.childFileList?.count ?? 0) 项")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(8)
+        .contentShape(Rectangle())
+        .onTapGesture(count: 1, perform: onTap)
+        .onTapGesture(count: 2, perform: onDoubleTap)
+        .onHover { h in withAnimation(.easeInOut(duration: 0.2)) { isHovering = h } }
+        .transition(.asymmetric(
+            insertion: .scale(scale: 0.9).combined(with: .opacity),
+            removal: .opacity
+        ))
+        .contextMenu {
+            Button { onAction(2) } label: { Label("下载", systemImage: "arrow.down.circle") }
+            Button { onAction(1) } label: { Label("删除", systemImage: "trash") }
+        }
+    }
+}
+
+// MARK: - View Extensions
+extension View {
+    @ViewBuilder
+    func `if`<Content: View>(_ condition: Bool, transform: (Self) -> Content) -> some View {
+        if condition {
+            transform(self)
+        } else {
+            self
+        }
+    }
+}
+
+/// 系统视觉效果视图包装器
+struct VisualEffectView: NSViewRepresentable {
+    let material: NSVisualEffectView.Material
+    let blendingMode: NSVisualEffectView.BlendingMode
+    
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = blendingMode
+        view.state = .active
+        return view
+    }
+    
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.blendingMode = blendingMode
+    }
+}
+
+// MARK: - FileListRowView (商业级文件行组件)
+/// 带悬停动画、卡片背景、微缩放效果的文件行视图
+private struct FileListRowView: View {
+    let file: DirectoryItem
+    let isSelected: Bool
+    let isChecked: Bool
+    let onToggle: () -> Void
+    let onTap: () -> Void
+    let onDownload: () -> Void
+    let onDelete: () -> Void
+
+    @State private var isHovering = false
+    @State private var isDownloadHovering = false
+    @State private var isDeleteHovering = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            // 复选框
+            Toggle("", isOn: Binding(get: { isChecked }, set: { _ in onToggle() }))
+                .toggleStyle(.checkbox)
+                .frame(width: 24)
+
+            // 文件图标（颜色渐变，按类型区分）
+            ZStack {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(file.isFile
+                          ? Color.blue.opacity(0.08)
+                          : Color.orange.opacity(0.08))
+                    .frame(width: 32, height: 32)
+                Image(systemName: file.isFile ? file.iconName : "folder.fill")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(file.isFile
+                                     ? Color.blue.gradient
+                                     : Color.orange.gradient)
+            }
+
+            // 文件名
+            Text(file.fileName)
+                .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                .foregroundColor(.primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(minWidth: 160, maxWidth: .infinity, alignment: .leading)
+
+            // 文件大小
+            Text(file.sizeString)
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+                .frame(width: 80, alignment: .leading)
+
+            // 上传时间
+            Text(file.uploadTimeString)
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+                .frame(width: 140, alignment: .leading)
+
+            // 操作按钮（悬停时渐显）
+            HStack(spacing: 10) {
+                Button(action: onDownload) {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(isDownloadHovering
+                                         ? Color.accentColor
+                                         : Color.secondary.opacity(0.6))
+                        .scaleEffect(isDownloadHovering ? 1.15 : 1.0)
+                        .animation(.easeInOut(duration: 0.15), value: isDownloadHovering)
+                }
+                .buttonStyle(.plain)
+                .help("下载")
+                .onHover { isDownloadHovering = $0 }
+
+                Button(action: onDelete) {
+                    Image(systemName: "trash.fill")
+                        .font(.system(size: 15))
+                        .foregroundStyle(isDeleteHovering
+                                         ? Color.red
+                                         : Color.secondary.opacity(0.5))
+                        .scaleEffect(isDeleteHovering ? 1.15 : 1.0)
+                        .animation(.easeInOut(duration: 0.15), value: isDeleteHovering)
+                }
+                .buttonStyle(.plain)
+                .help("删除")
+                .onHover { isDeleteHovering = $0 }
+            }
+            .opacity(isHovering || isSelected ? 1 : 0.4)
+            .frame(width: 72, alignment: .center)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(
+                    isSelected
+                    ? Color.accentColor.opacity(0.13)
+                    : isHovering
+                        ? Color.primary.opacity(0.05)
+                        : Color.clear
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(
+                    isSelected
+                    ? Color.accentColor.opacity(0.4)
+                    : Color.clear,
+                    lineWidth: 1
+                )
+        )
+        .scaleEffect(isHovering ? 1.005 : 1.0)
+        .shadow(
+            color: isSelected ? Color.accentColor.opacity(0.12) : Color.clear,
+            radius: 4, x: 0, y: 2
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.18)) { isHovering = hovering }
+        }
+        .onTapGesture { onTap() }
+        .animation(.easeInOut(duration: 0.18), value: isSelected)
+    }
+}
+
+// MARK: - HeaderItem & FileTableHeaderView (现代表头组件)
+/// 表头项定义
+struct HeaderItem: Identifiable {
+    let id = UUID()
+    let title: String
+    let icon: String?
+    let width: CGFloat?
+    let alignment: Alignment
+    let isSpacer: Bool // 为其分配 maxWidth: .infinity
+    
+    init(title: String, icon: String? = nil, width: CGFloat? = nil, alignment: Alignment = .leading, isSpacer: Bool = false) {
+        self.title = title
+        self.icon = icon
+        self.width = width
+        self.alignment = alignment
+        self.isSpacer = isSpacer
+    }
+}
+
+/// 具有现代感（玻璃材质、精致图标）的表头视图
+struct FileTableHeaderView: View {
+    let items: [HeaderItem]
+    let leadingPadding: CGFloat
+    
+    var body: some View {
+        HStack(spacing: 0) {
+            // 前置填充（用于对齐复选框等）
+            if leadingPadding > 0 {
+                Spacer()
+                    .frame(width: leadingPadding)
+            }
+            
+            ForEach(items) { item in
+                HStack(spacing: 4) {
+                    if let icon = item.icon {
+                        Image(systemName: icon)
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(Color.accentColor.gradient)
+                            .opacity(0.8)
+                    }
+                    
+                    Text(item.title)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.vertical, 8)
+                .frame(width: item.isSpacer ? nil : item.width, alignment: item.alignment)
+                .frame(maxWidth: item.isSpacer ? .infinity : nil, alignment: item.alignment)
+            }
+        }
+        .padding(.horizontal, 14)
+        .background(
+            ZStack {
+                // 玻璃材质底色
+                VisualEffectView(material: .headerView, blendingMode: .withinWindow)
+                
+                // 细微的边框或底部分割线
+                VStack {
+                    Spacer()
+                    Divider().opacity(0.1)
+                }
+            }
+        )
+    }
+}
+
+
+// MARK: - TransferListRowView (商业级传输行组件)
+/// 带渐变进度条、状态徽章、悬停按钮的传输任务行
+private struct TransferListRowView: View {
+    let item: TransferItem
+    let onStart:  () -> Void
+    let onPause:  () -> Void
+    let onCancel: () -> Void
+
+    @State private var isHovering = false
+
+    private var isActive: Bool {
+        item.status == "上传中" || item.status == "下载中" || item.status == "等待下载"
+    }
+    private var canResume: Bool {
+        item.status == "等待上传" || item.status == "暂停" || item.status == "已暂停" || item.status == "失败"
+    }
+
+    private var statusColor: Color {
+        switch item.status {
+        case "已完成":        return .green
+        case "上传中":        return .blue
+        case "下载中":        return .teal
+        case "等待上传", "等待下载": return .gray
+        case "失败":          return .red
+        case "暂停", "已暂停": return .orange
+        default:             return .primary
+        }
+    }
+
+    private var progressGradient: LinearGradient {
+        LinearGradient(
+            gradient: Gradient(colors: item.taskType == .upload
+                ? [Color.blue, Color.indigo]
+                : [Color.teal, Color.green]),
+            startPoint: .leading,
+            endPoint: .trailing
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // 顶部行：图标 + 文件名 + 右侧操作按钮
+            HStack(spacing: 10) {
+                // 传输类型图标
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(item.taskType == .upload
+                              ? Color.blue.opacity(0.1)
+                              : Color.teal.opacity(0.1))
+                        .frame(width: 30, height: 30)
+                    Image(systemName: item.taskType == .upload
+                          ? "arrow.up.circle.fill"
+                          : "arrow.down.circle.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(item.taskType == .upload
+                                         ? Color.blue.gradient
+                                         : Color.teal.gradient)
+                }
+
+                // 文件名 + 目录
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.name)
+                        .font(.system(size: 12, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    HStack(spacing: 6) {
+                        Text(item.directoryName)
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                        Text("·")
+                            .foregroundColor(.secondary)
+                        Text(item.sizeString)
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                // 状态徽章
+                Text(item.status)
+                    .font(.system(size: 10, weight: .semibold))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(statusColor.opacity(0.15))
+                    .foregroundColor(statusColor)
+                    .clipShape(Capsule())
+
+                // 操作按钮（悬停时渐显）
+                HStack(spacing: 6) {
+                    if canResume {
+                        Button(action: onStart) {
+                            Image(systemName: "play.circle.fill")
+                                .font(.system(size: 18))
+                                .foregroundStyle(Color.blue.gradient)
+                        }
+                        .buttonStyle(.plain)
+                        .help(item.taskType == .upload ? "开始上传" : "开始下载")
+                        .transition(.opacity)
+                    } else if isActive {
+                        Button(action: onPause) {
+                            Image(systemName: "pause.circle.fill")
+                                .font(.system(size: 18))
+                                .foregroundStyle(Color.orange.gradient)
+                        }
+                        .buttonStyle(.plain)
+                        .help("暂停")
+                        .transition(.opacity)
+                    }
+
+                    Button(action: onCancel) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 18))
+                            .foregroundStyle(Color.red.opacity(0.8).gradient)
+                    }
+                    .buttonStyle(.plain)
+                    .help("取消")
+                }
+                .opacity(isHovering ? 1 : 0.3)
+                .animation(.easeInOut(duration: 0.2), value: isHovering)
+            }
+
+            // 进度条（渐变样式）
+            if item.progress > 0 || isActive {
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(Color.primary.opacity(0.08))
+                            .frame(height: 5)
+                        Capsule()
+                            .fill(progressGradient)
+                            .frame(width: max(geo.size.width * CGFloat(item.progress), 0), height: 5)
+                            .animation(.easeInOut(duration: 0.4), value: item.progress)
+                    }
+                }
+                .frame(height: 5)
+
+                // 进度百分比 + 速度
+                HStack {
+                    Text(item.progressPercent)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(statusColor)
+                    Spacer()
+                    if isActive, !item.speed.isEmpty {
+                        Text(item.speed)
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(isHovering
+                      ? Color.primary.opacity(0.04)
+                      : Color.clear)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color.primary.opacity(isHovering ? 0.07 : 0), lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+        .onHover { isHovering = $0 }
+        .animation(.easeInOut(duration: 0.18), value: isHovering)
+    }
+}
+import Foundation
+import UserNotifications
+import AppKit
+
+/// NotificationCenter custom events
+extension Notification.Name {
+    static let switchToChat = Notification.Name("switchToChat")
+}
+
+class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
+    static let shared = NotificationManager()
+    
+    private override init() {
+        super.init()
+        UNUserNotificationCenter.current().delegate = self
+    }
+    
+    /// Request authorization to show desktop notifications
+    func requestAuthorization() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
+            if granted {
+                print("✅ [NotificationManager] 桌面通知权限已授予")
+            } else if let error = error {
+                print("❌ [NotificationManager] 桌面通知权限获取失败: \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    /// Show a notification for an incoming chat message
+    /// - Parameters:
+    ///   - senderId: ID of the friend who sent the message
+    ///   - senderName: Display name of the friend (username or nickname)
+    ///   - message: The message content
+    func showChatMessageNotification(senderId: Int64, senderName: String, message: String) {
+        let content = UNMutableNotificationContent()
+        content.title = senderName
+        content.body = message
+        content.sound = UNNotificationSound.default
+        content.userInfo = ["senderId": senderId]
+        
+        let request = UNNotificationRequest(
+            identifier: "ChatMessage_\(senderId)_\(UUID().uuidString)",
+            content: content,
+            trigger: nil // Deliver immediately
+        )
+        
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                print("❌ [NotificationManager] 发送通知失败: \(error.localizedDescription)")
+            } else {
+                print("🔔 [NotificationManager] 发送横幅通知成功: '\(senderName): \(message)'")
+            }
+        }
+    }
+    
+    // MARK: - UNUserNotificationCenterDelegate
+    
+    /// Called when the app is in the foreground and a notification arrives.
+    /// We can choose whether to still show the banner.
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        
+        // Show banner and play sound even if app is in foreground (but not focused on this specific chat)
+        completionHandler([.banner, .sound])
+    }
+    
+    /// Called when the user clicks on the desktop notification banner
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        
+        // Extract senderId from notification userInfo
+        if let senderId = response.notification.request.content.userInfo["senderId"] as? Int64 {
+            print("🖱️ [NotificationManager] 用户点击了来自 \(senderId) 的消息通知")
+            
+            // Bring application to front
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            
+            // Post local notification to trigger UI update in SwiftUI
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(
+                    name: .switchToChat,
+                    object: nil,
+                    userInfo: ["senderId": senderId]
+                )
+            }
+        }
+        
+        completionHandler()
     }
 }

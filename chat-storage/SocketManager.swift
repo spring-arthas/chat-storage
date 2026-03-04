@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import AppKit
 import Combine
 import Network
 
@@ -882,6 +883,65 @@ extension SocketManager {
     func handleFriendRequest(requestId: Int64, accept: Bool) async throws -> Bool {
         return try await handleFriendRequest(requestId: requestId, action: accept ? 1 : 2, alias: nil)
     }
+    
+    /// 修改好友备注名 (0x57)
+    /// - Parameters:
+    ///   - friendshipId: 关系表的主键 ID
+    ///   - newAlias: 新设定的备注名称
+    /// - Returns: 是否成功
+    func updateFriendAlias(friendshipId: Int64, newAlias: String) async throws -> Bool {
+        let reqDto = FriendUpdateAliasReqDto(id: friendshipId, alias: newAlias)
+        
+        guard let data = try? JSONEncoder().encode(reqDto) else {
+            throw SocketError.sendFailed
+        }
+        
+        let frame = Frame(type: .friendUpdateAliasReq, data: data)
+        
+        // 发送并等待通用的 0x58 响应
+        let response = try await sendFrameAndWait(frame, expecting: .friendUpdateAliasResp, timeout: 5.0)
+        
+        var success = false
+        if let jsonDict = try? JSONSerialization.jsonObject(with: response.data) as? [String: Any] {
+            if let status = jsonDict["status"] as? String {
+                success = (status.uppercased() == "SUCCESS")
+            } else if let dataMap = jsonDict["data"] as? [String: Any], let status = dataMap["status"] as? String {
+                success = (status.uppercased() == "SUCCESS")
+            } else if let code = jsonDict["code"] as? Int, code == 200 {
+                success = true
+            }
+        }
+        
+        if success {
+            await MainActor.run {
+                if let idx = self.friendList.firstIndex(where: { $0.id == friendshipId }) {
+                    let mutableFriend = self.friendList[idx]
+                    // 根据 TransferModels 中 FriendDto 的属性创建新的结构体
+                    let updatedFriend = FriendDto(
+                        id: mutableFriend.id,
+                        userId: mutableFriend.userId,
+                        friendId: mutableFriend.friendId,
+                        alias: newAlias,
+                        userName: mutableFriend.userName,
+                        nickName: mutableFriend.nickName,
+                        avatar: mutableFriend.avatar,
+                        unreadCount: mutableFriend.unreadCount,
+                        latestUnreadMsg: mutableFriend.latestUnreadMsg
+                    )
+                    self.friendList[idx] = updatedFriend
+                    print("✅ 本地好友备注内存映射已刷新为: \(newAlias)")
+                }
+            }
+            
+            // 重新加载好友列表数据，用于将最新修改的好友昵称进行回显获取
+            if let freshList = try? await getFriendList() {
+                await MainActor.run {
+                    self.friendList = freshList
+                }
+            }
+        }
+        return success
+    }
 }
 
 // MARK: - Helper Parsing Methods
@@ -957,6 +1017,19 @@ extension SocketManager {
                     
                     if self.activeChatFriendId != senderId64 {
                         self.unreadCounts[senderId64] = (self.unreadCounts[senderId64] ?? 0) + 1
+                    }
+                    
+                    // 触发桌面通知（如果应用在后台，或者当前聊天不是该好友）
+                    let isAppActive = NSApplication.shared.isActive
+                    if !isAppActive || self.activeChatFriendId != senderId64 {
+                        // 寻找发件人名称
+                        let senderName = self.friendList.first(where: { $0.id == senderId64 })?.alias ?? "好友"
+                        let msgPreview = pushDto.msgType == "FILE" ? "[文件]" : pushDto.content
+                        NotificationManager.shared.showChatMessageNotification(
+                            senderId: senderId64,
+                            senderName: senderName,
+                            message: msgPreview
+                        )
                     }
                     
                     // TODO: Trigger a global redraw on the friend list so the last message is visible

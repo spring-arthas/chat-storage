@@ -87,10 +87,12 @@ struct LoginView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("用户名")
                         .font(.subheadline)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.gray)
                     
                     TextField("请输入用户名", text: $username)
                         .textFieldStyle(.roundedBorder)
+                        .colorScheme(.light)
+                        .foregroundColor(.black)
                         .frame(width: 300)
                         .onSubmit {
                             // 如果密码和邮箱不为空，则尝试登录
@@ -104,10 +106,12 @@ struct LoginView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("密码")
                         .font(.subheadline)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.gray)
                     
                     SecureField("请输入密码", text: $password)
                         .textFieldStyle(.roundedBorder)
+                        .colorScheme(.light)
+                        .foregroundColor(.black)
                         .frame(width: 300)
                         .onSubmit {
                             handleLogin()
