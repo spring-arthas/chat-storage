@@ -76,6 +76,10 @@ class AuthenticationService: ObservableObject {
         await MainActor.run {
             self.currentUser = user
             self.isAuthenticated = true
+            // 记录当前用户 ID，用于后续从历史头像字典中定位自己的 base64 头像
+            self.socketManager.currentUserId = user.id
+            // 注意：不在这里赋值 myAvatar，因为 user.avatar 可能是文件路径而非 base64
+            // myAvatar 由 fetchHistory 从服务端返回的 avatars 字典提取
         }
         
         print("✅ 登录成功: \(user.username)")
@@ -132,6 +136,8 @@ class AuthenticationService: ObservableObject {
         await MainActor.run {
             self.currentUser = user
             self.isAuthenticated = true
+            // 记录当前用户 ID
+            self.socketManager.currentUserId = user.id
         }
         
         print("✅ 注册成功: \(user.username)")
@@ -142,6 +148,9 @@ class AuthenticationService: ObservableObject {
     func logout() {
         currentUser = nil
         isAuthenticated = false
+        // 清除头像缓存以避免下次登录时使用旧头像
+        socketManager.myAvatar = nil
+        socketManager.currentUserId = nil
         print("👋 已退出登录")
     }
 }

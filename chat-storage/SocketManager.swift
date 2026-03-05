@@ -98,6 +98,12 @@ public class SocketManager: NSObject, ObservableObject {
     /// 当前正在与其聊天的朋友ID（用于控制未读消息红点）
     @Published var activeChatFriendId: Int64? = nil
     
+    /// 当前登录用户的 ID（用于从历史头像字典中定位自己的头像）
+    var currentUserId: Int64? = nil
+    
+    /// 当前登录用户的头像（Base64 字符串），由 getChatHistory 返回的 avatars 字典注入
+    var myAvatar: String? = nil
+    
     /// 上行速度字符串
     @Published var uploadSpeedStr: String = "0 KB/s"
     /// 下行速度字符串
@@ -711,6 +717,14 @@ extension SocketManager {
             return mappedItem
         }
         
+        // 顺带从 avatars 字典中提取当前用户自己的头像并缓存到 myAvatar
+        if let avatarsDict = responseData.avatars, let uid = currentUserId, myAvatar == nil {
+            if let selfAvatar = avatarsDict[String(uid)], !selfAvatar.isEmpty {
+                myAvatar = selfAvatar
+                print("✅ [getChatHistory] myAvatar 已从 avatars 字典更新")
+            }
+        }
+        
         return history
     }
     
@@ -984,8 +998,12 @@ extension SocketManager {
     
     /// 主动发送聊天消息 (0x50)
     func sendChatMessage(receiverId: Int64, content: String, msgType: String = "TEXT", avatar: String? = nil) {
+        // 优先使用服务端注入的 myAvatar，其次才用调用方传入的 avatar
+        let effectiveAvatar = myAvatar ?? avatar
+        print("📤 [sendChatMessage] myAvatar=\(myAvatar != nil ? "有值(\(myAvatar!.prefix(20))...)" : "nil"), avatar参数=\(avatar != nil ? "有值" : "nil"), 最终effectiveAvatar=\(effectiveAvatar != nil ? "有值" : "nil")")
         // 1. 本地乐观更新UI气泡
-        let localMessage = ChatMessage(messageId: nil, content: content, isMe: true, timestamp: Date(), type: msgType, sendStatus: .sending, avatar: avatar)
+        let localMessage = ChatMessage(messageId: nil, content: content, isMe: true, timestamp: Date(), type: msgType, sendStatus: .sending, avatar: effectiveAvatar)
+
         var history = self.chatHistory[receiverId] ?? []
         history.append(localMessage)
         self.chatHistory[receiverId] = history

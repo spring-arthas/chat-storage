@@ -20,6 +20,8 @@ public struct UserDto: Codable, Identifiable {
     public let nickName: String?
     public let avatar: String?
     public let status: Int? // 0=正常, 1=禁用
+    public let friendStatus: Int?
+    public let friendStatusDesc: String?
     
     public var identifiableId: String { String(id) }
     
@@ -29,6 +31,8 @@ public struct UserDto: Codable, Identifiable {
         case nickName
         case avatar
         case status
+        case friendStatus
+        case friendStatusDesc
     }
     
     // 增加一个备用的 CodingKeys 用于 fallback
@@ -55,6 +59,8 @@ public struct UserDto: Codable, Identifiable {
         self.nickName = try container.decodeIfPresent(String.self, forKey: .nickName)
         self.avatar = try container.decodeIfPresent(String.self, forKey: .avatar)
         self.status = try container.decodeIfPresent(Int.self, forKey: .status)
+        self.friendStatus = try container.decodeIfPresent(Int.self, forKey: .friendStatus)
+        self.friendStatusDesc = try container.decodeIfPresent(String.self, forKey: .friendStatusDesc)
     }
 }
 
