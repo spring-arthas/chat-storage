@@ -83,10 +83,63 @@ public struct FriendDto: Codable, Identifiable, Equatable {
     /// 未读消息数
     public let unreadCount: Int32?
     /// 最新未读消息内容
-    public let latestUnreadMsg: String?
+    public var latestUnreadMsg: String?
     
     // Identifiable (使用好友ID作为唯一标识)
     public var identifiableId: String { String(friendId) }
+    
+    // 自定义 CodingKeys
+    enum CodingKeys: String, CodingKey {
+        case id, userId, friendId, alias, userName, nickName, avatar
+        case unreadCount, latestUnreadMsg
+    }
+    
+    // 回退尝试的 CodingKeys，用于兼容后端不同的字段命名
+    enum FallbackCodingKeys: String, CodingKey {
+        case latestMsg, lastMsg, latestMessage, lastMessage
+    }
+    
+    // 手动初始化 (用于本地修改等场景)
+    public init(id: Int64, userId: Int64, friendId: Int64, alias: String?, userName: String, nickName: String, avatar: String?, unreadCount: Int32?, latestUnreadMsg: String?) {
+        self.id = id
+        self.userId = userId
+        self.friendId = friendId
+        self.alias = alias
+        self.userName = userName
+        self.nickName = nickName
+        self.avatar = avatar
+        self.unreadCount = unreadCount
+        self.latestUnreadMsg = latestUnreadMsg
+    }
+    
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        
+        self.id = (try? container.decodeIfPresent(Int64.self, forKey: .id)) ?? 0
+        self.userId = (try? container.decodeIfPresent(Int64.self, forKey: .userId)) ?? 0
+        self.friendId = (try? container.decodeIfPresent(Int64.self, forKey: .friendId)) ?? 0
+        self.alias = try? container.decodeIfPresent(String.self, forKey: .alias)
+        self.userName = (try? container.decodeIfPresent(String.self, forKey: .userName)) ?? ""
+        self.nickName = (try? container.decodeIfPresent(String.self, forKey: .nickName)) ?? ""
+        self.avatar = try? container.decodeIfPresent(String.self, forKey: .avatar)
+        
+        // Ensure type mismatch here (e.g., Int instead of Int32) doesn't crash init
+        self.unreadCount = try? container.decodeIfPresent(Int32.self, forKey: .unreadCount)
+        
+        // 核心排查：最新消息解析。不要使用 try 而是 try? 保证不会抛出异常中断
+        if let msg = try? container.decodeIfPresent(String.self, forKey: .latestUnreadMsg) {
+            self.latestUnreadMsg = msg
+        } else if let fallbackContainer = try? decoder.container(keyedBy: FallbackCodingKeys.self) {
+            // 避免 Swift 编译器认为表达式过于复杂，分解提取过程
+            let v1 = try? fallbackContainer.decodeIfPresent(String.self, forKey: .latestMsg)
+            let v2 = try? fallbackContainer.decodeIfPresent(String.self, forKey: .lastMsg)
+            let v3 = try? fallbackContainer.decodeIfPresent(String.self, forKey: .latestMessage)
+            let v4 = try? fallbackContainer.decodeIfPresent(String.self, forKey: .lastMessage)
+            self.latestUnreadMsg = v1 ?? v2 ?? v3 ?? v4
+        } else {
+            self.latestUnreadMsg = nil
+        }
+    }
 }
 
 /// 好友申请信息 (Request DTO)
@@ -104,6 +157,12 @@ public struct FriendRequestDto: Codable, Identifiable {
     public let senderAvatar: String?
     
     public var identifiableId: String { String(id) }
+}
+
+/// 修改好友备注请求 (Request DTO - 0x57)
+public struct FriendUpdateAliasReqDto: Codable {
+    public let id: Int64
+    public let alias: String
 }
 
 

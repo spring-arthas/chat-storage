@@ -239,6 +239,23 @@ struct DirectoryItem: Identifiable, CustomDebugStringConvertible, Codable, Hasha
         return formatter.string(from: date)
     }
 
+    var iconName: String {
+        guard isFile else { return "folder.fill" }
+        let ext = (fileName as NSString).pathExtension.lowercased()
+        switch ext {
+        case "jpg", "jpeg", "png", "gif", "bmp": return "photo"
+        case "mp4", "mov", "avi", "mkv": return "film"
+        case "mp3", "wav", "aac": return "music.note"
+        case "doc", "docx": return "doc.text"
+        case "xls", "xlsx": return "chart.bar.doc.horizontal"
+        case "ppt", "pptx": return "rectangle.on.rectangle"
+        case "pdf": return "doc.text.fill"
+        case "zip", "rar", "7z": return "doc.zipper"
+        case "txt", "md", "json", "xml": return "doc.text"
+        default: return "doc"
+        }
+    }
+
     var debugDescription: String {
         return "DirectoryItem(id: \(id), fileName: '\(fileName)', isFile: \(isFile), children: \(childFileList?.count ?? 0))"
     }

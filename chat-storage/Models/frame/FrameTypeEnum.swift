@@ -69,6 +69,10 @@ enum FrameTypeEnum: UInt8, CaseIterable {
     case pendingRequestsReq = 0x38
     /// 处理好友申请请求 (0x39)
     case handleFriendReq = 0x39
+    /// 修改好友备注请求 (0x57)
+    case friendUpdateAliasReq = 0x57
+    /// 修改好友备注响应 (0x58)
+    case friendUpdateAliasResp = 0x58
     
     // ========== 文件操作帧 (0x40-0x4F) ==========
     /// 文件列表分页请求
@@ -128,6 +132,8 @@ enum FrameTypeEnum: UInt8, CaseIterable {
         case .addFriendReq: return "添加好友请求"
         case .pendingRequestsReq: return "获取好友申请列表"
         case .handleFriendReq: return "处理好友申请"
+        case .friendUpdateAliasReq: return "修改好友备注请求"
+        case .friendUpdateAliasResp: return "修改好友备注响应"
             
         case .fileListReq: return "文件列表请求"
         case .fileDetailReq: return "文件详情请求"
