@@ -746,7 +746,7 @@ class FileTransferService: ObservableObject {
             
             // 使用字典构建 Frame
             let checkFrame = Frame(type: .resumeCheck, data: jsonData, flags: 0x00)
-            let checkResponseFrame = try await socketManager.sendFrameAndWait(checkFrame, expecting: .resumeAck, timeout: 31536000.0)
+            let checkResponseFrame = try await socketManager.sendFrameAndWait(checkFrame, expecting: .resumeAck, timeout: 30.0)
             let resumeInfo = try FrameParser.decodePayload(checkResponseFrame, as: ResumeAckResponse.self)
             
             var offset: Int64 = 0
@@ -768,7 +768,7 @@ class FileTransferService: ObservableObject {
                 print("🆕 无断点记录，开始全新上传...")
                 // 发送元数据帧 (0x01)，发送元数据全新上传帧
                 let metaFrame = try FrameBuilder.build(type: .metaFrame, payload: metaRequest)
-                let metaResponseFrame = try await socketManager.sendFrameAndWait(metaFrame, expecting: .ackFrame, timeout: 31536000.0)
+                let metaResponseFrame = try await socketManager.sendFrameAndWait(metaFrame, expecting: .ackFrame, timeout: 30.0)
                 let ack = try FrameParser.decodePayload(metaResponseFrame, as: StandardAckResponse.self)
                 guard ack.status == "ready" else {
                     throw FileTransferError.serverError(ack.message ?? "服务端未就绪")
@@ -793,7 +793,7 @@ class FileTransferService: ObservableObject {
                 // 发送文件数据（从startOffset开始）
                 try await sendFileData(
                     fileUrl: fileUrl,
-                    offset: startOffset,
+                    offset: offset,
                     taskId: finalTaskId, // 使用 finalTaskId
                     fileSize: fileSize,
                     progressHandler: progressHandler
@@ -807,7 +807,7 @@ class FileTransferService: ObservableObject {
             print("🏁 发送结束帧...")
             let endRequest = EndUploadRequest(taskId: finalTaskId) // 使用 finalTaskId
             let endFrame = try FrameBuilder.build(type: .endFrame, payload: endRequest)
-            let endResponseFrame = try await socketManager.sendFrameAndWait(endFrame, expecting: .ackFrame, timeout: 31536000.0)
+            let endResponseFrame = try await socketManager.sendFrameAndWait(endFrame, expecting: .ackFrame, timeout: 30.0)
             let finalAck = try FrameParser.decodePayload(endResponseFrame, as: StandardAckResponse.self)
             if finalAck.status == "success" {
                 print("🎉 文件上传成功!")
@@ -951,7 +951,7 @@ class FileTransferService: ObservableObject {
     /// - Parameters:
     ///   - fileId: 文件ID
     ///   - delegate: 代理
-    public func startVideoStreaming(fileId: Int64, delegate: VideoStreamLoaderDelegate) async throws {
+    nonisolated public func startVideoStreaming(fileId: Int64, delegate: VideoStreamLoaderDelegate) async throws {
         print("🎥 [Stream] 请求视频流: \(fileId)")
         
         let fileIdInt = Int64(fileId)
@@ -1018,6 +1018,98 @@ class FileTransferService: ObservableObject {
                     
                 case .endFrame:
                     print("✅ [Stream] 视频流结束")
+                    delegate.didFinishLoading()
+                    continuation.resume()
+                    return false
+                    
+                case .fileResponse:
+                     if let dict = try? FrameParser.decodeAsDictionary(frame),
+                        let code = dict["code"] as? Int, code != 200 {
+                         let msg = dict["message"] as? String ?? "Stream Fail"
+                         let error = DirectoryError.serverError(code: code, message: msg)
+                         delegate.didFail(with: error)
+                         continuation.resume(throwing: error)
+                         return false
+                     }
+                     return true
+                     
+                default:
+                    return true
+                }
+            }
+        }
+    }
+    /// 开始定制流式下载 (用于支持断点续传的视频播放)
+    /// - Parameters:
+    ///   - fileId: 文件ID
+    ///   - startOffset: 二进制开始偏移位置 (针对 Http Range 请求)
+    ///   - delegate: 代理
+    nonisolated public func startCustomVideoStreaming(fileId: Int64, startOffset: Int64, delegate: VideoStreamLoaderDelegate) async throws {
+        print("🎥 [Stream] 请求视频流: fileId=\(fileId) range-start=\(startOffset)")
+        
+        let fileIdInt = Int64(fileId)
+        let taskId = UUID().uuidString
+        
+        // 1. 发送带 offset 的下载请求 (MetaFrame)
+        let request: [String: Any] = [
+            "fileId": fileIdInt,
+            "taskId": taskId,
+            "startOffset": startOffset
+        ]
+        
+        guard let requestData = try? JSONSerialization.data(withJSONObject: request) else {
+            throw DirectoryError.invalidData
+        }
+        
+        let requestFrame = Frame(type: .metaFrame, data: requestData, flags: 0x00)
+        try socketManager.sendFrame(requestFrame)
+        
+        // 2. 监听数据端
+        return try await withCheckedThrowingContinuation { continuation in
+            var receivedSize: Int64 = startOffset
+            
+            // 监听类型
+            let types: Set<FrameTypeEnum> = [.metaFrame, .dataFrame, .endFrame, .fileResponse, .ackFrame]
+            
+            socketManager.registerStreamHandler(for: types) { frame in
+                switch frame.type {
+                case .ackFrame, .metaFrame:
+                    if let jsonString = String(data: frame.data, encoding: .utf8),
+                       let data = jsonString.data(using: String.Encoding.utf8),
+                       let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        
+                        // 检查错误
+                        if let status = dict["status"] as? String, (status == "error" || status == "fail") {
+                             let msg = dict["message"] as? String ?? "未知错误"
+                             let err = DirectoryError.serverError(code: -1, message: msg)
+                             delegate.didFail(with: err)
+                             continuation.resume(throwing: err)
+                             return false
+                        }
+                        
+                        // 文件信息
+                        if let size = dict["fileSize"] as? Int64 {
+                            delegate.didReceiveContentInfo(totalSize: size, mimeType: "video/mp4")
+                            
+                            // 发送 Ready 确认帧 开始接收后续的 DataFrame
+                            let readyAck: [String: Any] = ["taskId": taskId, "status": "ready"]
+                            if let readyData = try? JSONSerialization.data(withJSONObject: readyAck) {
+                                let readyFrame = Frame(type: .ackFrame, data: readyData, flags: 0x00)
+                                try? self.socketManager.sendFrame(readyFrame)
+                            }
+                        }
+                    }
+                    return true
+                    
+                case .dataFrame:
+                    let data = frame.data
+                    let range = receivedSize..<receivedSize + Int64(data.count)
+                    delegate.didReceiveVideoData(data, range: range)
+                    receivedSize += Int64(data.count)
+                    return true
+                    
+                case .endFrame:
+                    print("✅ [Stream] 视频流片段发送结束")
                     delegate.didFinishLoading()
                     continuation.resume()
                     return false

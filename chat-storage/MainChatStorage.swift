@@ -114,6 +114,9 @@ struct MainChatStorage: View {
     @State private var renameValue = ""
     @State private var isRenaming = false
     
+    // Video Playing State
+    @State private var playingVideoFile: DirectoryItem?
+    
     /// 是否显示删除确认弹窗
     @State private var showingDeleteAlert = false
     @State private var deleteTargetId: Int64?
@@ -475,16 +478,26 @@ struct MainChatStorage: View {
                             onFileDoubleTapped: { file in
                                 if !file.isFile {
                                     handleEnterDirectory(file)
+                                } else if file.iconName == "film" {
+                                    self.playingVideoFile = file
                                 }
                             },
                             onAction: { file, action in
                                 handleFileAction(file, action: action)
+                            },
+                            onPlay: { file in
+                                self.playingVideoFile = file
                             }
                         )
                         .transition(.scale(scale: 0.95).combined(with: .opacity))
                     }
                 }
                 .animation(.spring(), value: storageViewMode)
+                
+                Divider()
+                
+                // 分页栏 (统一放在底部，应用于列表和网格)
+                paginationBar
             }
             .frame(minWidth: 300, minHeight: 300)
             
@@ -492,6 +505,9 @@ struct MainChatStorage: View {
             transferListView
                 .frame(minHeight: 150)
                 .background(.ultraThinMaterial)
+        }
+        .sheet(item: $playingVideoFile) { file in
+            StreamingVideoPlayer(fileId: file.id, fileName: file.fileName, fileSize: file.fileSize ?? 0)
         }
     }
     
@@ -549,8 +565,17 @@ struct MainChatStorage: View {
             
             Spacer()
             
-            // 右侧：搜索区
+            // 右侧：搜索区和视图切换
             HStack(spacing: 8) {
+                
+                // 视图模式切换
+                Picker("视图模式", selection: $storageViewMode) {
+                    Image(systemName: "list.bullet").tag(0)
+                    Image(systemName: "square.grid.2x2").tag(1)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 80)
                 
                 // 搜索输入框
                 TextField("搜索文件名称", text: $searchKeyword)
@@ -622,11 +647,6 @@ struct MainChatStorage: View {
                 }
             }
             .background(Color(NSColor.textBackgroundColor).opacity(0.3))
-            
-            Divider()
-            
-            // 分页栏 (绑定在文件浏览区)
-            paginationBar
         }
     }
     
@@ -688,6 +708,9 @@ struct MainChatStorage: View {
                     self.selectedFileId = file.id
                     loadFileDetail(fileId: file.id)
                 }
+            },
+            onPlay: {
+                self.playingVideoFile = file
             },
             onDownload: { handleFileAction(file, action: 2) },
             onDelete: { handleFileAction(file, action: 1) }
@@ -757,6 +780,7 @@ struct MainChatStorage: View {
             
             // 表头 (现代优化版)
             FileTableHeaderView(items: [
+                HeaderItem(title: "序号", width: 36, alignment: .center),
                 HeaderItem(title: "文件名称", icon: "doc", isSpacer: true),
                 HeaderItem(title: "文件大小", icon: "externaldrive", width: 80),
                 HeaderItem(title: "所属目录", icon: "folder", width: 100),
@@ -783,8 +807,8 @@ struct MainChatStorage: View {
                     .padding(40)
                 } else {
                     LazyVStack(spacing: 0) {
-                        ForEach(transferList) { item in
-                            transferRow(item)
+                        ForEach(Array(transferList.enumerated()), id: \.element.id) { index, item in
+                            transferRow(item, index: index + 1)
                             Divider()
                         }
                     }
@@ -794,9 +818,10 @@ struct MainChatStorage: View {
         }
     }
     // 文件传输列表一行记录的状态
-    private func transferRow(_ item: TransferItem) -> some View {
+    private func transferRow(_ item: TransferItem, index: Int) -> some View {
         TransferListRowView(
             item: item,
+            index: index,
             onStart:  { handleTransferAction(id: item.id, action: "start") },
             onPause:  { handleTransferAction(id: item.id, action: "pause") },
             onCancel: { handleTransferAction(id: item.id, action: "cancel") }
@@ -1434,6 +1459,24 @@ struct MainChatStorage: View {
                         
                         // Actions
                         VStack(spacing: 12) {
+                            // 在线播放大按钮 (如果是视频)
+                            if detail.iconName == "film" {
+                                Button(action: {
+                                    if let item = directoryTree.first(where: { $0.id == detail.id }) ?? findDirectoryItem(id: detail.id, nodes: directoryTree) {
+                                         self.playingVideoFile = item
+                                    } else {
+                                         self.playingVideoFile = detail.toDirectoryItem()
+                                    }
+                                }) {
+                                    Label("在线播放", systemImage: "play.circle.fill")
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 8)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(.green)
+                                .controlSize(.large)
+                            }
+                            
                             Button(action: {
                                 if let item = directoryTree.first(where: { $0.id == detail.id }) ?? findDirectoryItem(id: detail.id, nodes: directoryTree) {
                                      submitDownloadTask(for: item)
@@ -1792,6 +1835,7 @@ struct MainChatStorage: View {
                     )
                     
                     // 提交任务 (submit 会自动处理：存在则resume，不存在则add)
+                    print("🛠️ [UI] Submitting task: \(task.name) - ID: \(task.id)")
                     transferManager.submit(task: task)
                     count += 1
                 }
@@ -1864,6 +1908,7 @@ struct MainChatStorage: View {
                     progress: 0.0
                 )
                 
+                print("🛠️ [UI] Single upload task submitted: \(task.name) - ID: \(task.id)")
                 transferManager.submit(task: task)
             }
             
@@ -3923,6 +3968,7 @@ private struct CloudGridView: View {
     var onFileTapped: (DirectoryItem) -> Void
     var onFileDoubleTapped: (DirectoryItem) -> Void
     var onAction: (DirectoryItem, Int) -> Void
+    var onPlay: (DirectoryItem) -> Void
     
     private let columns = [GridItem(.adaptive(minimum: 140, maximum: 180), spacing: 20)]
     
@@ -3935,7 +3981,8 @@ private struct CloudGridView: View {
                         isSelected: selectedFiles.contains(item.id) || selectedFileId == item.id,
                         onTap: { onFileTapped(item) },
                         onDoubleTap: { onFileDoubleTapped(item) },
-                        onAction: { action in onAction(item, action) }
+                        onAction: { action in onAction(item, action) },
+                        onPlay: { onPlay(item) }
                     )
                 }
             }
@@ -3951,6 +3998,7 @@ private struct FileCard: View {
     let onTap: () -> Void
     let onDoubleTap: () -> Void
     let onAction: (Int) -> Void
+    let onPlay: () -> Void
     
     @State private var isHovering = false
     
@@ -3978,6 +4026,20 @@ private struct FileCard: View {
                         .background(Circle().fill(Color.white))
                         .offset(x: 6, y: -6)
                 }
+                
+                if item.iconName == "film" && isHovering {
+                    ZStack {
+                        Color.black.opacity(0.3).cornerRadius(16)
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 36))
+                            .foregroundColor(.white.opacity(0.9))
+                            .shadow(radius: 4)
+                    }
+                    .frame(width: .infinity, height: 100)
+                    .onTapGesture {
+                        onPlay()
+                    }
+                }
             }
             .shadow(color: .black.opacity(isHovering ? 0.2 : 0.05), radius: isHovering ? 10 : 4, y: isHovering ? 5 : 2)
             
@@ -4004,6 +4066,9 @@ private struct FileCard: View {
             removal: .opacity
         ))
         .contextMenu {
+            if item.iconName == "film" {
+                Button { onPlay() } label: { Label("播放", systemImage: "play.circle") }
+            }
             Button { onAction(2) } label: { Label("下载", systemImage: "arrow.down.circle") }
             Button { onAction(1) } label: { Label("删除", systemImage: "trash") }
         }
@@ -4049,10 +4114,12 @@ private struct FileListRowView: View {
     let isChecked: Bool
     let onToggle: () -> Void
     let onTap: () -> Void
+    let onPlay: () -> Void
     let onDownload: () -> Void
     let onDelete: () -> Void
 
     @State private var isHovering = false
+    @State private var isPlayHovering = false
     @State private var isDownloadHovering = false
     @State private var isDeleteHovering = false
 
@@ -4099,6 +4166,21 @@ private struct FileListRowView: View {
 
             // 操作按钮（悬停时渐显）
             HStack(spacing: 10) {
+                if file.iconName == "film" {
+                    Button(action: onPlay) {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(isPlayHovering
+                                             ? Color.green
+                                             : Color.secondary.opacity(0.6))
+                            .scaleEffect(isPlayHovering ? 1.15 : 1.0)
+                            .animation(.easeInOut(duration: 0.15), value: isPlayHovering)
+                    }
+                    .buttonStyle(.plain)
+                    .help("播放")
+                    .onHover { isPlayHovering = $0 }
+                }
+
                 Button(action: onDownload) {
                     Image(systemName: "arrow.down.circle.fill")
                         .font(.system(size: 16))
@@ -4207,6 +4289,8 @@ struct FileTableHeaderView: View {
                     Text(item.title)
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
                 .padding(.vertical, 8)
                 .frame(width: item.isSpacer ? nil : item.width, alignment: item.alignment)
@@ -4234,6 +4318,7 @@ struct FileTableHeaderView: View {
 /// 带渐变进度条、状态徽章、悬停按钮的传输任务行
 private struct TransferListRowView: View {
     let item: TransferItem
+    let index: Int
     let onStart:  () -> Void
     let onPause:  () -> Void
     let onCancel: () -> Void
@@ -4271,8 +4356,14 @@ private struct TransferListRowView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // 顶部行：图标 + 文件名 + 右侧操作按钮
+            // 顶部行：序号 + 图标 + 文件名 + 右侧操作按钮
             HStack(spacing: 10) {
+                // 序号列
+                Text("\(index)")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .frame(width: 36, alignment: .center)
+
                 // 传输类型图标
                 ZStack {
                     RoundedRectangle(cornerRadius: 6)
@@ -4487,5 +4578,353 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         }
         
         completionHandler()
+    }
+}
+import SwiftUI
+import AVKit
+import Network
+
+/// SwiftUI 包装的视频播放界面
+struct StreamingVideoPlayer: View {
+    let fileId: Int64
+    let fileName: String
+    let fileSize: Int64
+    
+    @Environment(\.presentationMode) var presentationMode
+    @StateObject private var viewModel = StreamingVideoViewModel()
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Text(fileName)
+                    .font(.headline)
+                    .lineLimit(1)
+                Spacer()
+                Button(action: {
+                    viewModel.stopPlaying()
+                    presentationMode.wrappedValue.dismiss()
+                }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 20))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding()
+            .background(VisualEffectBlur(material: .headerView, blendingMode: .withinWindow))
+            
+            Divider()
+            
+            // Player
+            ZStack {
+                Color.black
+                
+                if let player = viewModel.player {
+                    VideoPlayer(player: player)
+                        .onAppear {
+                            player.play()
+                        }
+                }
+                
+                if viewModel.isLoading {
+                    VStack {
+                        ProgressView()
+                            .scaleEffect(1.5)
+                        Text("缓冲中...")
+                            .foregroundColor(.white)
+                            .padding(.top, 10)
+                    }
+                    .padding()
+                    .background(Color.black.opacity(0.6))
+                    .cornerRadius(10)
+                }
+                
+                if let error = viewModel.errorMessage {
+                    VStack(spacing: 12) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.yellow)
+                            .font(.system(size: 40))
+                        Text("播放失败")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                        Text(error)
+                            .font(.caption)
+                            .foregroundColor(.white)
+                            .multilineTextAlignment(.center)
+                        
+                        Button("重试") {
+                            viewModel.setupPlayer(fileId: fileId, expectedSize: fileSize)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .padding(.top)
+                    }
+                    .padding()
+                    .background(Color.black.opacity(0.8))
+                    .cornerRadius(12)
+                }
+            }
+        }
+        .frame(minWidth: 600, minHeight: 400)
+        .onAppear {
+            viewModel.setupPlayer(fileId: fileId, expectedSize: fileSize)
+        }
+        .onDisappear {
+            viewModel.stopPlaying()
+        }
+    }
+}
+
+// MARK: - ViewModel
+
+class StreamingVideoViewModel: NSObject, ObservableObject {
+    @Published var player: AVPlayer?
+    @Published var isLoading: Bool = true
+    @Published var errorMessage: String? = nil
+    
+    // 我们必须保留对 loader delegate 的强引用，否则 delegate 会被释放
+    private var resourceLoaderDelegate: CustomResourceLoaderDelegate?
+    private var timeObserverToken: Any?
+    
+    // 初始化并构建 AVPlayer
+    func setupPlayer(fileId: Int64, expectedSize: Int64) {
+        self.isLoading = true
+        self.errorMessage = nil
+        self.player?.pause()
+        self.player = nil
+        
+        // 构建伪造的 URL
+        guard let url = URL(string: "cloudstream://video/\(fileId).mp4") else {
+            self.errorMessage = "无效的视频URL"
+            return
+        }
+        
+        let asset = AVURLAsset(url: url)
+        
+        // 创建 ResourceLoaderDelegate
+        let delegate = CustomResourceLoaderDelegate(fileId: fileId, expectedSize: expectedSize)
+        self.resourceLoaderDelegate = delegate
+        
+        // 设置 Delegate 来拦截请求 (必须使用独立的 DispatchQueue)
+        let queue = DispatchQueue(label: "com.cloud-drive.video-stream")
+        asset.resourceLoader.setDelegate(delegate, queue: queue)
+        
+        let playerItem = AVPlayerItem(asset: asset)
+        let player = AVPlayer(playerItem: playerItem)
+        
+        // 观察状态变化以更新缓冲 UI
+        player.addObserver(self, forKeyPath: "timeControlStatus", options: [.new, .initial], context: nil)
+        playerItem.addObserver(self, forKeyPath: "status", options: [.new, .initial], context: nil)
+        
+        self.player = player
+    }
+    
+    override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
+        DispatchQueue.main.async {
+            if keyPath == "timeControlStatus", let player = self.player {
+                self.isLoading = (player.timeControlStatus == .waitingToPlayAtSpecifiedRate)
+            } else if keyPath == "status", let item = object as? AVPlayerItem {
+                if item.status == .failed {
+                    self.errorMessage = item.error?.localizedDescription ?? "播放器加载失败"
+                    self.isLoading = false
+                }
+            }
+        }
+    }
+    
+    func stopPlaying() {
+        if let player = player {
+            player.pause()
+            player.removeObserver(self, forKeyPath: "timeControlStatus")
+            if let currentItem = player.currentItem {
+                currentItem.removeObserver(self, forKeyPath: "status")
+            }
+        }
+        player = nil
+        // Cancel loading logic
+        resourceLoaderDelegate?.cancelAll()
+        resourceLoaderDelegate = nil
+    }
+    
+    deinit {
+        stopPlaying()
+    }
+}
+
+// MARK: - Custom Resource Loader Delegate
+
+class CustomResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate {
+    
+    private let fileId: Int64
+    private let expectedSize: Int64
+    
+    // 保存正在处理的请求
+    private var pendingRequests: [AVAssetResourceLoadingRequest] = []
+    
+    // 当前的活跃任务
+    private var activeTaskInfo: RequestTaskInfo?
+    
+    init(fileId: Int64, expectedSize: Int64) {
+        self.fileId = fileId
+        self.expectedSize = expectedSize
+        super.init()
+    }
+    
+    // MARK: - AVAssetResourceLoaderDelegate Methods
+    
+    /// 当播放器需要数据时调用
+    func resourceLoader(_ resourceLoader: AVAssetResourceLoader, shouldWaitForLoadingOfRequestedResource loadingRequest: AVAssetResourceLoadingRequest) -> Bool {
+        print("▶️ [ResourceLoader] Received request: offset=\(loadingRequest.dataRequest?.requestedOffset ?? 0), length=\(loadingRequest.dataRequest?.requestedLength ?? 0)")
+        
+        pendingRequests.append(loadingRequest)
+        processPendingRequests()
+        
+        return true
+    }
+    
+    /// 当播放器取消某次数据请求时调用 (例如快进/快退/拖动进度条)
+    func resourceLoader(_ resourceLoader: AVAssetResourceLoader, didCancel loadingRequest: AVAssetResourceLoadingRequest) {
+        print("⏹ [ResourceLoader] Cancelled request: offset=\(loadingRequest.dataRequest?.requestedOffset ?? 0)")
+        
+        if let index = pendingRequests.firstIndex(of: loadingRequest) {
+            pendingRequests.remove(at: index)
+        }
+        
+        // 如果取消的是当前正在执行的请求，则中止当前的 Socket 任务
+        if let currentInfo = activeTaskInfo, currentInfo.request == loadingRequest {
+            print("⏹ [ResourceLoader] 正在中止活跃任务")
+            currentInfo.isCancelled = true
+            activeTaskInfo = nil
+            // 稍等重新处理剩余请求
+            processPendingRequests()
+        }
+    }
+    
+    // MARK: - Internal Processing
+    
+    private func processPendingRequests() {
+        // 如果当前有任务正在执行且未被取消，就等待它完成
+        if let current = activeTaskInfo, !current.isCancelled {
+            // 但如果发现有一个请求的 offset 发生极大的跳跃，AVPlayer 会下发新的 LoadingRequest 并调用 didCancel 取消旧的，
+            // 上面的 didCancel 已经负责清理 current 任务。
+            return
+        }
+        
+        guard let request = pendingRequests.first else { return }
+        
+        guard let dataRequest = request.dataRequest else {
+            request.finishLoading()
+            pendingRequests.removeFirst()
+            return
+        }
+        
+        // 填充 Content Information，让播放器知道大文件的总长度
+        if let contentInfoRequest = request.contentInformationRequest {
+            contentInfoRequest.contentType = "public.mpeg-4"
+            contentInfoRequest.contentLength = expectedSize
+            contentInfoRequest.isByteRangeAccessSupported = true
+        }
+        
+        let requestedOffset = dataRequest.requestedOffset
+        let requestedLength = Int64(dataRequest.requestedLength)
+        
+        print("🚀 [ResourceLoader] Start streaming for Offset: \(requestedOffset), length: \(requestedLength)")
+        
+        let taskInfo = RequestTaskInfo(request: request)
+        self.activeTaskInfo = taskInfo
+        
+        // 使用 Task 启动网络请求
+        Task {
+            do {
+                guard let ds = self.getStreamingService() else {
+                    throw NSError(domain: "StreamingService", code: -1, userInfo: [NSLocalizedDescriptionKey: "无法获取 Streaming Service"])
+                }
+                
+                try await ds.startCustomVideoStreaming(fileId: self.fileId, startOffset: requestedOffset, delegate: taskInfo)
+                
+            } catch {
+                print("❌ [ResourceLoader] Socket 流式请求报错: \(error)")
+                if !taskInfo.isCancelled {
+                    request.finishLoading(with: error)
+                    self.finishCurrentRequest(taskInfo)
+                }
+            }
+        }
+    }
+    
+    private func finishCurrentRequest(_ info: RequestTaskInfo) {
+        if self.activeTaskInfo === info {
+            self.activeTaskInfo = nil
+            if let index = self.pendingRequests.firstIndex(of: info.request) {
+                self.pendingRequests.remove(at: index)
+            }
+            // 接着处理下一个
+            self.processPendingRequests()
+        }
+    }
+    
+    func cancelAll() {
+        activeTaskInfo?.isCancelled = true
+        for req in pendingRequests {
+            req.finishLoading()
+        }
+        pendingRequests.removeAll()
+        activeTaskInfo = nil
+    }
+    
+    private func getStreamingService() -> VideoStreamingService? {
+        return VideoStreamingService(socketManager: SocketManager.shared)
+    }
+    
+    @MainActor
+    private func getDirectoryService() -> chat_storage.DirectoryService? {
+        return chat_storage.DirectoryService(socketManager: SocketManager.shared)
+    }
+}
+
+// MARK: - Task Info Holder
+class RequestTaskInfo: VideoStreamLoaderDelegate {
+    let request: AVAssetResourceLoadingRequest
+    var isCancelled = false
+    
+    init(request: AVAssetResourceLoadingRequest) {
+        self.request = request
+    }
+    
+    func didReceiveContentInfo(totalSize: Int64, mimeType: String) {
+        guard !isCancelled else { return }
+        if let contentInfoRequest = request.contentInformationRequest {
+            contentInfoRequest.contentType = "public.mpeg-4"
+            contentInfoRequest.contentLength = totalSize
+            contentInfoRequest.isByteRangeAccessSupported = true
+        }
+    }
+    
+    func didReceiveVideoData(_ data: Data, range: Range<Int64>) {
+        guard !isCancelled else { return }
+        request.dataRequest?.respond(with: data)
+        
+        // 如果已经响应了所有请求的长度，则结束请求
+        if let dataRequest = request.dataRequest {
+            if dataRequest.currentOffset >= dataRequest.requestedOffset + Int64(dataRequest.requestedLength) {
+                print("✅ [ResourceLoader] AVPlayer 请求的数据长度已经满足，提前完成")
+                request.finishLoading()
+                isCancelled = true // 阻止后续回调
+            }
+        }
+    }
+    
+    func didFinishLoading() {
+        guard !isCancelled else { return }
+        print("✅ [ResourceLoader] 服务端所有数据发送完成")
+        request.finishLoading()
+        isCancelled = true
+    }
+    
+    func didFail(with error: Error) {
+        guard !isCancelled else { return }
+        print("❌ [ResourceLoader] 发生错误: \(error)")
+        request.finishLoading(with: error)
+        isCancelled = true
     }
 }

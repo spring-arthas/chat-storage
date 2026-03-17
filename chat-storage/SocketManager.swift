@@ -587,7 +587,7 @@ extension SocketManager {
         }
         
         // 3. 未找到对应的等待者
-        // print("⚠️ 收到未预期的帧类型: \(frame.type.description) (No waiter found)")
+        print("⚠️ 收到未预期的帧类型: \(frame.type.description) (No waiter found)")
     }
     
     /// 打印帧的可视化数据（用于调试）

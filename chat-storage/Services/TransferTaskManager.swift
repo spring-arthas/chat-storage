@@ -121,6 +121,9 @@ class TransferTaskManager: ObservableObject {
         print("✅ [提交任务] ID: \(id), Name: \(task.name)")
         print("📋 [提交任务] 当前 pendingQueue 大小: \(pendingQueue.count), activeTasks 大小: \(activeTasks.count)")
         
+        let dumpStatus = activeTasks.keys.joined(separator: ", ")
+        print("📋 [DEBUG] 当前 execution keys: \(dumpStatus)")
+        
         scheduleNext()
     }
     
@@ -319,8 +322,12 @@ class TransferTaskManager: ObservableObject {
                 var attempts = 0
                 while socketManager.connectionState != .connected {
                     if attempts > 50 { 
-                        print("❌ 连接超时: \(transferPort)")
+                        print("❌ 连接超时: \(transferPort), 状态: \(socketManager.connectionState)")
                         throw FileTransferError.connectionLost 
+                    }
+                    if case .error(let str) = socketManager.connectionState {
+                        print("❌ 连接错误: \(str) on port \(transferPort)")
+                        throw FileTransferError.connectionLost
                     }
                     try await Task.sleep(nanoseconds: 100_000_000) // 0.1s
                     attempts += 1
