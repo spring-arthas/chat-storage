@@ -7,26 +7,44 @@
 
 import Foundation
 
-/// 视频流服务 — 不绑定 MainActor，可从任意 async 上下文调用
-class VideoStreamingService {
+/// 视频流服务。
+/// 为了避免和主业务连接的帧处理互相干扰，每一次视频流请求都使用独立的 SocketManager。
+final class VideoStreamingService {
     private let socketManager: SocketManager
+    private let targetHost: String
+    private let targetPort: UInt32
 
-    init(socketManager: SocketManager) {
-        self.socketManager = socketManager
+    private let stateLock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var isCancelled = false
+    private var hasCompleted = false
+    private var hasDisconnectedSocket = false
+
+    init(host: String, port: UInt32 = 10088) {
+        self.targetHost = host
+        self.targetPort = port
+        self.socketManager = SocketManager()
     }
 
-    /// 从指定 offset 开始流式拉取视频数据
-    func startCustomVideoStreaming(fileId: Int64,
-                                   startOffset: Int64,
-                                   delegate: VideoStreamLoaderDelegate) async throws {
-        print("🎥 [Stream] 请求视频流: fileId=\(fileId) range-start=\(startOffset)")
+    convenience init() {
+        let (host, _) = SocketManager.shared.getCurrentServer()
+        self.init(host: host)
+    }
+
+    deinit {}
+
+    func startCustomVideoStreaming(
+        fileId: Int64,
+        startOffset: Int64,
+        delegate: VideoStreamLoaderDelegate
+    ) async throws {
+        try await connectIfNeeded()
 
         let taskId = UUID().uuidString
-
         let request: [String: Any] = [
             "fileId": fileId,
             "taskId": taskId,
-            "startOffset": startOffset
+            "startOffset": startOffset,
         ]
 
         guard let requestData = try? JSONSerialization.data(withJSONObject: request) else {
@@ -36,66 +54,182 @@ class VideoStreamingService {
         let requestFrame = Frame(type: .metaFrame, data: requestData, flags: 0x00)
         try socketManager.sendFrame(requestFrame)
 
-        return try await withCheckedThrowingContinuation { continuation in
-            var receivedSize: Int64 = startOffset
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                storeContinuation(continuation)
+                var receivedSize = startOffset
 
-            let types: Set<FrameTypeEnum> = [.metaFrame, .dataFrame, .endFrame, .fileResponse, .ackFrame]
+                let types: Set<FrameTypeEnum> = [.metaFrame, .dataFrame, .endFrame, .fileResponse, .ackFrame]
+                socketManager.registerStreamHandler(for: types) { [weak self] frame in
+                    guard let self = self else { return false }
 
-            socketManager.registerStreamHandler(for: types) { [self] frame in
-                switch frame.type {
-                case .ackFrame, .metaFrame:
-                    if let jsonString = String(data: frame.data, encoding: .utf8),
-                       let data = jsonString.data(using: .utf8),
-                       let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-
-                        if let status = dict["status"] as? String, (status == "error" || status == "fail") {
-                            let msg = dict["message"] as? String ?? "未知错误"
-                            let err = DirectoryError.serverError(code: -1, message: msg)
-                            delegate.didFail(with: err)
-                            continuation.resume(throwing: err)
-                            return false
-                        }
-
-                        if let size = dict["fileSize"] as? Int64 {
-                            delegate.didReceiveContentInfo(totalSize: size, mimeType: "video/mp4")
-
-                            let readyAck: [String: Any] = ["taskId": taskId, "status": "ready"]
-                            if let readyData = try? JSONSerialization.data(withJSONObject: readyAck) {
-                                let readyFrame = Frame(type: .ackFrame, data: readyData, flags: 0x00)
-                                try? self.socketManager.sendFrame(readyFrame)
-                            }
-                        }
-                    }
-                    return true
-
-                case .dataFrame:
-                    let data = frame.data
-                    let range = receivedSize..<receivedSize + Int64(data.count)
-                    delegate.didReceiveVideoData(data, range: range)
-                    receivedSize += Int64(data.count)
-                    return true
-
-                case .endFrame:
-                    print("✅ [Stream] 视频流片段发送结束")
-                    delegate.didFinishLoading()
-                    continuation.resume()
-                    return false
-
-                case .fileResponse:
-                    if let dict = try? FrameParser.decodeAsDictionary(frame),
-                       let code = dict["code"] as? Int, code != 200 {
-                        let msg = dict["message"] as? String ?? "Stream Fail"
-                        let error = DirectoryError.serverError(code: code, message: msg)
-                        delegate.didFail(with: error)
-                        continuation.resume(throwing: error)
+                    if self.currentlyCancelled {
+                        self.complete(.failure(CancellationError()))
                         return false
                     }
-                    return true
 
-                default:
-                    return true
+                    switch frame.type {
+                    case .ackFrame, .metaFrame:
+                        if let jsonString = String(data: frame.data, encoding: .utf8),
+                           let data = jsonString.data(using: .utf8),
+                           let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+
+                            if let status = dict["status"] as? String, (status == "error" || status == "fail") {
+                                let msg = dict["message"] as? String ?? "未知错误"
+                                let error = DirectoryError.serverError(code: -1, message: msg)
+                                delegate.didFail(with: error)
+                                self.complete(.failure(error))
+                                return false
+                            }
+
+                            if let size = Self.int64Value(from: dict["fileSize"]) {
+                                delegate.didReceiveContentInfo(totalSize: size, mimeType: "video/mp4")
+
+                                let readyAck: [String: Any] = ["taskId": taskId, "status": "ready"]
+                                if let readyData = try? JSONSerialization.data(withJSONObject: readyAck) {
+                                    let readyFrame = Frame(type: .ackFrame, data: readyData, flags: 0x00)
+                                    try? self.socketManager.sendFrame(readyFrame)
+                                }
+                            }
+                        }
+                        return true
+
+                    case .dataFrame:
+                        let data = frame.data
+                        let range = receivedSize..<(receivedSize + Int64(data.count))
+                        delegate.didReceiveVideoData(data, range: range)
+                        receivedSize += Int64(data.count)
+                        return !self.currentlyCancelled
+
+                    case .endFrame:
+                        delegate.didFinishLoading()
+                        self.complete(.success(()))
+                        return false
+
+                    case .fileResponse:
+                        if let dict = try? FrameParser.decodeAsDictionary(frame),
+                           let code = dict["code"] as? Int, code != 200 {
+                            let msg = dict["message"] as? String ?? "Stream Fail"
+                            let error = DirectoryError.serverError(code: code, message: msg)
+                            delegate.didFail(with: error)
+                            self.complete(.failure(error))
+                            return false
+                        }
+                        return true
+
+                    default:
+                        return true
+                    }
                 }
             }
+        } onCancel: {
+            self.cancel()
+        }
+    }
+
+    func cancel() {
+        stateLock.lock()
+        if hasCompleted || isCancelled {
+            stateLock.unlock()
+            return
+        }
+
+        isCancelled = true
+        let continuation = self.continuation
+        self.continuation = nil
+        hasCompleted = true
+        let shouldDisconnect = !hasDisconnectedSocket
+        hasDisconnectedSocket = true
+        stateLock.unlock()
+
+        if shouldDisconnect {
+            disconnectSocket()
+        }
+        continuation?.resume(throwing: CancellationError())
+    }
+
+    private var currentlyCancelled: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return isCancelled
+    }
+
+    private func storeContinuation(_ continuation: CheckedContinuation<Void, Error>) {
+        stateLock.lock()
+        self.continuation = continuation
+        stateLock.unlock()
+    }
+
+    private func complete(_ result: Result<Void, Error>) {
+        stateLock.lock()
+        guard !hasCompleted else {
+            stateLock.unlock()
+            return
+        }
+
+        hasCompleted = true
+        let continuation = self.continuation
+        self.continuation = nil
+        let shouldDisconnect = !hasDisconnectedSocket
+        hasDisconnectedSocket = true
+        stateLock.unlock()
+
+        if shouldDisconnect {
+            disconnectSocket()
+        }
+
+        guard let continuation else { return }
+        switch result {
+        case .success:
+            continuation.resume()
+        case .failure(let error):
+            continuation.resume(throwing: error)
+        }
+    }
+
+    private func connectIfNeeded() async throws {
+        if socketManager.connectionState == .connected {
+            return
+        }
+
+        await MainActor.run {
+            self.socketManager.switchConnection(host: self.targetHost, port: self.targetPort)
+        }
+
+        var attempts = 0
+        while attempts < 50 {
+            switch socketManager.connectionState {
+            case .connected:
+                return
+            case .error(let message):
+                throw DirectoryError.serverError(code: -1, message: message)
+            default:
+                attempts += 1
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+
+        throw SocketError.timeout
+    }
+
+    private func disconnectSocket() {
+        Task { @MainActor in
+            self.socketManager.disconnect(notifyUI: false)
+        }
+    }
+
+    private static func int64Value(from value: Any?) -> Int64? {
+        switch value {
+        case let intValue as Int64:
+            return intValue
+        case let intValue as Int:
+            return Int64(intValue)
+        case let number as NSNumber:
+            return number.int64Value
+        case let string as String:
+            return Int64(string)
+        default:
+            return nil
         }
     }
 }
