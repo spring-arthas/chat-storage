@@ -27,17 +27,14 @@ class TransferTaskManager: ObservableObject {
     /// 最大并发数
     private let maxConcurrentTasks = 5
     
-    /// 正在执行的任务
-    private var activeTasks: [String: Task<Void, Never>] = [:]
+    /// 任务状态 (async-safe)
+    private struct TaskState {
+        var activeTasks: [String: Task<Void, Never>] = [:]
+        var pendingQueue: [StorageTransferTask] = []
+        var tasks: [String: StorageTransferTask] = [:]
+    }
     
-    /// 等待队列
-    private var pendingQueue: [StorageTransferTask] = []
-    
-    /// 任务映射表 (存储任务详情)
-    private var tasks: [String: StorageTransferTask] = [:]
-    
-    /// 锁 (保护 activeTasks 和 pendingQueue)
-    private let lock = NSLock()
+    private let state = ManagedCriticalState(TaskState())
     
     private init() {
         // 从数据库恢复未完成的任务
@@ -99,11 +96,12 @@ class TransferTaskManager: ObservableObject {
                 status: entity.status ?? "已暂停"
             )
             
-            tasks[taskIdString] = task
+            state.withCriticalRegion { $0.tasks[taskIdString] = task }
             print("✅ 恢复任务: \(fileName), 进度: \(Int(task.progress * 100))%")
         }
-        
-        print("✅ 成功恢复 \(tasks.count) 个任务")
+
+        let restoredCount = state.withCriticalRegion { $0.tasks.count }
+        print("✅ 成功恢复 \(restoredCount) 个任务")
     }
     
     // MARK: - Public Methods
@@ -111,17 +109,18 @@ class TransferTaskManager: ObservableObject {
     /// 提交任务
     /// - Parameter task: 传输任务
     func submit(task: StorageTransferTask) {
-        lock.lock()
         // Ensure ID is String
         let id = task.id.uuidString
-        tasks[id] = task
-        pendingQueue.append(task)
-        lock.unlock()
+        let counts = state.withCriticalRegion { state -> (pendingCount: Int, activeCount: Int) in
+            state.tasks[id] = task
+            state.pendingQueue.append(task)
+            return (state.pendingQueue.count, state.activeTasks.count)
+        }
         
         print("✅ [提交任务] ID: \(id), Name: \(task.name)")
-        print("📋 [提交任务] 当前 pendingQueue 大小: \(pendingQueue.count), activeTasks 大小: \(activeTasks.count)")
+        print("📋 [提交任务] 当前 pendingQueue 大小: \(counts.pendingCount), activeTasks 大小: \(counts.activeCount)")
         
-        let dumpStatus = activeTasks.keys.joined(separator: ", ")
+        let dumpStatus = state.withCriticalRegion { $0.activeTasks.keys.joined(separator: ", ") }
         print("📋 [DEBUG] 当前 execution keys: \(dumpStatus)")
         
         scheduleNext()
@@ -131,22 +130,27 @@ class TransferTaskManager: ObservableObject {
     /// - Parameter id: 任务ID
     func pause(id: UUID) {
         let idStr = id.uuidString
-        lock.lock()
+        var runningTask: Task<Void, Never>?
+        var removedPending = false
         
-        // 1. 如果在执行中，取消 Task
-        if let runningTask = activeTasks[idStr] {
+        state.withCriticalRegion { state in
+            if let task = state.activeTasks.removeValue(forKey: idStr) {
+                runningTask = task
+            }
+            if let index = state.pendingQueue.firstIndex(where: { $0.id.uuidString == idStr }) {
+                state.pendingQueue.remove(at: index)
+                removedPending = true
+            }
+        }
+        
+        if let runningTask {
             runningTask.cancel()
-            activeTasks.removeValue(forKey: idStr)
             updateTaskStatus(id: idStr, status: "暂停")
         }
         
-        // 2. 如果在等待队列中，移除
-        if let index = pendingQueue.firstIndex(where: { $0.id.uuidString == idStr }) {
-            pendingQueue.remove(at: index)
+        if removedPending {
             updateTaskStatus(id: idStr, status: "暂停")
         }
-        
-        lock.unlock() // 必须先释放锁，再调度，因为 scheduleNext 也会加锁
         
         // 调度下一个
         scheduleNext()
@@ -156,29 +160,35 @@ class TransferTaskManager: ObservableObject {
     /// - Parameter id: 任务ID
     func resume(id: UUID) {
         let idStr = id.uuidString
-        lock.lock()
-        guard let task = tasks[idStr] else {
+        var task: StorageTransferTask?
+        var alreadyQueued = false
+        
+        state.withCriticalRegion { state in
+            task = state.tasks[idStr]
+            if state.activeTasks[idStr] != nil || state.pendingQueue.contains(where: { $0.id.uuidString == idStr }) {
+                alreadyQueued = true
+                return
+            }
+            if let task {
+                state.pendingQueue.append(task)
+            }
+        }
+        
+        guard let task else {
             print("❌ [恢复任务失败] 找不到任务实例: \(idStr)")
-            lock.unlock()
             return
         }
         
-        // 如果已经在执行或等待中，忽略
-        if activeTasks[idStr] != nil || pendingQueue.contains(where: { $0.id.uuidString == idStr }) {
+        if alreadyQueued {
             print("⚠️ [恢复任务忽略] 任务已在执行或等待队列中: \(task.name)")
-            lock.unlock()
             return
         }
         
         print("🔄 [恢复任务] 重新加入队列: \(task.name)")
         
-        pendingQueue.append(task)
-        
         // 根据任务类型更新状态
         let status = task.taskType == .upload ? "等待上传" : "等待下载"
         updateTaskStatus(id: idStr, status: status)
-        
-        lock.unlock() // 必须先释放锁，再调度
         
         scheduleNext()
     }
@@ -189,10 +199,14 @@ class TransferTaskManager: ObservableObject {
         let idStr = id.uuidString
         pause(id: id)
         
-        lock.lock()
-        tasks.removeValue(forKey: idStr)
+        state.withCriticalRegion { state in
+            state.tasks.removeValue(forKey: idStr)
+            state.activeTasks.removeValue(forKey: idStr)
+            if let index = state.pendingQueue.firstIndex(where: { $0.id.uuidString == idStr }) {
+                state.pendingQueue.remove(at: index)
+            }
+        }
         taskUpdates.removeValue(forKey: idStr)
-        lock.unlock()
         
         // 同时从数据库删除
         PersistenceManager.shared.deleteTask(taskId: idStr)
@@ -200,35 +214,31 @@ class TransferTaskManager: ObservableObject {
     
     /// 清除所有已完成的任务 (内存 + 数据库)
     func clearCompletedTasks() {
-        lock.lock()
+        let idsToRemove = state.withCriticalRegion { state -> [String] in
+            var ids: [String] = []
+            for (id, task) in state.tasks {
+                if let update = taskUpdates[id], (update.0 == "已完成" || update.0 == "Completed") {
+                    ids.append(id)
+                } else if task.status == "已完成" || task.status == "Completed" {
+                    ids.append(id)
+                }
+            }
+            return ids
+        }
         
-        // 1. 找出所有已完成的任务ID (status == "已完成" 或 internal check)
-        // 注意：这里我们主要依靠 taskUpdates 中的状态，或者 tasks 中的状态
-        // 由于 tasks 中的 status 可能不是最新的（status更新主要在 taskUpdates），我们需要结合判断
-        
-        var idsToRemove: [String] = []
-        
-        for (id, task) in tasks {
-            // Check taskUpdates first for latest status
-            if let update = taskUpdates[id], (update.0 == "已完成" || update.0 == "Completed") {
-                idsToRemove.append(id)
-            } else if task.status == "已完成" || task.status == "Completed" {
-                idsToRemove.append(id)
+        state.withCriticalRegion { state in
+            for id in idsToRemove {
+                state.tasks.removeValue(forKey: id)
+                state.activeTasks.removeValue(forKey: id)
+                if let index = state.pendingQueue.firstIndex(where: { $0.id.uuidString == id }) {
+                    state.pendingQueue.remove(at: index)
+                }
             }
         }
         
-        // 2. 从内存移除
         for id in idsToRemove {
-            tasks.removeValue(forKey: id)
             taskUpdates.removeValue(forKey: id)
-            // 已完成的任务应该不在 activeTasks 或 pendingQueue 中，但为了保险起见检查一下
-            activeTasks.removeValue(forKey: id)
-            if let index = pendingQueue.firstIndex(where: { $0.id.uuidString == id }) {
-                pendingQueue.remove(at: index)
-            }
         }
-        
-        lock.unlock()
         
         print("🧹 [TransferTaskManager] 内存中已清除 \(idsToRemove.count) 个已完成任务")
         
@@ -238,45 +248,49 @@ class TransferTaskManager: ObservableObject {
 
     /// 恢复任务 (仅用于从持久化恢复，不立即执行)
     func restore(task: StorageTransferTask, status: String, progress: Double) {
-        lock.lock()
         let idStr = task.id.uuidString
-        tasks[idStr] = task
+        state.withCriticalRegion { $0.tasks[idStr] = task }
         // 初始化状态
         taskUpdates[idStr] = (status, progress, "")
-        lock.unlock()
     }
     
     /// 获取所有任务详情 (用于 UI 恢复)
     func getAllTasks() -> [StorageTransferTask] {
-        lock.lock()
-        defer { lock.unlock() }
-        return Array(tasks.values)
+        state.withCriticalRegion { Array($0.tasks.values) }
     }
     
     // MARK: - Private Methods
     
     /// 调度下一个任务
     private func scheduleNext() {
-        lock.lock()
-        defer { lock.unlock() }
-        
-        print("📅 [scheduleNext] 被调用 - 当前 activeTasks: \(activeTasks.count)/\(maxConcurrentTasks), pendingQueue: \(pendingQueue.count)")
-        
-        // 如果已达到最大并发，不调度新任务
-        guard activeTasks.count < maxConcurrentTasks else {
-            print("⚠️ [scheduleNext] 已达到最大并发限制")
-            return 
+        let decision = state.withCriticalRegion { state -> (activeCount: Int, pendingCount: Int, task: StorageTransferTask?) in
+            let activeCount = state.activeTasks.count
+            let pendingCount = state.pendingQueue.count
+            
+            guard activeCount < maxConcurrentTasks else {
+                return (activeCount, pendingCount, nil)
+            }
+            
+            guard let task = state.pendingQueue.first else {
+                return (activeCount, pendingCount, nil)
+            }
+            
+            state.pendingQueue.removeFirst()
+            return (activeCount, pendingCount, task)
         }
         
-        // 获取下一个等待任务
-        guard let task = pendingQueue.first else { 
-            print("ℹ️ [scheduleNext] pendingQueue 为空，无任务可调度")
-            return 
+        print("📅 [scheduleNext] 被调用 - 当前 activeTasks: \(decision.activeCount)/\(maxConcurrentTasks), pendingQueue: \(decision.pendingCount)")
+        
+        guard let task = decision.task else {
+            if decision.activeCount >= maxConcurrentTasks {
+                print("⚠️ [scheduleNext] 已达到最大并发限制")
+            } else {
+                print("ℹ️ [scheduleNext] pendingQueue 为空，无任务可调度")
+            }
+            return
         }
         
-        pendingQueue.removeFirst()
         let idStr = task.id.uuidString
-        
         print("✅ [scheduleNext] 开始执行任务: \(task.name) (ID: \(idStr))")
         startTask(task)
     }
@@ -387,15 +401,13 @@ class TransferTaskManager: ObservableObject {
             }
             
             // 任务结束清理
-            self.lock.lock()
-            self.activeTasks.removeValue(forKey: idStr)
-            self.lock.unlock()
+            self.state.withCriticalRegion { $0.activeTasks.removeValue(forKey: idStr) }
             
             // 调度下一个
             self.scheduleNext()
         }
         
-        activeTasks[idStr] = executionTask
+        state.withCriticalRegion { $0.activeTasks[idStr] = executionTask }
     }
     
     // MARK: - Database Helpers
@@ -437,5 +449,3 @@ class TransferTaskManager: ObservableObject {
         }
     }
 }
-
-

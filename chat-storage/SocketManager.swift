@@ -745,7 +745,7 @@ extension SocketManager {
         let responseFrame = try await sendFrameAndWait(frame, expecting: .chatClearUnreadRes, timeout: 5.0)
         
         if let rawJson = String(data: responseFrame.data, encoding: .utf8) {
-            print("🔍 [clearUnreadCount] Receive 0x56 Raw JSON: \\(rawJson)")
+            print("🔍 [clearUnreadCount] Receive 0x56 Raw JSON: \(rawJson)")
         }
         
         // 解析 {"status":"SUCCESS/FALSE"} 或通用结构

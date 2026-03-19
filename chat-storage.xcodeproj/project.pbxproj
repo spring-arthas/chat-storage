@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		1A9C1AFBF514D6EB09347A01 /* VideoWindowManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C25750653B3817FE0C7D25A /* VideoWindowManager.swift */; };
 		4E15EB1D2F2B48230093C805 /* chat_storageApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E15EB1C2F2B48230093C805 /* chat_storageApp.swift */; };
 		4E15EB1F2F2B48230093C805 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E15EB1E2F2B48230093C805 /* ContentView.swift */; };
 		4E15EB212F2B48250093C805 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4E15EB202F2B48250093C805 /* Assets.xcassets */; };
@@ -42,6 +43,11 @@
 		767210272F2DADC20067C257 /* MainChatStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 767210262F2DADC20067C257 /* MainChatStorage.swift */; };
 		767210292F2DE4D70067C257 /* DirectoryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 767210282F2DE4D70067C257 /* DirectoryService.swift */; };
 		7672102B2F2DE52C0067C257 /* FileDto.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7672102A2F2DE52C0067C257 /* FileDto.swift */; };
+		8A4C2D1E6F708192A3B4C5D6 /* ManagedCriticalState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A4C2D1E6F708192A3B4C5D5 /* ManagedCriticalState.swift */; };
+		8A4C2D1E6F708192A3B4C5D8 /* VideoStreamingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A4C2D1E6F708192A3B4C5D7 /* VideoStreamingService.swift */; };
+		9F6A1C2B3D4E5F60718293A5 /* LocalMediaServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F6A1C2B3D4E5F60718293A4 /* LocalMediaServer.swift */; };
+		F367581AF0A30FDA474AEFE6 /* StreamingVideoPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F0DEAC3AAE6F6EDB94346C /* StreamingVideoPlayer.swift */; };
+		F376FF2A8792AEC068D20113 /* AVKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BD0B61B09A0C287FDAA8E760 /* AVKit.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -101,6 +107,12 @@
 		767210262F2DADC20067C257 /* MainChatStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainChatStorage.swift; sourceTree = "<group>"; };
 		767210282F2DE4D70067C257 /* DirectoryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectoryService.swift; sourceTree = "<group>"; };
 		7672102A2F2DE52C0067C257 /* FileDto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileDto.swift; sourceTree = "<group>"; };
+		8A4C2D1E6F708192A3B4C5D5 /* ManagedCriticalState.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ManagedCriticalState.swift; sourceTree = "<group>"; };
+		8A4C2D1E6F708192A3B4C5D7 /* VideoStreamingService.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = VideoStreamingService.swift; sourceTree = "<group>"; };
+		8C25750653B3817FE0C7D25A /* VideoWindowManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VideoWindowManager.swift; sourceTree = "<group>"; };
+		9F6A1C2B3D4E5F60718293A4 /* LocalMediaServer.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = LocalMediaServer.swift; sourceTree = "<group>"; };
+		BD0B61B09A0C287FDAA8E760 /* AVKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVKit.framework; path = System/Library/Frameworks/AVKit.framework; sourceTree = SDKROOT; };
+		C2F0DEAC3AAE6F6EDB94346C /* StreamingVideoPlayer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Views/StreamingVideoPlayer.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -108,6 +120,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F376FF2A8792AEC068D20113 /* AVKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -128,6 +141,22 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		2B34E503ABB01A5B19A8854B /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				BD0B61B09A0C287FDAA8E760 /* AVKit.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		2FE232A5382CAF6ABA522A1B /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				C2F0DEAC3AAE6F6EDB94346C /* StreamingVideoPlayer.swift */,
+			);
+			name = Views;
+			sourceTree = "<group>";
+		};
 		4E15EB102F2B48230093C805 = {
 			isa = PBXGroup;
 			children = (
@@ -135,6 +164,7 @@
 				4E15EB322F2B48250093C805 /* chat-storageTests */,
 				4E15EB3C2F2B48250093C805 /* chat-storageUITests */,
 				4E15EB1A2F2B48230093C805 /* Products */,
+				2B34E503ABB01A5B19A8854B /* Frameworks */,
 			);
 			sourceTree = "<group>";
 		};
@@ -171,6 +201,7 @@
 				4E15EB2A2F2B48250093C805 /* chat_storage.entitlements */,
 				4E15EB272F2B48250093C805 /* chat_storage.xcdatamodeld */,
 				4E15EB222F2B48250093C805 /* Preview Content */,
+				2FE232A5382CAF6ABA522A1B /* Views */,
 			);
 			path = "chat-storage";
 			sourceTree = "<group>";
@@ -242,13 +273,17 @@
 			isa = PBXGroup;
 			children = (
 				4E2B8E3A2F37294600EE9F33 /* FileDownloadService.swift */,
+				8A4C2D1E6F708192A3B4C5D5 /* ManagedCriticalState.swift */,
+				9F6A1C2B3D4E5F60718293A4 /* LocalMediaServer.swift */,
 				4E2B8E362F37294600EE9F33 /* RecursiveDirectoryView.swift */,
 				4E2B8E392F37294600EE9F33 /* StorageTransferTask.swift */,
 				4E2B8E372F37294600EE9F33 /* TransferModels.swift */,
 				4E2B8E382F37294600EE9F33 /* VideoPlayerView.swift */,
+				8A4C2D1E6F708192A3B4C5D7 /* VideoStreamingService.swift */,
 				4E2B8E352F37294600EE9F33 /* VideoStreamLoaderDelegate.swift */,
 				767210282F2DE4D70067C257 /* DirectoryService.swift */,
 				4ED769D02F2CB903006CFB2F /* AuthenticationService.swift */,
+				8C25750653B3817FE0C7D25A /* VideoWindowManager.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -393,6 +428,8 @@
 				4ED769D12F2CB903006CFB2F /* AuthenticationService.swift in Sources */,
 				4ED7699A2F2C4D6D006CFB2F /* LoginView.swift in Sources */,
 				4E2B8E412F37294600EE9F33 /* FileDownloadService.swift in Sources */,
+				8A4C2D1E6F708192A3B4C5D6 /* ManagedCriticalState.swift in Sources */,
+				9F6A1C2B3D4E5F60718293A5 /* LocalMediaServer.swift in Sources */,
 				4ED769A52F2CB198006CFB2F /* SocketManager+FrameHandling.swift in Sources */,
 				4ED769CB2F2CB8F4006CFB2F /* FrameParser.swift in Sources */,
 				4ED7699C2F2C52F8006CFB2F /* SocketManager.swift in Sources */,
@@ -413,6 +450,9 @@
 				4ED769CD2F2CB8F4006CFB2F /* FrameBuilder.swift in Sources */,
 				767210292F2DE4D70067C257 /* DirectoryService.swift in Sources */,
 				4E2B8E3F2F37294600EE9F33 /* VideoPlayerView.swift in Sources */,
+				8A4C2D1E6F708192A3B4C5D8 /* VideoStreamingService.swift in Sources */,
+				1A9C1AFBF514D6EB09347A01 /* VideoWindowManager.swift in Sources */,
+				F367581AF0A30FDA474AEFE6 /* StreamingVideoPlayer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -572,6 +612,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"chat-storage/Preview Content\"";
+				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";

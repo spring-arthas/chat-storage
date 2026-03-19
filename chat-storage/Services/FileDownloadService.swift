@@ -18,22 +18,16 @@ public class FileDownloadService {
     
     // MARK: - 取消机制
     
-    /// 取消标志
-    private var isCancelled = false
-    
-    /// 取消锁
-    private let cancelLock = NSLock()
+    /// 取消标志 (async-safe)
+    private let cancelState = ManagedCriticalState(false)
     
     // MARK: - 异步写入队列 (流控核心)
     
     /// 异步写入操作队列 (串行执行,保证写入顺序)
     private let writeOperationQueue = OperationQueue()
     
-    /// 待写入数据块队列
-    private var pendingWrites: [Data] = []
-    
-    /// 队列锁
-    private let writeLock = NSLock()
+    /// 待写入数据块队列 (async-safe)
+    private let pendingWritesState = ManagedCriticalState<[Data]>([])
     
     /// 最大待写入数据块数量 (背压阈值)
     /// 当队列达到此值时,触发背压,暂停接收
@@ -42,11 +36,8 @@ public class FileDownloadService {
     /// 背压恢复阈值 (队列降到此值以下时恢复接收)
     private let resumeThreshold = 50
     
-    /// 背压状态标记
-    private var isBackpressureActive = false
-    
-    /// 背压锁
-    private let backpressureLock = NSLock()
+    /// 背压状态标记 (async-safe)
+    private let backpressureState = ManagedCriticalState(false)
     
     public init(socketManager: SocketManager) {
         self.socketManager = socketManager
@@ -61,9 +52,7 @@ public class FileDownloadService {
     
     /// 取消下载
     public func cancel() {
-        cancelLock.lock()
-        isCancelled = true
-        cancelLock.unlock()
+        cancelState.withCriticalRegion { $0 = true }
         
         print("🛑 [下载] 收到取消请求")
     }
@@ -76,10 +65,7 @@ public class FileDownloadService {
     
     /// 检查是否已取消
     private func checkCancellation() -> Bool {
-        cancelLock.lock()
-        let cancelled = isCancelled
-        cancelLock.unlock()
-        return cancelled
+        cancelState.withCriticalRegion { $0 }
     }
     
     // MARK: - 下载方法
@@ -107,14 +93,12 @@ public class FileDownloadService {
         }
         
         // 🔹 重置取消标志
-        cancelLock.lock()
-        isCancelled = false
-        cancelLock.unlock()
+        cancelState.withCriticalRegion { $0 = false }
         
         print("⬇️ [下载] 开始下载文件 ID: \(fileId), TaskID: \(taskId), Offset: \(startOffset)")
         
         // 0.以此确保有权限写入(针对自定义目录)
-        let accessGranted = DownloadDirectoryManager.shared.startAccess()
+        _ = DownloadDirectoryManager.shared.startAccess()
         // 无论成功与否,任务结束时都要停止访问
         defer {
             DownloadDirectoryManager.shared.stopAccess()
@@ -246,18 +230,20 @@ public class FileDownloadService {
                     }
                     
                     // 🔹 流控检查: 检查待写入队列深度
-                    self.writeLock.lock()
-                    let currentPending = self.pendingWrites.count
-                    self.writeLock.unlock()
+                    let currentPending = self.pendingWritesState.withCriticalRegion { $0.count }
                     
                     // 🔹 背压控制: 队列过深时暂停接收
                     if currentPending >= self.maxPendingWrites {
-                        self.backpressureLock.lock()
-                        if !self.isBackpressureActive {
-                            self.isBackpressureActive = true
+                        let shouldLogBackpressure = self.backpressureState.withCriticalRegion { isActive in
+                            if !isActive {
+                                isActive = true
+                                return true
+                            }
+                            return false
+                        }
+                        if shouldLogBackpressure {
                             print("⚠️ [流控] 触发背压,待写入队列: \(currentPending)/\(self.maxPendingWrites)")
                         }
-                        self.backpressureLock.unlock()
                         
                         // 暂停接收,等待队列消化
                         Thread.sleep(forTimeInterval: 0.05)  // 50ms
@@ -266,26 +252,25 @@ public class FileDownloadService {
                     
                     // 🔹 异步写入: 将数据块加入队列
                     let dataToWrite = frame.data
-                    let dataSize = Int64(dataToWrite.count)
+                    _ = Int64(dataToWrite.count)
                     
-                    self.writeLock.lock()
-                    self.pendingWrites.append(dataToWrite)
-                    let queueDepth = self.pendingWrites.count
-                    self.writeLock.unlock()
+                    _ = self.pendingWritesState.withCriticalRegion { pendingWrites in
+                        pendingWrites.append(dataToWrite)
+                    }
                     
                     // 🔹 提交异步写入任务
                     self.writeOperationQueue.addOperation { [weak self] in
                         guard let self = self else { return }
                         
                         // 从队列取出数据
-                        self.writeLock.lock()
-                        guard !self.pendingWrites.isEmpty else {
-                            self.writeLock.unlock()
-                            return
+                        let (data, remainingCount) = self.pendingWritesState.withCriticalRegion { pendingWrites -> (Data?, Int) in
+                            guard !pendingWrites.isEmpty else {
+                                return (nil, pendingWrites.count)
+                            }
+                            let chunk = pendingWrites.removeFirst()
+                            return (chunk, pendingWrites.count)
                         }
-                        let data = self.pendingWrites.removeFirst()
-                        let remainingCount = self.pendingWrites.count
-                        self.writeLock.unlock()
+                        guard let data else { return }
                         
                         // 写入文件
                         do {
@@ -293,12 +278,16 @@ public class FileDownloadService {
                             receivedSize += Int64(data.count)
                             
                             // 🔹 背压恢复: 队列降到阈值以下时恢复接收
-                            self.backpressureLock.lock()
-                            if remainingCount < self.resumeThreshold && self.isBackpressureActive {
-                                self.isBackpressureActive = false
+                            let shouldLogResume = self.backpressureState.withCriticalRegion { isActive in
+                                if remainingCount < self.resumeThreshold && isActive {
+                                    isActive = false
+                                    return true
+                                }
+                                return false
+                            }
+                            if shouldLogResume {
                                 print("✅ [流控] 解除背压,待写入队列: \(remainingCount)/\(self.maxPendingWrites)")
                             }
-                            self.backpressureLock.unlock()
                             
                             // 🔹 内存监控 (每 50 个数据块检查一次)
                             if remainingCount % 50 == 0 {
@@ -398,13 +387,11 @@ public class FileDownloadService {
     /// 清理写入队列
     private func cleanupWriteQueue() {
         writeOperationQueue.cancelAllOperations()
-        writeLock.lock()
-        pendingWrites.removeAll()
-        writeLock.unlock()
+        pendingWritesState.withCriticalRegion { pendingWrites in
+            pendingWrites.removeAll()
+        }
         
-        backpressureLock.lock()
-        isBackpressureActive = false
-        backpressureLock.unlock()
+        backpressureState.withCriticalRegion { $0 = false }
         
         print("🧹 [流控] 清理写入队列")
     }
