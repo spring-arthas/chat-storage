@@ -261,9 +261,11 @@ typedef unsigned int swift_uint4  __attribute__((__ext_vector_type__(4)));
 #pragma clang diagnostic ignored "-Watimport-in-framework-header"
 #endif
 @import AVFoundation;
+@import AppKit;
 @import CoreData;
 @import Foundation;
 @import ObjectiveC;
+@import UserNotifications;
 #endif
 
 #endif
@@ -284,6 +286,16 @@ typedef unsigned int swift_uint4  __attribute__((__ext_vector_type__(4)));
 #endif
 
 #if defined(__OBJC__)
+@class NSTextContainer;
+@class NSCoder;
+
+SWIFT_CLASS("_TtC12chat_storage16CustomNSTextView")
+@interface CustomNSTextView : NSTextView
+- (nonnull instancetype)initWithFrame:(NSRect)frameRect textContainer:(NSTextContainer * _Nullable)container OBJC_DESIGNATED_INITIALIZER;
+- (nullable instancetype)initWithCoder:(NSCoder * _Nonnull)coder OBJC_DESIGNATED_INITIALIZER;
+- (nonnull instancetype)initWithFrame:(NSRect)frameRect OBJC_DESIGNATED_INITIALIZER;
+@end
+
 @class NSEntityDescription;
 @class NSManagedObjectContext;
 
@@ -299,6 +311,21 @@ SWIFT_CLASS_NAMED("Item")
 @property (nonatomic, copy) NSDate * _Nullable timestamp;
 @end
 
+
+@class UNUserNotificationCenter;
+@class UNNotification;
+@class UNNotificationResponse;
+
+SWIFT_CLASS("_TtC12chat_storage19NotificationManager")
+@interface NotificationManager : NSObject <UNUserNotificationCenterDelegate>
+- (nonnull instancetype)init SWIFT_UNAVAILABLE;
++ (nonnull instancetype)new SWIFT_UNAVAILABLE_MSG("-init is unavailable");
+/// Called when the app is in the foreground and a notification arrives.
+/// We can choose whether to still show the banner.
+- (void)userNotificationCenter:(UNUserNotificationCenter * _Nonnull)center willPresentNotification:(UNNotification * _Nonnull)notification withCompletionHandler:(void (^ _Nonnull)(UNNotificationPresentationOptions))completionHandler;
+/// Called when the user clicks on the desktop notification banner
+- (void)userNotificationCenter:(UNUserNotificationCenter * _Nonnull)center didReceiveNotificationResponse:(UNNotificationResponse * _Nonnull)response withCompletionHandler:(void (^ _Nonnull)(void))completionHandler;
+@end
 
 
 SWIFT_CLASS("_TtC12chat_storage13SocketManager")
@@ -316,6 +343,12 @@ SWIFT_CLASS("_TtC12chat_storage13SocketManager")
 
 
 
+
+
+SWIFT_CLASS("_TtC12chat_storage23StreamingVideoViewModel")
+@interface StreamingVideoViewModel : NSObject
+- (nonnull instancetype)init OBJC_DESIGNATED_INITIALIZER;
+@end
 
 
 SWIFT_CLASS_NAMED("TransferTaskEntity")
@@ -354,6 +387,20 @@ SWIFT_CLASS("_TtC12chat_storage19VideoResourceLoader")
 + (nonnull instancetype)new SWIFT_UNAVAILABLE_MSG("-init is unavailable");
 @end
 
+
+
+/// 视频播放窗口管理器
+SWIFT_CLASS("_TtC12chat_storage18VideoWindowManager")
+@interface VideoWindowManager : NSObject
+- (nonnull instancetype)init SWIFT_UNAVAILABLE;
++ (nonnull instancetype)new SWIFT_UNAVAILABLE_MSG("-init is unavailable");
+@end
+
+@class NSNotification;
+
+@interface VideoWindowManager (SWIFT_EXTENSION(chat_storage)) <NSWindowDelegate>
+- (void)windowWillClose:(NSNotification * _Nonnull)notification;
+@end
 
 #endif
 #if defined(__cplusplus)
@@ -626,9 +673,11 @@ typedef unsigned int swift_uint4  __attribute__((__ext_vector_type__(4)));
 #pragma clang diagnostic ignored "-Watimport-in-framework-header"
 #endif
 @import AVFoundation;
+@import AppKit;
 @import CoreData;
 @import Foundation;
 @import ObjectiveC;
+@import UserNotifications;
 #endif
 
 #endif
@@ -649,6 +698,16 @@ typedef unsigned int swift_uint4  __attribute__((__ext_vector_type__(4)));
 #endif
 
 #if defined(__OBJC__)
+@class NSTextContainer;
+@class NSCoder;
+
+SWIFT_CLASS("_TtC12chat_storage16CustomNSTextView")
+@interface CustomNSTextView : NSTextView
+- (nonnull instancetype)initWithFrame:(NSRect)frameRect textContainer:(NSTextContainer * _Nullable)container OBJC_DESIGNATED_INITIALIZER;
+- (nullable instancetype)initWithCoder:(NSCoder * _Nonnull)coder OBJC_DESIGNATED_INITIALIZER;
+- (nonnull instancetype)initWithFrame:(NSRect)frameRect OBJC_DESIGNATED_INITIALIZER;
+@end
+
 @class NSEntityDescription;
 @class NSManagedObjectContext;
 
@@ -664,6 +723,21 @@ SWIFT_CLASS_NAMED("Item")
 @property (nonatomic, copy) NSDate * _Nullable timestamp;
 @end
 
+
+@class UNUserNotificationCenter;
+@class UNNotification;
+@class UNNotificationResponse;
+
+SWIFT_CLASS("_TtC12chat_storage19NotificationManager")
+@interface NotificationManager : NSObject <UNUserNotificationCenterDelegate>
+- (nonnull instancetype)init SWIFT_UNAVAILABLE;
++ (nonnull instancetype)new SWIFT_UNAVAILABLE_MSG("-init is unavailable");
+/// Called when the app is in the foreground and a notification arrives.
+/// We can choose whether to still show the banner.
+- (void)userNotificationCenter:(UNUserNotificationCenter * _Nonnull)center willPresentNotification:(UNNotification * _Nonnull)notification withCompletionHandler:(void (^ _Nonnull)(UNNotificationPresentationOptions))completionHandler;
+/// Called when the user clicks on the desktop notification banner
+- (void)userNotificationCenter:(UNUserNotificationCenter * _Nonnull)center didReceiveNotificationResponse:(UNNotificationResponse * _Nonnull)response withCompletionHandler:(void (^ _Nonnull)(void))completionHandler;
+@end
 
 
 SWIFT_CLASS("_TtC12chat_storage13SocketManager")
@@ -681,6 +755,12 @@ SWIFT_CLASS("_TtC12chat_storage13SocketManager")
 
 
 
+
+
+SWIFT_CLASS("_TtC12chat_storage23StreamingVideoViewModel")
+@interface StreamingVideoViewModel : NSObject
+- (nonnull instancetype)init OBJC_DESIGNATED_INITIALIZER;
+@end
 
 
 SWIFT_CLASS_NAMED("TransferTaskEntity")
@@ -719,6 +799,20 @@ SWIFT_CLASS("_TtC12chat_storage19VideoResourceLoader")
 + (nonnull instancetype)new SWIFT_UNAVAILABLE_MSG("-init is unavailable");
 @end
 
+
+
+/// 视频播放窗口管理器
+SWIFT_CLASS("_TtC12chat_storage18VideoWindowManager")
+@interface VideoWindowManager : NSObject
+- (nonnull instancetype)init SWIFT_UNAVAILABLE;
++ (nonnull instancetype)new SWIFT_UNAVAILABLE_MSG("-init is unavailable");
+@end
+
+@class NSNotification;
+
+@interface VideoWindowManager (SWIFT_EXTENSION(chat_storage)) <NSWindowDelegate>
+- (void)windowWillClose:(NSNotification * _Nonnull)notification;
+@end
 
 #endif
 #if defined(__cplusplus)

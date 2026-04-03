@@ -6,6 +6,8 @@
 /Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/AuthenticationService.o
 /Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/LoginView.o
 /Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/FileDownloadService.o
+/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/ManagedCriticalState.o
+/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/LocalMediaServer.o
 /Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/SocketManager+FrameHandling.o
 /Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/FrameParser.o
 /Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/SocketManager.o
@@ -25,6 +27,9 @@
 /Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/FrameBuilder.o
 /Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/DirectoryService.o
 /Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/VideoPlayerView.o
+/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/VideoStreamingService.o
+/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/VideoWindowManager.o
+/Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/StreamingVideoPlayer.o
 /Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/Item+CoreDataClass.o
 /Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/Item+CoreDataProperties.o
 /Users/hljy/macProjects/chat-storage/build/Build/Intermediates.noindex/chat-storage.build/Release/chat-storage.build/Objects-normal/x86_64/TransferTaskEntity+CoreDataClass.o

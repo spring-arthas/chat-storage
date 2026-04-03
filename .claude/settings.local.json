@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -l \"To be filled by the team\" /Users/hljy/macProjects/chat-storage/.trellis/spec/backend/*.md)",
+      "Bash(grep -l \"To be filled by the team\" /Users/hljy/macProjects/chat-storage/.trellis/spec/frontend/*.md)",
+      "Bash(cat /Users/hljy/macProjects/chat-storage/.trellis/spec/guides/*.md)",
+      "Bash(python3:*)"
+    ]
+  }
+}

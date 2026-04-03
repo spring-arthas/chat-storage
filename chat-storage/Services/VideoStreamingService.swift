@@ -51,9 +51,6 @@ final class VideoStreamingService {
             throw DirectoryError.invalidData
         }
 
-        let requestFrame = Frame(type: .metaFrame, data: requestData, flags: 0x00)
-        try socketManager.sendFrame(requestFrame)
-
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 storeContinuation(continuation)
@@ -120,6 +117,14 @@ final class VideoStreamingService {
                     default:
                         return true
                     }
+                }
+                
+                // 已经注册好 handler 后，再发送请求帧，防止竞态条件导致第一包响应被丢弃
+                do {
+                    let requestFrame = Frame(type: .metaFrame, data: requestData, flags: 0x00)
+                    try self.socketManager.sendFrame(requestFrame)
+                } catch {
+                    self.complete(.failure(error))
                 }
             }
         } onCancel: {

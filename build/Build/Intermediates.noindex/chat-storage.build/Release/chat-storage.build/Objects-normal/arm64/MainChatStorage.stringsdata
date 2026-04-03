@@ -8,11 +8,11 @@
       },
       {
         "comment": "",
-        "key": "消息"
+        "key": "会话"
       },
       {
         "comment": "",
-        "key": "网盘存储"
+        "key": "云盘"
       },
       {
         "comment": "",
@@ -44,27 +44,11 @@
       },
       {
         "comment": "",
-        "key": "确认删除目录"
-      },
-      {
-        "comment": "",
         "key": "目录导航"
       },
       {
         "comment": "",
         "key": "刷新目录"
-      },
-      {
-        "comment": "",
-        "key": "取消"
-      },
-      {
-        "comment": "",
-        "key": "删除"
-      },
-      {
-        "comment": "",
-        "key": "确定要删除目录 [%@] 吗？此操作无法撤销。"
       },
       {
         "comment": "",
@@ -84,31 +68,15 @@
       },
       {
         "comment": "",
+        "key": "视图模式"
+      },
+      {
+        "comment": "",
         "key": "搜索文件名称"
       },
       {
         "comment": "",
-        "key": "操作"
-      },
-      {
-        "comment": "",
         "key": ""
-      },
-      {
-        "comment": "",
-        "key": "文件名称"
-      },
-      {
-        "comment": "",
-        "key": "文件大小"
-      },
-      {
-        "comment": "",
-        "key": "所属目录"
-      },
-      {
-        "comment": "",
-        "key": "上传时间"
       },
       {
         "comment": "",
@@ -121,10 +89,6 @@
       {
         "comment": "",
         "key": "%lld / %lld"
-      },
-      {
-        "comment": "",
-        "key": "下载"
       },
       {
         "comment": "",
@@ -156,31 +120,7 @@
       },
       {
         "comment": "",
-        "key": "传输类型"
-      },
-      {
-        "comment": "",
-        "key": "状态"
-      },
-      {
-        "comment": "",
-        "key": "传输进度"
-      },
-      {
-        "comment": "",
         "key": "无传输任务"
-      },
-      {
-        "comment": "",
-        "key": "开始上传"
-      },
-      {
-        "comment": "",
-        "key": "开始下载"
-      },
-      {
-        "comment": "",
-        "key": "暂停"
       },
       {
         "comment": "",
@@ -193,6 +133,18 @@
       {
         "comment": "",
         "key": "文件详情"
+      },
+      {
+        "comment": "",
+        "key": "在线播放"
+      },
+      {
+        "comment": "",
+        "key": "立即下载"
+      },
+      {
+        "comment": "",
+        "key": "删除文件"
       },
       {
         "comment": "",
@@ -212,6 +164,10 @@
       },
       {
         "comment": "",
+        "key": "取消"
+      },
+      {
+        "comment": "",
         "key": "保存"
       },
       {
@@ -224,15 +180,39 @@
       },
       {
         "comment": "",
-        "key": "【暂无更多消息】"
+        "key": "修改好友别名"
+      },
+      {
+        "comment": "",
+        "key": "更改聊天背景"
+      },
+      {
+        "comment": "",
+        "key": "清空聊天记录"
+      },
+      {
+        "comment": "",
+        "key": "修改好友备注"
+      },
+      {
+        "comment": "",
+        "key": "备注姓名"
+      },
+      {
+        "comment": "",
+        "key": "❤️"
+      },
+      {
+        "comment": "",
+        "key": "没有更多历史消息了"
+      },
+      {
+        "comment": "",
+        "key": "抖一抖"
       },
       {
         "comment": "",
         "key": "请输入消息..."
-      },
-      {
-        "comment": "",
-        "key": "发送"
       },
       {
         "comment": "",
@@ -276,27 +256,39 @@
       },
       {
         "comment": "",
-        "key": "已申请"
-      },
-      {
-        "comment": "",
-        "key": "已是好友"
-      },
-      {
-        "comment": "",
-        "key": "已发送"
-      },
-      {
-        "comment": "",
-        "key": "添加"
-      },
-      {
-        "comment": "",
         "key": "%@"
       },
       {
         "comment": "",
         "key": "选择一个好友开始聊天"
+      },
+      {
+        "comment": "",
+        "key": "播放"
+      },
+      {
+        "comment": "",
+        "key": "下载"
+      },
+      {
+        "comment": "",
+        "key": "删除"
+      },
+      {
+        "comment": "",
+        "key": "·"
+      },
+      {
+        "comment": "",
+        "key": "开始上传"
+      },
+      {
+        "comment": "",
+        "key": "开始下载"
+      },
+      {
+        "comment": "",
+        "key": "暂停"
       }
     ]
   },

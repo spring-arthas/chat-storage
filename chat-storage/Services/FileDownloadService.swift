@@ -158,10 +158,6 @@ public class FileDownloadService {
             throw DirectoryError.invalidData
         }
         
-        let requestFrame = Frame(type: .metaFrame, data: requestData, flags: 0x00)
-        try socketManager.sendFrame(requestFrame)
-        print("📤 [下载] 发送下载请求成功")
-        
         // 3. 注册流式处理器并等待数据
         return try await withTaskCancellationHandler {
             return try await withCheckedThrowingContinuation { continuation in
@@ -373,6 +369,18 @@ public class FileDownloadService {
                     
                 default:
                     return true
+                }
+            }
+            
+            // 注册好 handler 后，再发送请求帧，防止竞态条件导致第一包响应被丢弃
+            do {
+                let requestFrame = Frame(type: .metaFrame, data: requestData, flags: 0x00)
+                try self.socketManager.sendFrame(requestFrame)
+                print("📤 [下载] 发送下载请求成功")
+            } catch {
+                if !hasResumed {
+                    hasResumed = true
+                    continuation.resume(throwing: error)
                 }
             }
         }

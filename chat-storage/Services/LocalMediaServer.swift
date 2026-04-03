@@ -287,19 +287,19 @@ final class LocalMediaServer {
         let delegate = NWConnectionVideoStreamDelegate(
             connection: connection,
             requestedRange: startOffset...endOffset,
-            onCompletion: { [weak connection] in
-                connection?.cancel()
+            onCompletion: { 
+                // Do nothing, NWConnection gracefully closes via isComplete: true
             },
-            onCancelStream: {
-                streamingService.cancel()
+            onCancelStream: { [weak streamingService] in
+                streamingService?.cancel()
             }
         )
 
-        connection.stateUpdateHandler = { [weak self, weak connection] state in
+        connection.stateUpdateHandler = { [weak self, weak connection, weak delegate] state in
             guard let self, let connection else { return }
             switch state {
             case .failed, .cancelled:
-                delegate.cancel()
+                delegate?.cancel()
                 self.cleanupConnection(connection)
             default:
                 break
@@ -327,11 +327,10 @@ final class LocalMediaServer {
     }
 
     private func sendData(_ data: Data, on connection: NWConnection, closeAfter: Bool) {
-        connection.send(content: data, completion: .contentProcessed { error in
+        let context = NWConnection.ContentContext.defaultMessage
+        connection.send(content: data, contentContext: context, isComplete: closeAfter, completion: .contentProcessed { error in
             if let error {
                 print("❌ [LocalMediaServer] send error: \(error)")
-            }
-            if closeAfter {
                 connection.cancel()
             }
         })
@@ -462,7 +461,8 @@ private final class NWConnectionVideoStreamDelegate: VideoStreamLoaderDelegate {
         let shouldCompleteAfterSend = clampedEndExclusive > requestedRange.upperBound || clampedEndExclusive == requestedRange.upperBound + 1
         lock.unlock()
 
-        connection.send(content: subdata, completion: .contentProcessed { [weak self] error in
+        let contentContext = NWConnection.ContentContext.defaultMessage
+        connection.send(content: subdata, contentContext: contentContext, isComplete: shouldCompleteAfterSend, completion: .contentProcessed { [weak self] error in
             guard let self else { return }
             if let error {
                 print("❌ [LocalMediaServer] write chunk failed: \(error)")
@@ -482,6 +482,7 @@ private final class NWConnectionVideoStreamDelegate: VideoStreamLoaderDelegate {
 
     func didFinishLoading() {
         finishIfNeeded()
+        connection.send(content: nil, contentContext: .defaultMessage, isComplete: true, completion: .contentProcessed { _ in })
         onCompletion()
     }
 

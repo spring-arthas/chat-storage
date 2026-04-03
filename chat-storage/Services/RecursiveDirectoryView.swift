@@ -83,14 +83,14 @@ struct DirectoryNodeView: View {
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(
                     selectedId == item.id
-                    ? Color.accentColor
-                    : Color.orange.opacity(0.85)
+                    ? TelegramTheme.accent
+                    : TelegramTheme.warning.opacity(0.9)
                 )
                 .frame(width: 20)
 
             Text(item.fileName)
                 .font(.system(size: 13, weight: selectedId == item.id ? .semibold : .regular))
-                .foregroundColor(selectedId == item.id ? .primary : .primary.opacity(0.85))
+                .foregroundColor(selectedId == item.id ? TelegramTheme.textPrimary : TelegramTheme.textSecondary.opacity(0.9))
                 .lineLimit(1)
                 .truncationMode(.middle)
 
@@ -102,16 +102,16 @@ struct DirectoryNodeView: View {
             RoundedRectangle(cornerRadius: 7)
                 .fill(
                     selectedId == item.id
-                    ? Color.accentColor.opacity(0.15)
+                    ? TelegramTheme.accent.opacity(0.2)
                     : isHovering
-                        ? Color.primary.opacity(0.06)
+                        ? TelegramTheme.elevatedBackground.opacity(0.75)
                         : Color.clear
                 )
         )
         .overlay(
             RoundedRectangle(cornerRadius: 7)
                 .strokeBorder(
-                    selectedId == item.id ? Color.accentColor.opacity(0.35) : Color.clear,
+                    selectedId == item.id ? TelegramTheme.accent.opacity(0.52) : Color.clear,
                     lineWidth: 1
                 )
         )

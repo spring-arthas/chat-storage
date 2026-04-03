@@ -32,7 +32,7 @@
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "717"
             endingLineNumber = "717"
-            landmarkName = "uploadFile(fileUrl:targetDirId:userId:userName:taskId:progressHandler:)"
+            landmarkName = "uploadFile(fileUrl:targetDirId:userId:userName:taskId:startOffset:progressHandler:)"
             landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>
@@ -48,7 +48,7 @@
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "1200"
             endingLineNumber = "1200"
-            landmarkName = "loadDirectoryFromServer()"
+            landmarkName = "getUniqueFileURL(in:fileName:)"
             landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>
@@ -64,7 +64,7 @@
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "1224"
             endingLineNumber = "1224"
-            landmarkName = "loadDirectoryFromServer()"
+            landmarkName = "generateFakeData()"
             landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>
@@ -96,7 +96,7 @@
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "1206"
             endingLineNumber = "1206"
-            landmarkName = "loadDirectoryFromServer()"
+            landmarkName = "getUniqueFileURL(in:fileName:)"
             landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>
@@ -240,8 +240,191 @@
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "847"
             endingLineNumber = "847"
-            landmarkName = "statusColor(_:)"
+            landmarkName = "MainChatStorage"
+            landmarkType = "14">
+         </BreakpointContent>
+      </BreakpointProxy>
+      <BreakpointProxy
+         BreakpointExtensionID = "Xcode.Breakpoint.FileBreakpoint">
+         <BreakpointContent
+            uuid = "715D46A5-7453-4110-AF7C-F31C6AD3B08E"
+            shouldBeEnabled = "No"
+            ignoreCount = "0"
+            continueAfterRunningActions = "No"
+            filePath = "chat-storage/Services/DirectoryService.swift"
+            startingColumnNumber = "9223372036854775807"
+            endingColumnNumber = "9223372036854775807"
+            startingLineNumber = "744"
+            endingLineNumber = "744"
+            landmarkName = "uploadFile(fileUrl:targetDirId:userId:userName:taskId:startOffset:progressHandler:)"
             landmarkType = "7">
+            <Locations>
+               <Location
+                  uuid = "715D46A5-7453-4110-AF7C-F31C6AD3B08E - 5cacfbc27e912d53"
+                  shouldBeEnabled = "Yes"
+                  ignoreCount = "0"
+                  continueAfterRunningActions = "No"
+                  symbolName = "(1) suspend resume partial function for chat_storage.FileTransferService.uploadFile(fileUrl: Foundation.URL, targetDirId: Swift.Int64, userId: Swift.Int32, userName: Swift.String, taskId: Swift.String, startOffset: Swift.Int64, progressHandler: Swift.Optional&lt;(Swift.Double, Swift.String) -&gt; ()&gt;) async throws -&gt; ()"
+                  moduleName = "chat-storage"
+                  usesParentBreakpointCondition = "Yes"
+                  urlString = "file:///Users/hljy/macProjects/chat-storage/chat-storage/Services/DirectoryService.swift"
+                  startingColumnNumber = "9223372036854775807"
+                  endingColumnNumber = "9223372036854775807"
+                  startingLineNumber = "744"
+                  endingLineNumber = "744"
+                  offsetFromSymbolStart = "4240">
+               </Location>
+               <Location
+                  uuid = "715D46A5-7453-4110-AF7C-F31C6AD3B08E - 5cacfbc27e912d53"
+                  shouldBeEnabled = "Yes"
+                  ignoreCount = "0"
+                  continueAfterRunningActions = "No"
+                  symbolName = "(1) suspend resume partial function for chat_storage.FileTransferService.uploadFile(fileUrl: Foundation.URL, targetDirId: Swift.Int64, userId: Swift.Int32, userName: Swift.String, taskId: Swift.String, startOffset: Swift.Int64, progressHandler: Swift.Optional&lt;(Swift.Double, Swift.String) -&gt; ()&gt;) async throws -&gt; ()"
+                  moduleName = "chat-storage"
+                  usesParentBreakpointCondition = "Yes"
+                  urlString = "file:///Users/hljy/macProjects/chat-storage/chat-storage/Services/DirectoryService.swift"
+                  startingColumnNumber = "9223372036854775807"
+                  endingColumnNumber = "9223372036854775807"
+                  startingLineNumber = "744"
+                  endingLineNumber = "744"
+                  offsetFromSymbolStart = "4816">
+               </Location>
+               <Location
+                  uuid = "715D46A5-7453-4110-AF7C-F31C6AD3B08E - 5cacfbc27e912d53"
+                  shouldBeEnabled = "Yes"
+                  ignoreCount = "0"
+                  continueAfterRunningActions = "No"
+                  symbolName = "(1) suspend resume partial function for chat_storage.FileTransferService.uploadFile(fileUrl: Foundation.URL, targetDirId: Swift.Int64, userId: Swift.Int32, userName: Swift.String, taskId: Swift.String, startOffset: Swift.Int64, progressHandler: Swift.Optional&lt;(Swift.Double, Swift.String) -&gt; ()&gt;) async throws -&gt; ()"
+                  moduleName = "chat-storage"
+                  usesParentBreakpointCondition = "Yes"
+                  urlString = "file:///Users/hljy/macProjects/chat-storage/chat-storage/Services/DirectoryService.swift"
+                  startingColumnNumber = "9223372036854775807"
+                  endingColumnNumber = "9223372036854775807"
+                  startingLineNumber = "744"
+                  endingLineNumber = "744"
+                  offsetFromSymbolStart = "5784">
+               </Location>
+               <Location
+                  uuid = "715D46A5-7453-4110-AF7C-F31C6AD3B08E - 9fc6addee4b7e955"
+                  shouldBeEnabled = "Yes"
+                  ignoreCount = "0"
+                  continueAfterRunningActions = "No"
+                  symbolName = "(3) suspend resume partial function for chat_storage.FileTransferService.uploadFile(fileUrl: Foundation.URL, targetDirId: Swift.Int64, userId: Swift.Int32, userName: Swift.String, taskId: Swift.String, startOffset: Swift.Int64, progressHandler: Swift.Optional&lt;(Swift.Double, Swift.String) -&gt; ()&gt;) async throws -&gt; ()"
+                  moduleName = "chat-storage"
+                  usesParentBreakpointCondition = "Yes"
+                  urlString = "file:///Users/hljy/macProjects/chat-storage/chat-storage/Services/DirectoryService.swift"
+                  startingColumnNumber = "9223372036854775807"
+                  endingColumnNumber = "9223372036854775807"
+                  startingLineNumber = "744"
+                  endingLineNumber = "744"
+                  offsetFromSymbolStart = "5084">
+               </Location>
+               <Location
+                  uuid = "715D46A5-7453-4110-AF7C-F31C6AD3B08E - c2e09fdb915cb557"
+                  shouldBeEnabled = "Yes"
+                  ignoreCount = "0"
+                  continueAfterRunningActions = "No"
+                  symbolName = "(5) suspend resume partial function for chat_storage.FileTransferService.uploadFile(fileUrl: Foundation.URL, targetDirId: Swift.Int64, userId: Swift.Int32, userName: Swift.String, taskId: Swift.String, startOffset: Swift.Int64, progressHandler: Swift.Optional&lt;(Swift.Double, Swift.String) -&gt; ()&gt;) async throws -&gt; ()"
+                  moduleName = "chat-storage"
+                  usesParentBreakpointCondition = "Yes"
+                  urlString = "file:///Users/hljy/macProjects/chat-storage/chat-storage/Services/DirectoryService.swift"
+                  startingColumnNumber = "9223372036854775807"
+                  endingColumnNumber = "9223372036854775807"
+                  startingLineNumber = "744"
+                  endingLineNumber = "744"
+                  offsetFromSymbolStart = "1932">
+               </Location>
+               <Location
+                  uuid = "715D46A5-7453-4110-AF7C-F31C6AD3B08E - 51a41d43f057159"
+                  shouldBeEnabled = "Yes"
+                  ignoreCount = "0"
+                  continueAfterRunningActions = "No"
+                  symbolName = "(7) suspend resume partial function for chat_storage.FileTransferService.uploadFile(fileUrl: Foundation.URL, targetDirId: Swift.Int64, userId: Swift.Int32, userName: Swift.String, taskId: Swift.String, startOffset: Swift.Int64, progressHandler: Swift.Optional&lt;(Swift.Double, Swift.String) -&gt; ()&gt;) async throws -&gt; ()"
+                  moduleName = "chat-storage"
+                  usesParentBreakpointCondition = "Yes"
+                  urlString = "file:///Users/hljy/macProjects/chat-storage/chat-storage/Services/DirectoryService.swift"
+                  startingColumnNumber = "9223372036854775807"
+                  endingColumnNumber = "9223372036854775807"
+                  startingLineNumber = "744"
+                  endingLineNumber = "744"
+                  offsetFromSymbolStart = "1200">
+               </Location>
+               <Location
+                  uuid = "715D46A5-7453-4110-AF7C-F31C6AD3B08E - 483433d0a52a3d5b"
+                  shouldBeEnabled = "Yes"
+                  ignoreCount = "0"
+                  continueAfterRunningActions = "No"
+                  symbolName = "(9) suspend resume partial function for chat_storage.FileTransferService.uploadFile(fileUrl: Foundation.URL, targetDirId: Swift.Int64, userId: Swift.Int32, userName: Swift.String, taskId: Swift.String, startOffset: Swift.Int64, progressHandler: Swift.Optional&lt;(Swift.Double, Swift.String) -&gt; ()&gt;) async throws -&gt; ()"
+                  moduleName = "chat-storage"
+                  usesParentBreakpointCondition = "Yes"
+                  urlString = "file:///Users/hljy/macProjects/chat-storage/chat-storage/Services/DirectoryService.swift"
+                  startingColumnNumber = "9223372036854775807"
+                  endingColumnNumber = "9223372036854775807"
+                  startingLineNumber = "744"
+                  endingLineNumber = "744"
+                  offsetFromSymbolStart = "1272">
+               </Location>
+               <Location
+                  uuid = "715D46A5-7453-4110-AF7C-F31C6AD3B08E - af4e550e40142890"
+                  shouldBeEnabled = "Yes"
+                  ignoreCount = "0"
+                  continueAfterRunningActions = "No"
+                  symbolName = "(10) suspend resume partial function for chat_storage.FileTransferService.uploadFile(fileUrl: Foundation.URL, targetDirId: Swift.Int64, userId: Swift.Int32, userName: Swift.String, taskId: Swift.String, startOffset: Swift.Int64, progressHandler: Swift.Optional&lt;(Swift.Double, Swift.String) -&gt; ()&gt;) async throws -&gt; ()"
+                  moduleName = "chat-storage"
+                  usesParentBreakpointCondition = "Yes"
+                  urlString = "file:///Users/hljy/macProjects/chat-storage/chat-storage/Services/DirectoryService.swift"
+                  startingColumnNumber = "9223372036854775807"
+                  endingColumnNumber = "9223372036854775807"
+                  startingLineNumber = "744"
+                  endingLineNumber = "744"
+                  offsetFromSymbolStart = "168">
+               </Location>
+               <Location
+                  uuid = "715D46A5-7453-4110-AF7C-F31C6AD3B08E - d29d6c63494a5591"
+                  shouldBeEnabled = "Yes"
+                  ignoreCount = "0"
+                  continueAfterRunningActions = "No"
+                  symbolName = "(11) suspend resume partial function for chat_storage.FileTransferService.uploadFile(fileUrl: Foundation.URL, targetDirId: Swift.Int64, userId: Swift.Int32, userName: Swift.String, taskId: Swift.String, startOffset: Swift.Int64, progressHandler: Swift.Optional&lt;(Swift.Double, Swift.String) -&gt; ()&gt;) async throws -&gt; ()"
+                  moduleName = "chat-storage"
+                  usesParentBreakpointCondition = "Yes"
+                  urlString = "file:///Users/hljy/macProjects/chat-storage/chat-storage/Services/DirectoryService.swift"
+                  startingColumnNumber = "9223372036854775807"
+                  endingColumnNumber = "9223372036854775807"
+                  startingLineNumber = "744"
+                  endingLineNumber = "744"
+                  offsetFromSymbolStart = "192">
+               </Location>
+               <Location
+                  uuid = "715D46A5-7453-4110-AF7C-F31C6AD3B08E - d4a8a7545380f292"
+                  shouldBeEnabled = "Yes"
+                  ignoreCount = "0"
+                  continueAfterRunningActions = "No"
+                  symbolName = "(12) suspend resume partial function for chat_storage.FileTransferService.uploadFile(fileUrl: Foundation.URL, targetDirId: Swift.Int64, userId: Swift.Int32, userName: Swift.String, taskId: Swift.String, startOffset: Swift.Int64, progressHandler: Swift.Optional&lt;(Swift.Double, Swift.String) -&gt; ()&gt;) async throws -&gt; ()"
+                  moduleName = "chat-storage"
+                  usesParentBreakpointCondition = "Yes"
+                  urlString = "file:///Users/hljy/macProjects/chat-storage/chat-storage/Services/DirectoryService.swift"
+                  startingColumnNumber = "9223372036854775807"
+                  endingColumnNumber = "9223372036854775807"
+                  startingLineNumber = "744"
+                  endingLineNumber = "744"
+                  offsetFromSymbolStart = "184">
+               </Location>
+               <Location
+                  uuid = "715D46A5-7453-4110-AF7C-F31C6AD3B08E - d6f7fe4954391f93"
+                  shouldBeEnabled = "Yes"
+                  ignoreCount = "0"
+                  continueAfterRunningActions = "No"
+                  symbolName = "(13) suspend resume partial function for chat_storage.FileTransferService.uploadFile(fileUrl: Foundation.URL, targetDirId: Swift.Int64, userId: Swift.Int32, userName: Swift.String, taskId: Swift.String, startOffset: Swift.Int64, progressHandler: Swift.Optional&lt;(Swift.Double, Swift.String) -&gt; ()&gt;) async throws -&gt; ()"
+                  moduleName = "chat-storage"
+                  usesParentBreakpointCondition = "Yes"
+                  urlString = "file:///Users/hljy/macProjects/chat-storage/chat-storage/Services/DirectoryService.swift"
+                  startingColumnNumber = "9223372036854775807"
+                  endingColumnNumber = "9223372036854775807"
+                  startingLineNumber = "744"
+                  endingLineNumber = "744"
+                  offsetFromSymbolStart = "204">
+               </Location>
+            </Locations>
          </BreakpointContent>
       </BreakpointProxy>
    </Breakpoints>
