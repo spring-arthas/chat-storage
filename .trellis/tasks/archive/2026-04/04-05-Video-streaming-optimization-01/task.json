@@ -1,0 +1,44 @@
+{
+  "id": "Video-streaming-optimization-01",
+  "name": "Video-streaming-optimization-01",
+  "title": "关于优化云盘模块中视频类文件正常播放时如果点击暂停导致停止拉流的问题",
+  "description": "需要支持在播放器正常播放的视频点击暂停时能够继续拉流，直到文件所有流都完全载入后拖动进度条可以快速快进或是回退播放，不再进行拉流处理",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "priority": "P1",
+  "creator": "veneno",
+  "assignee": "veneno",
+  "createdAt": "2026-04-05",
+  "completedAt": "2026-04-05",
+  "branch": null,
+  "base_branch": "feature-v1.0",
+  "worktree_path": null,
+  "current_phase": 0,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}
