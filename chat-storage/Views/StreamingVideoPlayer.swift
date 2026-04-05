@@ -77,9 +77,13 @@ class StreamingVideoViewModel: NSObject, ObservableObject {
     private var playerStatusObservation: NSKeyValueObservation?
     private var itemStatusObservation: NSKeyValueObservation?
     private var playbackEndObserver: NSObjectProtocol?
+    private var currentFileId: Int64?
 
     func setupPlayer(fileId: Int64, fileName: String, expectedSize: Int64) {
         stopPlaying()
+
+        currentFileId = fileId
+        VideoStreamCacheManager.shared.start(fileId: fileId, fileSize: expectedSize, fileName: fileName)
 
         isLoading = true
         errorMessage = nil
@@ -148,6 +152,11 @@ class StreamingVideoViewModel: NSObject, ObservableObject {
         if let playbackEndObserver {
             NotificationCenter.default.removeObserver(playbackEndObserver)
             self.playbackEndObserver = nil
+        }
+
+        if let fid = currentFileId {
+            VideoStreamCacheManager.shared.stop(fileId: fid)
+            currentFileId = nil
         }
     }
 

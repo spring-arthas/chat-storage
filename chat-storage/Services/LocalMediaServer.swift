@@ -283,6 +283,14 @@ final class LocalMediaServer {
         endOffset: Int64,
         to connection: NWConnection
     ) {
+        // 命中磁盘缓存则直接从本地文件服务，无需发起网络请求
+        if let cache = VideoStreamCacheManager.shared.cache(for: fileId),
+           !cache.isInvalid,
+           cache.isRangeAvailable(startOffset...endOffset) {
+            serveFromCache(cache, range: startOffset...endOffset, to: connection)
+            return
+        }
+
         let streamingService = VideoStreamingService()
         let delegate = NWConnectionVideoStreamDelegate(
             connection: connection,
@@ -317,6 +325,23 @@ final class LocalMediaServer {
                 // 连接取消或区间满足后主动停止，属于正常路径。
             } catch {
                 delegate.didFail(with: error)
+            }
+        }
+    }
+
+    private func serveFromCache(
+        _ cache: VideoStreamCache,
+        range: ClosedRange<Int64>,
+        to connection: NWConnection
+    ) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            do {
+                let data = try cache.readData(range: range)
+                self.sendData(data, on: connection, closeAfter: true)
+            } catch {
+                print("❌ [LocalMediaServer] 从缓存读取失败: \(error)")
+                connection.cancel()
             }
         }
     }
