@@ -1,97 +1,184 @@
-# Quality Guidelines
+# 质量规范
 
-> Code quality standards for View (frontend) development.
-
----
-
-## Required Patterns
-
-### MARK Sections
-
-All views must use `// MARK: -` to organize code sections in this order:
-
-```swift
-// MARK: - Environment Objects
-// MARK: - Bindings
-// MARK: - State Variables
-// MARK: - Body
-// MARK: - [Section name for each computed view property]
-```
-
-### Async Operations in Task Blocks
-
-All async calls must be wrapped in `Task { }` inside `.onAppear`, button actions, or `onChange`:
-
-```swift
-Button("Load") {
-    Task {
-        do {
-            result = try await service.fetch()
-        } catch {
-            alertMessage = error.localizedDescription
-            showingAlert = true
-        }
-    }
-}
-```
-
-Never use `async` directly in button closures without `Task { }`.
-
-### Alert Pattern
-
-Use a pair of `@State` variables for all alerts:
-
-```swift
-@State private var showingAlert = false
-@State private var alertMessage = ""
-```
-
-Bind to `.alert(isPresented: $showingAlert) { Alert(title: Text(alertMessage)) }`.
-
-### Window Centering
-
-After login state change, always re-center the window. This is already handled in `chat_storageApp.swift` via `onChange(of: isLoggedIn)`. Do not duplicate this logic in views.
+> 当前项目在视图层实现时应遵守的质量边界和常见反模式。
 
 ---
 
-## Forbidden Patterns
+## 目标
 
-| Pattern | Why Forbidden |
-|---------|--------------|
-| Network calls in `body` | Body must be pure/synchronous |
-| `SocketManager.shared` accessed from views | Use `@EnvironmentObject var socketManager` |
-| `@ObservedObject` | Not used; use `@StateObject` or `@EnvironmentObject` |
-| Business logic in computed view properties | Put in `Task { }` blocks, not view builders |
-| Hardcoded server address in views | Server config lives in `ConfigServerView` / `SocketManager` |
+前端层最重要的质量目标不是“绝对组件化”，而是：
 
----
-
-## View Decomposition
-
-When a view's `body` exceeds ~50 lines, decompose into private computed properties:
-
-```swift
-var body: some View {
-    VStack {
-        toolbarSection
-        fileListSection
-        paginationSection
-    }
-}
-
-private var toolbarSection: some View { ... }
-private var fileListSection: some View { ... }
-```
-
-Do not extract tiny views into separate files unless they are reused in multiple places.
+- 状态边界清晰
+- 视图层不承担协议层职责
+- 页面改动后行为仍与现有交互一致
+- 不继续恶化 `MainChatStorage.swift` 的复杂度
 
 ---
 
-## Code Review Checklist
+## 当前项目里的推荐模式
 
-- [ ] No `async` code directly in `body`
-- [ ] All async calls wrapped in `Task { }` with `catch { alertMessage = ... }`
-- [ ] Services accessed via `@EnvironmentObject`, not `.shared`
-- [ ] `// MARK: -` sections present and in correct order
-- [ ] Sheets pass `@EnvironmentObject` explicitly
-- [ ] No inline business/network logic in computed view properties
+### 1. 视图只发起动作，不处理协议细节
+
+View 层可以：
+
+- 收集用户输入
+- 调用服务方法
+- 管理页面局部状态
+- 决定成功 / 失败后的界面反馈
+
+但不应该在 View 里做：
+
+- 帧类型拼装
+- 原始 JSON 字典解析
+- `success` / `code` 兼容判断
+- continuation / stream handler 级逻辑
+
+### 2. 异步调用放在事件触发点
+
+当前项目的主流写法是：
+
+- 按钮 action 中 `Task { }`
+- `.onAppear` 中 `Task { }`
+- 少量 `.onChange` 中触发异步逻辑
+
+不要在 `body` 或纯展示型计算属性里偷偷做异步工作。
+
+### 3. 视图构建和业务方法分离
+
+当一个操作包含：
+
+- 参数清洗
+- 服务调用
+- 错误处理
+- 刷新列表
+- 关闭弹窗
+
+就应该提取成私有方法，而不是直接堆在按钮闭包里。
+
+### 4. 主流依赖注入优先走现有模式
+
+优先顺序通常是：
+
+1. 已由应用入口注入的环境对象
+2. 主页面当前已经持有的 `@StateObject`
+3. 页面内按需创建的服务对象
+
+不要随手在新 View 里再抓 `.shared` 开一条新依赖链。
+
+---
+
+## 当前项目中允许存在的例外
+
+质量规范不能无视现状，以下例外在仓库中是存在的：
+
+- `StreamingVideoPlayer` 使用 `@ObservedObject`
+- `RegisterView` 当前自己持有一个认证服务实例
+- `RecursiveDirectoryView.swift` 虽然放在 `Services/`，本质是视图代码
+
+这些现状不一定要扩散，但文档必须承认它们存在。
+
+---
+
+## 视图层反模式
+
+### 1. 在 `body` 中掺业务逻辑
+
+风险：
+
+- 重绘时逻辑重复触发
+- 可读性变差
+- 更难定位状态来源
+
+### 2. 在 View 中复制服务层逻辑
+
+例如：
+
+- 再写一套响应解析
+- 再写一套错误码判断
+- 再写一套目录 / 文件操作流程
+
+这会直接制造行为分叉。
+
+### 3. 继续把所有内容都堆进 `MainChatStorage.swift`
+
+当前主界面已经承担过多职责，新增功能时优先判断：
+
+- 能否拆成私有计算属性
+- 能否拆成局部组件
+- 能否把业务部分下沉到已有服务
+
+### 4. 把临时 UI 状态错误提升为共享状态
+
+例如把某个弹窗、hover、选中标记放到全局对象里。
+
+### 5. 忽略操作后的连带刷新
+
+在这个项目里很多操作不是“成功提示一下”就完了，还要继续刷新：
+
+- 文件列表
+- 目录树
+- 文件详情
+- 好友列表
+- 待处理申请
+
+---
+
+## 视图结构质量要求
+
+### `// MARK: -` 分区
+
+当前主流视图普遍会按区块组织代码，建议保持：
+
+- 环境对象
+- 绑定
+- 状态变量
+- `body`
+- 各个局部 UI 区块
+- 事件处理方法
+
+不要求一字不差，但要求结构可扫描。
+
+### 计算属性拆分
+
+如果 `body` 已经难以连续阅读，就应该拆成私有计算属性。
+
+### 方法命名
+
+事件处理方法应表达动作，例如：
+
+- `handleLogin()`
+- `confirmRenameDirectory()`
+- `loadRequests()`
+
+不要用模糊命名把多个职责混在一起。
+
+---
+
+## 错误展示质量要求
+
+当前项目并没有统一成单一错误呈现模式，因此质量要求是：
+
+- 选用与所在页面一致的反馈方式
+- 同类失败的反馈体验尽量保持一致
+- 不要吞错只打印日志
+
+当前常见方式包括：
+
+- 页面内错误文本
+- `alert`
+- 覆盖层错误提示
+
+---
+
+## 代码审查检查单
+
+- [ ] View 中没有直接处理底层协议帧和原始响应兼容
+- [ ] 异步调用都发生在明确的交互触发点
+- [ ] 页面局部状态没有误提升为共享状态
+- [ ] 成功操作后，相关 UI 区域都能同步刷新
+- [ ] 新改动没有继续显著加重 `MainChatStorage.swift` 的耦合
+- [ ] 例外用法是有理由的，不是随手乱用
+
+---
+
+**核心原则**：前端层最重要的是“状态和职责别串层”，不是把代码写得像教科书模板。

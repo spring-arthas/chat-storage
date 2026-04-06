@@ -1,61 +1,71 @@
 import SwiftUI
 import AppKit
 
-/// 视频播放窗口管理器
+/// 视频播放窗口管理器（单例）
 class VideoWindowManager: NSObject {
     static let shared = VideoWindowManager()
-    
+
     private var window: NSWindow?
-    
+    private var currentFileId: Int64?
+    private weak var viewModel: StreamingVideoViewModel?
+
     private override init() {
         super.init()
     }
-    
-    /// 打开视频播放窗口
-    /// - Parameters:
-    ///   - fileId: 文件 ID
-    ///   - fileName: 文件名
-    ///   - fileSize: 文件大小
+
+    /// 打开视频播放窗口。
+    /// - 若当前已在播放相同文件，直接聚焦窗口。
+    /// - 若当前在播放其他文件，强制关闭旧窗口并清理资源后打开新窗口（Issue 3）。
     func show(fileId: Int64, fileName: String, fileSize: Int64) {
-        if let window = window {
+        // 相同文件：直接聚焦
+        if currentFileId == fileId, let window {
             window.makeKeyAndOrderFront(nil)
             return
         }
-        
-        // 创建播放容器视图
-        let playerView = StreamingVideoPlayer(fileId: fileId, fileName: fileName, fileSize: fileSize)
-            .environmentObject(SocketManager.shared)
-        
+
+        // 不同文件（或首次）：先强制关闭旧窗口并清理资源
+        forceClose()
+
+        let vm = StreamingVideoViewModel()
+        self.viewModel = vm
+        self.currentFileId = fileId
+
+        let playerView = StreamingVideoPlayer(
+            fileId: fileId,
+            fileName: fileName,
+            fileSize: fileSize,
+            viewModel: vm
+        ).environmentObject(SocketManager.shared)
+
         let hostingView = NSHostingView(rootView: playerView)
-        
-        // 创建 NSWindow
+
         let newWindow = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 500),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
-        
+
         newWindow.center()
         newWindow.title = fileName
         newWindow.setFrameAutosaveName("VideoPlayerWindow")
         newWindow.isReleasedWhenClosed = false
         newWindow.contentView = hostingView
-        
-        // 配置标题栏：显示原生文件名标题，并与播放内容区区分开
         newWindow.titlebarAppearsTransparent = false
         newWindow.titleVisibility = .visible
-        
-        // 设置背景色
         newWindow.backgroundColor = .black
-        
+
         self.window = newWindow
-        
         newWindow.delegate = self
         newWindow.makeKeyAndOrderFront(nil)
     }
-    
-    func close() {
+
+    /// 强制关闭播放器并释放所有资源。
+    func forceClose() {
+        // 显式调用 stopPlaying，不等待 SwiftUI onDisappear（Issue 1）
+        viewModel?.stopPlaying()
+        viewModel = nil
+        currentFileId = nil
         window?.close()
         window = nil
     }
@@ -63,7 +73,10 @@ class VideoWindowManager: NSObject {
 
 extension VideoWindowManager: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
-        // 窗口关闭时，SwiftUI View 的 onDisappear 会被触发，从而停止播放
+        // 双重保险：窗口关闭时显式释放资源，不依赖 SwiftUI onDisappear 的异步时序（Issue 1）
+        viewModel?.stopPlaying()
+        viewModel = nil
+        currentFileId = nil
         window = nil
     }
 }

@@ -1,81 +1,177 @@
-# Logging Guidelines
+# 日志规范
 
-> How logging is done in this project.
-
----
-
-## Overview
-
-Logging uses Swift's `print()` with emoji-prefixed messages. No third-party logging library. All output goes to the Xcode console / stdout.
+> 当前项目中日志输出的真实风格与使用边界。
 
 ---
 
-## Emoji Convention
+## 概述
 
-| Emoji | Domain | When to use |
-|-------|--------|-------------|
-| `📂` | Directory / file | Directory CRUD, file listing, path operations |
-| `📤` | Sending | Before sending a frame to the server |
-| `📥` | Receiving | After receiving a server response |
-| `✅` | Success | Operation completed successfully |
-| `❌` | Error / failure | Caught errors, failed operations |
-| `⚠️` | Warning | Recoverable issues, stale bookmarks |
-| `🔌` | Connection | Socket connect / disconnect events |
-| `📡` | Network | Socket stream opened, waiting for data |
-| `🔐` | Auth | Login, register, logout |
-| `💾` | Persistence | Core Data save, bookmark operations |
-| `🔍` | Search / lookup | Fetching details, searching records |
-| `🏃` | Task / progress | Transfer task state changes |
+本项目没有引入第三方日志框架，当前主要使用：
+
+- `print()`
+
+日志输出位置主要是：
+
+- Xcode 控制台
+- 标准输出
+
+日志风格总体特点是：
+
+- 以中文描述为主
+- 常带 emoji 前缀
+- 某些模块会再加 `[模块名]` 或 `[下载]` 这类标签
+- 不同文件之间并没有完全统一成一个严格模板
+
+因此日志规范要描述“主流风格”，而不是假装仓库里已经完全一致。
 
 ---
 
-## Log Format
+## 当前常见日志前缀
+
+| 前缀 | 常见含义 |
+|------|----------|
+| `📂` | 目录 / 文件操作 |
+| `📤` | 发送请求或发送帧 |
+| `📥` | 收到响应、恢复任务、载入数据 |
+| `✅` | 成功 |
+| `❌` | 错误 |
+| `⚠️` | 警告、可恢复问题、兼容提醒 |
+| `🔌` | 连接 / 断连 |
+| `📡` | 流、网络、监听 |
+| `🔐` | 登录 / 注册 / 认证 |
+| `💾` | 持久化、数据库、bookmark |
+| `🔍` | 搜索、详情、排查 |
+| `🚀` | 任务开始、上传启动 |
+| `🎥` | 视频流相关 |
+| `🧹` | 清理 |
+
+---
+
+## 当前常见日志风格
+
+### 1. emoji + 中文描述
 
 ```swift
-// Start of operation
 print("📂 开始加载目录树...")
-
-// Received data with context
-print("📥 收到目录响应，开始解析...")
-
-// Success with count
 print("✅ 目录树加载完成，共 \(directoryItems.count) 个顶级项")
-
-// Error with context
-print("❌ Socket 写入失败: \(outputStream.streamError?.localizedDescription ?? "未知错误")")
-
-// Persistence operations
-print("💾 Persistence: Attempting to create bookmark for \(fileUrl.path)")
-print("✅ Persistence: Bookmark created successfully (\(bookmark.count) bytes)")
 ```
 
----
-
-## What to Log
-
-- Start and end of every network operation
-- Transfer task state transitions (submit, start, complete, fail, pause)
-- Socket connection state changes
-- Core Data operations (save, fetch, bookmark create/resolve)
-- All caught errors with enough context to diagnose
-
----
-
-## What NOT to Log
-
-- User passwords or credentials (never log auth request body)
-- Full file content (log only: name, size, type)
-- Per-chunk progress during file transfer (only log at meaningful milestones)
-- `// print(...)` commented-out noise — either keep it or remove it
-
----
-
-## Verbose Debug Logs
-
-Some frame-level logs are commented out for normal operation:
+### 2. emoji + 模块标签
 
 ```swift
-// print("📤 发送帧: \(frame.type.description), 长度: \(data.count) 字节")
+print("✅ [LocalMediaServer] started on port \(resolvedPort)")
+print("❌ [DownloadManager] 保存书签失败: \(error)")
 ```
 
-Temporarily uncomment when debugging protocol issues. Do not leave verbose frame logs uncommented in committed code.
+### 3. emoji + 业务阶段标签
+
+```swift
+print("⬇️ [下载] 开始下载文件 ID: \(fileId)")
+print("⚠️ [流控] 触发背压,待写入队列: \(currentPending)")
+```
+
+### 4. 调试日志
+
+部分日志会明显带有调试意图，例如：
+
+```swift
+print("📋 [DEBUG] handleBatchStart - transferList count: \(transferList.count)")
+```
+
+这类日志在提交前应确认是否仍有保留价值。
+
+---
+
+## 该记录什么
+
+当前项目中，建议记录以下关键节点：
+
+- 网络操作开始与结束
+- 发送的业务动作
+- 收到响应后的关键结果
+- 连接状态变化
+- 任务状态变化
+- 任务恢复 / bookmark 恢复
+- 视频流、本地代理、缓存相关关键分支
+- 所有 catch 到的错误
+
+### 具体到本项目，尤其建议保留日志的地方
+
+- `SocketManager`
+- `DirectoryService`
+- `TransferTaskManager`
+- `PersistenceManager`
+- `DownloadDirectoryManager`
+- `LocalMediaServer`
+- `VideoStreamCache`
+
+---
+
+## 不该记录什么
+
+- 用户密码
+- 完整敏感认证信息
+- 大块文件内容
+- 每个超高频数据块的无意义重复日志
+- 只会制造噪声、没有排查价值的注释掉日志堆
+
+---
+
+## 当前项目里的日志现实问题
+
+### 1. 风格不完全统一
+
+这是现状，不要在文档里假装已经完全标准化。
+
+### 2. 中英混用、标签混用
+
+例如：
+
+- 中文状态
+- 英文模块名
+- `[DEBUG]`
+- `[下载]`
+
+这在仓库里是正常存在的。
+
+### 3. 部分调试日志可能过细
+
+尤其在：
+
+- 原始 JSON 打印
+- 流式处理
+- 批量任务调度
+
+新增日志时要控制信噪比。
+
+---
+
+## 新增日志时的建议
+
+### 推荐格式
+
+```swift
+print("✅ [模块名] 关键动作说明: \(上下文)")
+print("❌ [模块名] 失败原因: \(error)")
+```
+
+### 原则
+
+- 一眼能看出模块
+- 一眼能看出当前阶段
+- 出错时带必要上下文
+- 不打印多余敏感信息
+
+---
+
+## 代码审查检查单
+
+- [ ] 日志能帮助定位关键流程，不只是重复刷屏
+- [ ] 错误日志包含足够上下文
+- [ ] 没有打印密码、完整凭证或敏感大对象
+- [ ] 调试日志保留前确认有持续价值
+- [ ] 新日志风格大体与当前仓库主流保持一致
+
+---
+
+**核心原则**：日志要服务排查，不要为了“多打印一点”把关键日志淹没。

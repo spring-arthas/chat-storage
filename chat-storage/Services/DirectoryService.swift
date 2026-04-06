@@ -349,6 +349,52 @@ class DirectoryService: ObservableObject {
         print("✅ 文件删除成功")
     }
 
+    /// 重命名文件 (0x44)
+    /// - Parameters:
+    ///   - fileId: 文件ID
+    ///   - newFileName: 新文件名（含扩展名）
+    /// - Throws: 网络或服务端错误
+    func renameFile(fileId: Int64, newFileName: String) async throws {
+        print("✏️ 请求重命名文件: fileId=\(fileId), newFileName=\(newFileName)")
+
+        struct RenameFileRequest: Codable {
+            let fileId: Int64
+            let newFileName: String
+        }
+
+        let request = RenameFileRequest(fileId: fileId, newFileName: newFileName)
+        let jsonData = try JSONEncoder().encode(request)
+
+        let frame = Frame(
+            type: .fileRenameReq,
+            data: jsonData,
+            flags: 0x00
+        )
+
+        let responseFrame = try await socketManager.sendFrameAndWait(
+            frame,
+            expecting: .fileResponse,
+            timeout: 10.0
+        )
+
+        guard let dict = try? FrameParser.decodeAsDictionary(responseFrame) else {
+            throw DirectoryError.invalidResponse("无法解析重命名响应")
+        }
+
+        // 兼容 success(bool) 和 code(int) 两种响应格式
+        if let success = dict["success"] as? Bool {
+            if !success {
+                let message = dict["message"] as? String ?? "未知错误"
+                throw DirectoryError.serverError(code: 500, message: message)
+            }
+        } else if let code = dict["code"] as? Int, code != 200 {
+            let message = dict["message"] as? String ?? "未知错误"
+            throw DirectoryError.serverError(code: code, message: message)
+        }
+
+        print("✅ 文件重命名成功")
+    }
+
     /// 解析目录响应帧
     /// - Parameter frame: 响应帧
     /// - Returns: 目录项数组

@@ -1,94 +1,324 @@
-# Cross-Layer Thinking Guide
+# 跨层思考指南
 
-> **Purpose**: Think through data flow across layers before implementing.
-
----
-
-## The Problem
-
-**Most bugs happen at layer boundaries**, not within layers.
-
-Common cross-layer bugs:
-- API returns format A, frontend expects format B
-- Database stores X, service transforms to Y, but loses data
-- Multiple layers implement the same logic differently
+> **目的**：在实现跨越协议、服务、视图、持久化、媒体链路的功能前，先把数据流、职责边界和失败路径梳理清楚。
 
 ---
 
-## Before Implementing Cross-Layer Features
+## 这个项目里“跨层问题”为什么高发
 
-### Step 1: Map the Data Flow
+这个仓库的很多功能并不是简单的 View 调 Service。
 
-Draw out how data moves:
+一个看似普通的需求，实际可能横跨这些层：
 
-```
-Source → Transform → Store → Retrieve → Transform → Display
+```text
+SwiftUI View
+→ View State
+→ Service / Manager
+→ Socket Frame Protocol
+→ DTO Decode / Transform
+→ Shared Published State
+→ Persistence / Bookmark
+→ View Refresh
 ```
 
-For each arrow, ask:
-- What format is the data in?
-- What could go wrong?
-- Who is responsible for validation?
+只要其中一层想漏了，就容易出现下面这些问题：
 
-### Step 2: Identify Boundaries
-
-| Boundary | Common Issues |
-|----------|---------------|
-| API ↔ Service | Type mismatches, missing fields |
-| Service ↔ Database | Format conversions, null handling |
-| Backend ↔ Frontend | Serialization, date formats |
-| Component ↔ Component | Props shape changes |
-
-### Step 3: Define Contracts
-
-For each boundary:
-- What is the exact input format?
-- What is the exact output format?
-- What errors can occur?
+- 帧发出去了，但等错了响应类型
+- DTO 解出来了，但字段兼容不完整
+- 服务层成功了，但 UI 没刷新
+- UI 更新了，但持久化状态没跟上
+- 本地视频代理能播，但 seek 或暂停场景出问题
+- 本地路径还在，bookmark 权限却已经失效
 
 ---
 
-## Common Cross-Layer Mistakes
+## 什么情况下必须先做跨层梳理
 
-### Mistake 1: Implicit Format Assumptions
+出现下面任一情况，不要直接写代码，先画链路：
 
-**Bad**: Assuming date format without checking
-
-**Good**: Explicit format conversion at boundaries
-
-### Mistake 2: Scattered Validation
-
-**Bad**: Validating the same thing in multiple layers
-
-**Good**: Validate once at the entry point
-
-### Mistake 3: Leaky Abstractions
-
-**Bad**: Component knows about database schema
-
-**Good**: Each layer only knows its neighbors
+- [ ] 要新增 / 修改一个帧类型
+- [ ] 要让一个操作影响多个共享状态
+- [ ] 要修改 DTO 字段或服务端返回格式兼容
+- [ ] 要接入 Core Data、bookmark、下载目录、任务恢复
+- [ ] 要动上传、下载、视频流、本地 HTTP 代理
+- [ ] 要把某段逻辑从 View 挪到 Service，或反过来
+- [ ] 要做“操作成功后刷新多个区域”的功能
 
 ---
 
-## Checklist for Cross-Layer Features
+## 第一步：先画出完整数据流
 
-Before implementation:
-- [ ] Mapped the complete data flow
-- [ ] Identified all layer boundaries
-- [ ] Defined format at each boundary
-- [ ] Decided where validation happens
+在这个项目里，先至少写出下面这条链：
 
-After implementation:
-- [ ] Tested with edge cases (null, empty, invalid)
-- [ ] Verified error handling at each boundary
-- [ ] Checked data survives round-trip
+```text
+触发点
+→ 发起方（哪个 View / Service）
+→ 请求帧 / 输入参数
+→ 服务端响应类型
+→ 本地解析与兼容逻辑
+→ 更新哪个状态源
+→ 哪些 UI 依赖这个状态
+→ 是否需要持久化 / 恢复
+→ 失败时如何回退
+```
+
+### 例子：文件重命名
+
+```text
+文件操作菜单
+→ MainChatStorage
+→ DirectoryService.renameFile(...)
+→ fileRenameReq / fileResponse
+→ 解析 success 或 code
+→ 成功后关闭弹窗 + 刷新文件列表 + 可能刷新详情
+→ 文件列表 UI / 文件详情 UI
+→ 无需持久化
+→ 失败时提示错误并保留输入状态
+```
+
+### 例子：下载任务恢复
+
+```text
+应用启动或进入主界面
+→ DirectoryService / TransferTaskManager
+→ 从 Core Data 读取 TransferTaskEntity
+→ 恢复 bookmark 和文件 URL
+→ 恢复任务状态到 manager
+→ 传输列表 UI 展示
+→ 用户恢复任务时重新发起协议层下载
+→ bookmark 失效时走异常路径
+```
 
 ---
 
-## When to Create Flow Documentation
+## 第二步：明确边界和责任归属
 
-Create detailed flow docs when:
-- Feature spans 3+ layers
-- Multiple teams are involved
-- Data format is complex
-- Feature has caused bugs before
+本项目里最常见的几个边界如下：
+
+| 边界 | 常见问题 | 本项目里的重点 |
+|------|----------|---------------|
+| View ↔ Service | View 写了太多业务逻辑 | `MainChatStorage.swift` 很大，新增逻辑时更要克制 |
+| Service ↔ Socket Protocol | 请求类型、响应类型、超时不匹配 | `sendFrameAndWait(...)` 的 `expecting` 不能写错 |
+| Protocol ↔ DTO | 服务端字段格式不稳定 | 要考虑 `Int/String`、`success/code`、`msg/message` |
+| Service ↔ Shared State | 改了服务结果，但没同步公共状态 | `SocketManager` 的 `@Published` 状态要看清是谁消费 |
+| Service ↔ Persistence | 内存状态更新了，但没有落盘 | 传输任务和 bookmark 恢复不能漏 |
+| Local Proxy ↔ Player | 播放正常但 seek、暂停、范围请求异常 | 视频流链路不是普通下载逻辑 |
+
+### 一个简单判断规则
+
+如果你回答不清下面三个问题，就说明边界还没想清楚：
+
+1. 这份数据的唯一事实来源在哪？
+2. 谁负责把它从一种格式变成另一种格式？
+3. 出错时由哪一层负责兜底和提示？
+
+---
+
+## 第三步：定义每一层的输入 / 输出契约
+
+在这个项目里，不要只写“调用某个函数”，要明确：
+
+- 输入是什么
+- 输出是什么
+- 可能失败在哪里
+- 状态何时更新
+- 是否需要在主线程更新
+
+### 对协议层，至少明确这些点
+
+- 发送的帧类型是什么
+- 负载是 `Codable`、字典，还是裸 `Data`
+- 期待哪一种响应帧
+- 是否可能收到多种响应类型
+- 超时时间是多少
+- 流式处理还是单次响应
+
+### 对服务层，至少明确这些点
+
+- 返回 DTO、布尔值、分页对象还是只抛错
+- 是否需要兼容多种后端响应格式
+- 是否需要写日志
+- 是否需要更新共享 `@Published` 状态
+- 是否需要持久化
+
+### 对视图层，至少明确这些点
+
+- 哪些状态属于当前视图
+- 哪些状态应由服务或单例持有
+- 成功后刷新哪些区域
+- 失败后保留哪些输入
+- 弹窗 / alert / loading 状态如何收尾
+
+---
+
+## 这个项目最常见的跨层失误
+
+### 1. 只改了协议，不改 UI 刷新路径
+
+表现：
+
+- 接口已经成功
+- 但列表、详情、面板没有刷新
+
+常见于：
+
+- 文件重命名
+- 删除文件 / 目录
+- 处理好友申请
+- 刷新好友列表 / 待处理申请
+
+要问自己：
+
+- 成功后谁来刷新？
+- 刷新的是局部状态还是重新拉取服务端数据？
+
+### 2. 只改了解码，不改上层状态模型
+
+表现：
+
+- 服务端已经返回新字段
+- DTO 能解出来
+- 但 UI 没消费，或旧字段仍在被用
+
+要问自己：
+
+- 新字段最终落到哪个状态源？
+- 这个状态源是否已经驱动对应 UI？
+
+### 3. 在错误的层做验证或兼容
+
+表现：
+
+- 一部分校验在 View，一部分在 Service，一部分在 DTO
+- 同类错误出现不同提示方式
+
+建议：
+
+- 输入合法性校验通常在 View / 入口层
+- 协议兼容和格式转换在 DTO / Service 边界
+- 状态一致性维护在拥有该状态的服务层
+
+### 4. 忽略持久化与恢复链路
+
+表现：
+
+- 当前会话可用
+- 重启后失效
+
+高风险区域：
+
+- 下载目录
+- 文件访问权限
+- 未完成传输任务
+- 依赖 bookmark 的本地 URL
+
+### 5. 把视频流当普通下载处理
+
+表现：
+
+- 播放能开始
+- 但拖动、断点、范围请求、局部缓存表现异常
+
+要记住：
+
+- `LocalMediaServer`
+- `VideoStreamingService`
+- `VideoStreamCache`
+- `AVPlayer` 的 HTTP Range 行为
+
+这是一条独立链路，不是“普通文件下载再换个 UI”。
+
+---
+
+## 本项目里的跨层设计原则
+
+### 原则 1：远端服务端是主数据源
+
+本地大多数状态都是：
+
+- 服务端响应的映射
+- 为 UI 服务的缓存
+- 为恢复任务服务的持久化
+
+不要把本地状态误当成长期事实来源。
+
+### 原则 2：共享状态要有唯一持有者
+
+例如：
+
+- 认证状态由 `AuthenticationService` 持有
+- 好友 / 聊天共享状态主要由 `SocketManager` 持有
+- 传输任务状态由 `TransferTaskManager` 持有
+
+不要让同一类事实同时在多个层里各维护一份独立真相。
+
+### 原则 3：协议兼容逻辑应集中在边界
+
+例如：
+
+- `success` / `code`
+- `msg` / `message`
+- `Int` / `String`
+
+这些兼容逻辑应放在 DTO 解码或服务边界，不要散落到 View 中。
+
+### 原则 4：操作成功不等于流程完成
+
+在这个项目里，真正完成通常意味着：
+
+- 协议成功
+- 本地状态同步成功
+- 相关 UI 刷新成功
+- 必要时持久化完成
+
+只做到第一步，不算完整实现。
+
+---
+
+## 修改前建议画的最小表格
+
+对于任何跨层功能，至少先写出这张表：
+
+| 项目 | 内容 |
+|------|------|
+| 触发位置 | 哪个 View / 菜单 / 生命周期 |
+| 所属服务 | 谁负责执行业务 |
+| 请求协议 | 发什么帧 |
+| 响应协议 | 等什么帧 |
+| 数据模型 | 用哪个 DTO / 响应包装 |
+| 状态落点 | 更新谁的 `@State` / `@Published` / 持久化 |
+| UI 影响 | 哪些区域要刷新 |
+| 失败路径 | 怎么提示，怎么回滚 |
+| 恢复需求 | 重启后是否还要成立 |
+
+如果这张表填不完整，说明现在还不适合直接开改。
+
+---
+
+## 实施后的自检
+
+改完跨层功能后，至少检查这些点：
+
+- [ ] 请求帧类型和期待响应类型是否对应正确
+- [ ] DTO 是否兼容当前服务端返回格式
+- [ ] 成功后是否更新了正确的状态源
+- [ ] 依赖该状态的 UI 是否会真实刷新
+- [ ] 失败时是否能给用户明确反馈
+- [ ] 如涉及本地文件访问，是否处理了 bookmark / 权限恢复
+- [ ] 如涉及流式场景，是否考虑了暂停、超时、seek、重试
+
+---
+
+## 什么时候应该补充专门流程文档
+
+满足下面任一条件，建议额外写流程说明，而不是只改代码：
+
+- 功能横跨 3 层以上
+- 需要新增帧类型并联动多个模块
+- 这个链路以前出过 bug
+- 有恢复、重试、断点续传、流式处理等复杂状态
+- 未来别人接手时，单看代码不容易快速还原流程
+
+---
+
+**核心原则**：在这个项目里，功能实现不是“把请求发出去”就结束了，而是“协议、状态、UI、恢复链路都闭环”才算完成。

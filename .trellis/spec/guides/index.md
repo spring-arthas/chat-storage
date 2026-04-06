@@ -1,79 +1,106 @@
-# Thinking Guides
+# 思考指南
 
-> **Purpose**: Expand your thinking to catch things you might not have considered.
-
----
-
-## Why Thinking Guides?
-
-**Most bugs and tech debt come from "didn't think of that"**, not from lack of skill:
-
-- Didn't think about what happens at layer boundaries → cross-layer bugs
-- Didn't think about code patterns repeating → duplicated code everywhere
-- Didn't think about edge cases → runtime errors
-- Didn't think about future maintainers → unreadable code
-
-These guides help you **ask the right questions before coding**.
+> **目的**：在动手改代码前，先把容易遗漏的边界条件和结构问题想清楚，减少“功能看起来能跑，但系统性出错”的情况。
 
 ---
 
-## Available Guides
+## 为什么需要思考指南
 
-| Guide | Purpose | When to Use |
-|-------|---------|-------------|
-| [Code Reuse Thinking Guide](./code-reuse-thinking-guide.md) | Identify patterns and reduce duplication | When you notice repeated patterns |
-| [Cross-Layer Thinking Guide](./cross-layer-thinking-guide.md) | Think through data flow across layers | Features spanning multiple layers |
+这个项目的主要复杂度，不在某一个单点函数，而在下面几类交叉问题：
 
----
+- 自定义帧协议带来的**协议边界错误**
+- SwiftUI 视图、单例服务、持久化之间的**状态边界错误**
+- 上传、下载、视频流、本地代理之间的**链路协同错误**
+- 看起来相似但实现散落各处的逻辑导致的**重复实现和行为漂移**
 
-## Quick Reference: Thinking Triggers
+在这个仓库里，很多问题不是“不会写”，而是“少想了一层”：
 
-### When to Think About Cross-Layer Issues
+- 少想了一个帧类型，导致请求发出后等不到响应
+- 少想了一个状态持有者，导致 UI 和服务层状态不一致
+- 少想了一个 bookmark 恢复点，导致重启后任务失效
+- 少想了一个已有实现，导致复制出第二套近似逻辑
 
-- [ ] Feature touches 3+ layers (API, Service, Component, Database)
-- [ ] Data format changes between layers
-- [ ] Multiple consumers need the same data
-- [ ] You're not sure where to put some logic
-
-→ Read [Cross-Layer Thinking Guide](./cross-layer-thinking-guide.md)
-
-### When to Think About Code Reuse
-
-- [ ] You're writing similar code to something that exists
-- [ ] You see the same pattern repeated 3+ times
-- [ ] You're adding a new field to multiple places
-- [ ] **You're modifying any constant or config**
-- [ ] **You're creating a new utility/helper function** ← Search first!
-
-→ Read [Code Reuse Thinking Guide](./code-reuse-thinking-guide.md)
+这些指南不是通用流程文档，而是给当前项目用的“动手前检查单”。
 
 ---
 
-## Pre-Modification Rule (CRITICAL)
+## 当前可用指南
 
-> **Before changing ANY value, ALWAYS search first!**
+| 文档 | 作用 | 什么时候读 |
+|------|------|------------|
+| [代码复用思考指南](./code-reuse-thinking-guide.md) | 发现已有模式，避免在协议、解析、状态、UI 行为上重复造轮子 | 你准备写新函数、新服务、新工具、新状态同步逻辑时 |
+| [跨层思考指南](./cross-layer-thinking-guide.md) | 先梳理数据在协议、服务、视图、持久化之间如何流动 | 功能跨越 3 层以上，或修改请求 / 响应 / 状态链路时 |
+
+---
+
+## 快速触发条件
+
+### 什么时候要先看“跨层思考指南”
+
+出现下面任一情况，先看：
+
+- [ ] 你要新增或修改 `FrameTypeEnum`
+- [ ] 你要改 `sendFrameAndWait(...)` 的调用方式或响应类型
+- [ ] 你要改 DTO 字段、解码逻辑或服务端响应格式兼容
+- [ ] 你要让同一份数据同时影响 `SocketManager`、`DirectoryService`、`MainChatStorage` 或持久化层
+- [ ] 你要改上传 / 下载 / 视频播放 / 本地代理之间的行为
+- [ ] 你不确定某段逻辑应该放在 View、Service、Manager 还是 Persistence
+
+→ 读 [跨层思考指南](./cross-layer-thinking-guide.md)
+
+### 什么时候要先看“代码复用思考指南”
+
+出现下面任一情况，先看：
+
+- [ ] 你准备新增一个请求函数
+- [ ] 你准备新增一个错误类型、日志格式或响应解析函数
+- [ ] 你看到类似的 JSON 解码 / 响应码校验已经写过多次
+- [ ] 你要新增一套 UI 状态变量，而仓库里已经有相近流程
+- [ ] 你要新增工具函数、常量、主题配置、路径配置
+- [ ] 你正在复制 `DirectoryService`、`SocketManager`、`MainChatStorage` 里的某段逻辑
+
+→ 读 [代码复用思考指南](./code-reuse-thinking-guide.md)
+
+---
+
+## 修改前硬规则
+
+> **修改任何值、字段、帧类型、状态流之前，先搜索全仓库。**
+
+优先使用：
 
 ```bash
-# Search for the value you're about to change
-grep -r "value_to_change" .
+rg "要修改的关键词" .
 ```
 
-This single habit prevents most "forgot to update X" bugs.
+在这个项目里，下面几类修改尤其不能只改一处：
+
+- 帧类型编号
+- DTO 字段名
+- 服务端响应码 / `success` 兼容逻辑
+- 主题颜色、状态文案
+- 下载目录、bookmark、持久化字段
+- `MainChatStorage` 里的 UI 状态和对应服务调用
 
 ---
 
-## How to Use This Directory
+## 建议的使用方式
 
-1. **Before coding**: Skim the relevant thinking guide
-2. **During coding**: If something feels repetitive or complex, check the guides
-3. **After bugs**: Add new insights to the relevant guide (learn from mistakes)
-
----
-
-## Contributing
-
-Found a new "didn't think of that" moment? Add it to the relevant guide.
+1. 开始改功能前，先看与任务最相关的 guide。
+2. 如果功能横跨协议、服务、视图、持久化，优先看“跨层思考指南”。
+3. 如果你已经在复制第二段类似代码，立刻切到“代码复用思考指南”。
+4. 如果踩过坑，把新坑补进对应指南，而不是只修代码不留规则。
 
 ---
 
-**Core Principle**: 30 minutes of thinking saves 3 hours of debugging.
+## 本目录的目标
+
+本目录不是为了写“正确的理想架构”，而是为了帮助你在**当前这个真实工程**里少踩坑：
+
+- 接受现状
+- 识别风险
+- 在现有结构下做更稳妥的修改
+
+---
+
+**核心原则**：先想清楚边界，再改实现。这个项目里，20 分钟的结构思考，通常能省掉 2 小时以上的联调和回归排查。

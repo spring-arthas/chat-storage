@@ -1,87 +1,230 @@
-# Directory Structure
+# 目录结构
 
-> How backend (service/model) code is organized in this project.
-
----
-
-## Overview
-
-This is a macOS SwiftUI app. "Backend" refers to the service layer, models, and protocol layer — everything that is NOT a SwiftUI View.
+> 当前项目中服务层、模型层、协议层和持久化层的真实组织方式。
 
 ---
 
-## Directory Layout
+## 概述
 
-```
+这个项目的“后端层”主要指客户端内部的非视图代码。但需要注意，代码组织里存在明显的历史痕迹：
+
+- 一些真正的 SwiftUI 视图文件放在 `Services/`
+- 一些旧文件仍然保留作为占位或兼容壳
+- 一些类型的真实定义不在最直观的文件里
+
+因此理解目录时，必须按**实际职责**而不是只按路径名。
+
+---
+
+## 当前主要目录布局
+
+```text
 chat-storage/
 ├── Models/
-│   ├── frame/                  # Custom binary protocol definitions
-│   │   ├── Frame.swift         # Wire format struct
-│   │   ├── FrameTypeEnum.swift # All protocol message type codes (0x01–0x5F)
-│   │   ├── FrameBuilder.swift  # Encodes Codable payload → Frame
-│   │   └── FrameParser.swift   # Decodes raw bytes → Frame, handles buffer accumulation
-│   ├── do/                     # Data Objects (server-side entities)
-│   │   ├── UserDO.swift        # User entity, CodingKeys map server field names
-│   │   └── FileDto.swift       # File entity from server
-│   ├── business/               # Business-specific models
+│   ├── frame/
+│   │   ├── Frame.swift
+│   │   ├── FrameBuilder.swift
+│   │   ├── FrameParser.swift
+│   │   └── FrameTypeEnum.swift
+│   ├── do/
+│   │   ├── UserDO.swift
+│   │   └── FileDto.swift
+│   ├── request/
+│   │   └── UserRequest.swift
+│   ├── business/
 │   │   └── UserSearchModels.swift
-│   └── DirectoryItem.swift     # Directory tree node
+│   ├── DirectoryItem.swift          # 废弃占位文件
+│   └── FileDto.swift                # 废弃占位文件
 ├── Services/
-│   ├── AuthenticationService.swift   # Login/register/logout via frame protocol
-│   ├── DirectoryService.swift        # Directory CRUD, file listing, upload/download
-│   ├── TransferTaskManager.swift     # Concurrent transfer queue (max 5)
-│   ├── StorageTransferTask.swift     # Transfer task model (upload/download)
-│   ├── TransferModels.swift          # Supporting transfer types
-│   ├── ManagedCriticalState.swift    # NSLock-based actor-safe state wrapper
-│   ├── LocalMediaServer.swift        # Local HTTP server for AVPlayer video proxy
-│   ├── VideoStreamingService.swift   # Video streaming coordination
+│   ├── AuthenticationService.swift
+│   ├── DirectoryService.swift
+│   ├── FileDownloadService.swift
+│   ├── FileTransferService.swift    # 历史占位，主逻辑已迁移
+│   ├── TransferTaskManager.swift
+│   ├── StorageTransferTask.swift
+│   ├── TransferModels.swift
+│   ├── ManagedCriticalState.swift
+│   ├── LocalMediaServer.swift
+│   ├── VideoStreamCache.swift
+│   ├── VideoStreamingService.swift
 │   ├── VideoStreamLoaderDelegate.swift
 │   ├── VideoWindowManager.swift
-│   ├── FileTransferService.swift     # STUB — logic merged into DirectoryService
-│   └── RecursiveDirectoryView.swift  # Helper for directory traversal
-├── SocketManager.swift               # TCP connection, sendFrameAndWait
-├── SocketManager+FrameHandling.swift # STUB — logic merged into SocketManager
-├── Persistence.swift                 # Core Data stack + PersistenceManager
-└── InputValidator.swift              # Phone/email/password format validation
+│   ├── VideoPlayerView.swift
+│   └── RecursiveDirectoryView.swift # 路径在 Services，但本质是 SwiftUI 视图
+├── SocketManager.swift
+├── SocketManager+FrameHandling.swift # 历史占位，逻辑已并入 SocketManager
+├── Persistence.swift
+└── InputValidator.swift
 ```
 
 ---
 
-## Module Organization
+## 协议层
 
-**Frame Protocol** (`Models/frame/`): Self-contained. All protocol message types, encoding and decoding live here. Never bypass this layer — always use `FrameBuilder.build()` and `FrameParser.decodePayload()`.
+位于 `Models/frame/`，负责自定义二进制帧协议：
 
-**Services** (`Services/`): Business logic singletons. Each service depends on `SocketManager.shared` for transport.
+- `Frame.swift`
+  - 帧结构定义
+- `FrameTypeEnum.swift`
+  - 所有协议消息类型
+- `FrameBuilder.swift`
+  - 从 `Codable`、字典或原始 JSON 数据构建帧
+- `FrameParser.swift`
+  - 从原始数据解析帧，以及解码帧内容
 
-**SocketManager** (root): The single source of truth for the TCP connection. All communication goes through `sendFrameAndWait(_:expecting:timeout:)`.
-
----
-
-## Naming Conventions
-
-| Pattern | Convention | Example |
-|---------|-----------|---------|
-| Data Objects | `*DO` suffix | `UserDO` |
-| Request structs | `*Request` suffix | `UserRequest`, `FileListRequest` |
-| Response wrapper | `ResponseWrapper<T>` | `ResponseWrapper<UserDO>` |
-| Frame type codes | `*Req` / `*Response` / `*Ack` | `.dirCreateReq`, `.dirResponse` |
-| Singletons | `static let shared` | `SocketManager.shared` |
-| Errors | `*Error` enum conforming `LocalizedError` | `SocketError`, `FrameError`, `AuthError`, `DirectoryError` |
+这是整个客户端最底层的通信模型。
 
 ---
 
-## Stub Files — Do Not Delete
+## 模型层
 
-Two files are intentional empty stubs kept to avoid breaking Xcode project references:
-- `FileTransferService.swift` — logic merged into `DirectoryService.swift`
-- `SocketManager+FrameHandling.swift` — logic merged into `SocketManager.swift`
+### `Models/do/`
 
-**Never delete these files. Never add logic back into them.**
+放的是主要 DTO：
+
+- `UserDO`
+- `FileDto`
+
+其中 `FileDto.swift` 还同时定义了当前真实使用的 `DirectoryItem`。
+
+### `Models/request/`
+
+目前主要是：
+
+- `UserRequest`
+
+### `Models/business/`
+
+当前 `UserSearchModels.swift` 已基本废弃，文档和代码都不应把它当成主要模型入口。
 
 ---
 
-## Examples
+## 服务层
 
-- Well-organized service: `Services/AuthenticationService.swift`
-- Well-organized protocol layer: `Models/frame/FrameBuilder.swift`
-- Data object with CodingKeys mapping: `Models/do/UserDO.swift`
+### `SocketManager.swift`
+
+这是当前最核心的服务文件之一，负责：
+
+- TCP 连接
+- 发送帧
+- 等待响应
+- 维护 continuation 映射
+- 注册流式处理器
+- 持有好友 / 聊天部分共享状态
+
+它既是通信层，又是部分状态层。
+
+### `AuthenticationService.swift`
+
+负责：
+
+- 登录
+- 注册
+- 退出登录
+
+它本身较轻，主要是构造请求、调用 `SocketManager`、解析结果并更新认证状态。
+
+### `DirectoryService.swift`
+
+这是另一个高复杂度文件，当前同时承担：
+
+- 目录树加载
+- 目录创建 / 重命名 / 删除
+- 文件列表 / 详情 / 删除 / 重命名
+- 上传流程
+- 视频流请求
+- 下载目录管理相关合并代码
+- 任务恢复相关逻辑
+
+这里的职责边界已经明显扩大，后续开发时需要格外小心。
+
+### `TransferTaskManager.swift`
+
+负责：
+
+- 任务入队
+- 并发调度
+- 暂停 / 恢复 / 取消
+- 从数据库恢复任务
+- 管理活跃任务与等待队列
+
+### 媒体 / 下载相关服务
+
+当前媒体与下载链路相关文件包括：
+
+- `FileDownloadService.swift`
+- `LocalMediaServer.swift`
+- `VideoStreamCache.swift`
+- `VideoStreamingService.swift`
+- `VideoStreamLoaderDelegate.swift`
+- `VideoWindowManager.swift`
+- `VideoPlayerView.swift`
+
+这些能力和普通目录 / 文件请求不同，不应简单等同于“常规文件下载”。
+
+---
+
+## 持久化层
+
+### `Persistence.swift`
+
+当前这个文件里同时包含：
+
+- `PersistenceController`
+- `PersistenceManager`
+
+也就是说：
+
+- Core Data 栈初始化
+- 任务实体读写
+- bookmark 恢复
+
+都集中在这个文件中。
+
+---
+
+## 重要例外与历史文件
+
+### 1. `SocketManager+FrameHandling.swift`
+
+当前为保留文件，主要逻辑已合并进 `SocketManager.swift`。
+
+### 2. `Services/FileTransferService.swift`
+
+当前是历史占位文件，注释说明主逻辑已迁移。
+
+### 3. `Models/DirectoryItem.swift` / `Models/FileDto.swift`
+
+这两个也是废弃占位，不是当前真实类型定义入口。
+
+### 4. `Services/RecursiveDirectoryView.swift`
+
+路径在 `Services/`，但本质是前端 SwiftUI 视图辅助文件。
+
+因此它不应被误当成纯后端服务。
+
+---
+
+## 当前结构的阅读建议
+
+如果你要改：
+
+- 协议：先看 `Models/frame/`
+- 通用连接 / 好友 / 聊天状态：先看 `SocketManager.swift`
+- 目录 / 文件 / 上传：先看 `DirectoryService.swift`
+- 传输队列：先看 `TransferTaskManager.swift`
+- 本地持久化：先看 `Persistence.swift`
+- 视频 / 范围请求 / 本地代理：先看媒体相关服务链路
+
+---
+
+## 当前目录结构的风险点
+
+- 不要只看文件名判断真实职责
+- 不要只看目录名判断前后端归属
+- 不要误删占位文件
+- 不要误以为类型一定定义在同名文件中
+
+---
+
+**核心原则**：按“谁真正负责这段逻辑”来理解结构，而不是按文件摆放位置想当然。

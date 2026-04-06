@@ -151,7 +151,10 @@ public class SocketManager: NSObject, ObservableObject {
     /// 连接到默认服务器
     func connect() {
         // 默认连接本地服务器 (端口 10086)
-        connect(host: "172.21.32.120", port: 10086)
+        //connect(host: "172.21.32.120", port: 10086)
+        //connect(host: "192.168.0.101", port: 10086);
+        connect(host: "192.168.2.106", port: 10086);
+        
     }
     
     /// 连接到服务器

@@ -1,38 +1,76 @@
-# Backend Development Guidelines
+# 后端开发规范
 
-> Best practices for backend development in this project.
-
----
-
-## Overview
-
-This directory contains guidelines for backend development. Fill in each file with your project's specific conventions.
+> 基于当前 `chat-storage` 项目中服务层、协议层、模型层和持久化层的真实实现整理。
 
 ---
 
-## Guidelines Index
+## 概述
 
-| Guide | Description | Status |
-|-------|-------------|--------|
-| [Directory Structure](./directory-structure.md) | Module organization and file layout | Done |
-| [Database Guidelines](./database-guidelines.md) | Core Data usage, bookmarks, task persistence | Done |
-| [Error Handling](./error-handling.md) | Error types, handling strategies | Done |
-| [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | Done |
-| [Logging Guidelines](./logging-guidelines.md) | Emoji-prefix print() conventions | Done |
+这里的“后端”不是指独立服务端仓库，而是当前 macOS 客户端中的非视图层部分，包括：
 
----
+- 自定义帧协议
+- TCP 连接与响应匹配
+- 目录 / 文件 / 认证 / 好友 / 聊天相关服务
+- 传输任务调度
+- 本地持久化
+- 下载目录与 bookmark 恢复
+- 视频流和本地代理相关服务
 
-## How to Fill These Guidelines
-
-For each guideline file:
-
-1. Document your project's **actual conventions** (not ideals)
-2. Include **code examples** from your codebase
-3. List **forbidden patterns** and why
-4. Add **common mistakes** your team has made
-
-The goal is to help AI assistants and new team members understand how YOUR project works.
+这个目录的目标，是帮助后续开发时理解**当前客户端内部业务层的真实边界**，而不是描述一套理想化分层。
 
 ---
 
-**Language**: All documentation should be written in **English**.
+## 文档索引
+
+| 文档 | 说明 |
+|------|------|
+| [目录结构](./directory-structure.md) | 服务层、模型层、协议层的真实组织方式与例外 |
+| [数据库规范](./database-guidelines.md) | Core Data、任务持久化、bookmark 使用边界 |
+| [错误处理](./error-handling.md) | 当前代码里的错误类型、抛出方式、常见兜底路径 |
+| [质量规范](./quality-guidelines.md) | 服务层和协议层开发时的现实约束与禁忌 |
+| [日志规范](./logging-guidelines.md) | 当前仓库里的 `print()` 日志风格和注意事项 |
+
+---
+
+## 这组规范重点解决什么问题
+
+这个项目的服务层复杂度主要来自以下几类点：
+
+- 自定义二进制帧协议，而不是 HTTP
+- 同时存在单次请求响应和流式处理两种通信模式
+- 部分返回结构稳定，部分返回需要字典解析兜底
+- 任务状态、本地权限恢复、视频流、本地代理彼此有关联
+- 代码组织中有历史迁移痕迹，不完全规整
+
+因此后端规范更关注：
+
+- 协议边界
+- 状态一致性
+- 恢复链路
+- 并发与线程安全
+
+---
+
+## 阅读顺序建议
+
+1. 先看 [目录结构](./directory-structure.md)，明确代码分布。
+2. 再看 [质量规范](./quality-guidelines.md)，建立开发边界。
+3. 如果改任务恢复、本地权限、Core Data，再看 [数据库规范](./database-guidelines.md)。
+4. 如果改协议、错误传播、调用链，再看 [错误处理](./error-handling.md)。
+5. 开始排查问题或补日志时，再看 [日志规范](./logging-guidelines.md)。
+
+---
+
+## 当前后端层的现实特点
+
+- 并不是所有服务都完全纯粹或边界完美
+- `SocketManager` 同时承担传输层和部分共享状态持有职责
+- `DirectoryService` 同时承担目录 / 文件操作和部分传输相关能力
+- 一部分历史文件仍保留为兼容壳或迁移残留
+- 数据库和 bookmark 的持久化路径不止一条
+
+这意味着：新增功能时不要假设仓库已经被整理成理想服务架构。
+
+---
+
+**核心原则**：先承认现状，再在现状上写出稳定、可追踪、可恢复的服务逻辑。

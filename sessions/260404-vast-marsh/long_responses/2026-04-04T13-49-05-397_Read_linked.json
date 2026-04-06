@@ -1,0 +1,22 @@
+[
+  {
+    "type": "image",
+    "source": {
+      "type": "base64",
+      "data": {
+        "assetRef": {
+          "path": "/Users/debugcode/Documents/mac/chat-storage/sessions/260404-vast-marsh/downloads/assets/Read_274ffbdcbb89a376.png",
+          "relativePath": "downloads/assets/Read_274ffbdcbb89a376.png",
+          "mimeType": "image/png",
+          "ext": ".png",
+          "size": 288376,
+          "sizeHuman": "281.6 KB",
+          "sha256": "274ffbdcbb89a37670ce25462a4c730d5edb0c00baf891e9854ddbc253e0fc56",
+          "jsonPath": "$[0].source.data",
+          "source": "raw-base64"
+        }
+      },
+      "media_type": "image/png"
+    }
+  }
+]

@@ -31,7 +31,9 @@ final class VideoStreamingService {
         self.init(host: host)
     }
 
-    deinit {}
+    deinit {
+        cancel()
+    }
 
     func startCustomVideoStreaming(
         fileId: Int64,
@@ -197,8 +199,13 @@ final class VideoStreamingService {
             return
         }
 
+        let host = self.targetHost
+        let port = self.targetPort
         await MainActor.run {
-            self.socketManager.switchConnection(host: self.targetHost, port: self.targetPort)
+            // 直接调用 connect()，不通过 switchConnection()，
+            // 避免 switchConnection 内部的 Thread.sleep(0.1) 阻塞主 RunLoop。
+            // VideoStreamingService 的 SocketManager 始终是全新实例，无需先 disconnect。
+            self.socketManager.connect(host: host, port: port)
         }
 
         var attempts = 0
@@ -218,9 +225,8 @@ final class VideoStreamingService {
     }
 
     private func disconnectSocket() {
-        Task { @MainActor in
-            self.socketManager.disconnect(notifyUI: false)
-        }
+        // 同步断开，避免旧连接与新连接并存导致内存叠加
+        socketManager.disconnect(notifyUI: false)
     }
 
     private static func int64Value(from value: Any?) -> Int64? {
