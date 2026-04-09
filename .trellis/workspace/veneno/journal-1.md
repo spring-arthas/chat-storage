@@ -50,3 +50,55 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 2: 分析并修复视频缩略图不显示问题
+
+**Date**: 2026-04-09
+**Task**: 分析并修复视频缩略图不显示问题
+
+### Summary
+
+(Add summary)
+
+### Main Changes
+
+**问题**: 服务端有 range_pull 日志，客户端无报错，但视频文件缩略图不展示。
+
+**根本原因**: `VideoThumbnailResourceLoader.swift` 在处理 `requestsAllDataToEndOfResource=true` 请求时，只拉取了 4MB 就立即调用 `finishLoading()`，违反 Apple 文档规定——未提供全部数据时调用 `finishLoading()` "may result in an error"，导致 `generateCGImagesAsynchronously` 回调 `result == .failed`。
+
+**修复方案**: 完整重写 `VideoThumbnailResourceLoader.swift`：
+- 新增 `openLoadingRequests` 字典追踪未关闭的请求
+- 只有 `fullyProvided=true`（提供了全部所需数据）才调用 `finishLoading()`
+- `requestsAllDataToEndOfResource=true` 且只给了部分数据时：只调用 `respond(with:)`，保持请求开放
+- AVFoundation 分析已有数据后，自行发出 targeted range request（`requestsAllDataToEndOfResource=false`）精准拉取 moov 原子和帧数据
+- `didCancel` 和 `deinit` 负责关闭所有遗留的开放请求
+
+**变更文件**:
+- `chat-storage/Services/VideoThumbnailResourceLoader.swift` — 核心修复
+- `chat-storage/Services/FileThumbnailService.swift` — 两级缓存 + ResourceLoader 驱动 + 本地文件帧提取
+- `chat-storage/Models/do/FileDto.swift` — 新增 isImageFile/isVideoFile
+- `chat-storage/Services/DirectoryService.swift` — StandardAckResponse 加 fileId
+- `chat-storage/Services/TransferTaskManager.swift` — 上传完成触发 buildFromLocal
+- `chat-storage/MainChatStorage.swift` — FileListRowView 展示缩略图 + prefetch
+
+**状态**: 代码已写，build 成功，待测试后提交。
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `uncommitted` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
