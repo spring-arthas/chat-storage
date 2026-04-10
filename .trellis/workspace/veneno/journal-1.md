@@ -102,3 +102,64 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: 缩略图本地优先策略 + 缓存生命周期管理
+
+**Date**: 2026-04-10
+**Task**: 缩略图本地优先策略 + 缓存生命周期管理
+
+### Summary
+
+(Add summary)
+
+### Main Changes
+
+## 本次 Session 完成的工作
+
+### 缩略图策略重构（已完成，待提交）
+
+**问题背景**：视频缩略图通过网络 IO 拉取数据存在根本性问题（moov-at-end 大文件、iPhone MOV 触发 323MB DataRequest）。
+
+**新策略**：上传时优先从本地磁盘文件生成缩略图，避免网络拉取。
+
+**涉及文件**：
+- `chat-storage/Services/FileThumbnailService.swift`（新建）：两级缓存（NSCache + 磁盘 JPEG）的缩略图服务，包含视频帧提取（多时间点采样 + 亮度评分过滤黑屏帧）
+- `chat-storage/Services/VideoThumbnailResourceLoader.swift`（新建）：AVAssetResourceLoaderDelegate 实现，按需从服务端拉字节
+- `chat-storage/Services/DirectoryService.swift`：`deleteFile` 成功后调用 `FileThumbnailService.shared.deleteFromCache`
+- `chat-storage/Services/TransferTaskManager.swift`：上传完成后从返回的 `fileId` 调用 `buildFromLocal` 生成缩略图
+- `chat-storage/MainChatStorage.swift`：删除临时测试代码 `clearAllCache()`
+- `chat-storage/Services/DirectoryService.swift`：`uploadFile` 返回类型改为 `async throws -> Int64?`，`StandardAckResponse` 新增 `fileId: Int64?` 字段
+
+### 上传 hang 问题排查（结论：客户端代码无 bug）
+
+**现象**：日志停在 "Bookmark created successfully"，上传无响应。
+
+**排查结论**：
+- Bookmark 日志在 `sendFrameAndWait` 执行期间出现属正常（Core Data `context.perform` 异步执行）
+- 客户端代码变更（`uploadFile` 返回 `Int64?`、`StandardAckResponse` 新增字段）逻辑正确
+- 上传卡在 `sendFrameAndWait(checkFrame, expecting: .resumeAck, timeout: 30.0)` 等待服务端 0x06 响应
+- **最可能原因**：服务端（port 10087）未响应 `resumeCheck`(0x05) 帧，30 秒后会打印超时错误
+
+### 注意点
+
+- 上传问题是服务端问题，不是客户端 bug，无需修改客户端代码
+- `FileThumbnailService.swift` 和 `VideoThumbnailResourceLoader.swift` 均为新文件，需要在 Xcode 中 Add to Target
+- 所有变更尚未 commit，需要先测试再提交
+
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
