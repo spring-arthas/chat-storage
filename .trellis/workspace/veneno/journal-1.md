@@ -163,3 +163,62 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 4: 文件上传假死修复 + 缩略图服务解耦
+
+**Date**: 2026-04-10
+**Task**: 文件上传假死修复 + 缩略图服务解耦
+
+### Summary
+
+(Add summary)
+
+### Main Changes
+
+## 本次会话完成内容
+
+### 问题诊断
+排查了文件上传后客户端假死的根因：`DirectoryService.uploadFile()` 在启动上传任务后同步调用了缩略图生成逻辑（`FileThumbnailService`），缩略图处理阻塞了主线程/上传流程，导致上传数据流无法推送。
+
+### 主要改动
+
+| 文件 | 改动内容 |
+|------|---------|
+| `chat-storage/Services/FileThumbnailService.swift` | **新增**：独立缩略图服务，内部用 `Task { }` 异步处理，不阻塞调用方 |
+| `chat-storage/Services/DirectoryService.swift` | 上传逻辑与缩略图解耦，启动上传后 fire-and-forget 触发缩略图生成 |
+| `chat-storage/Services/TransferTaskManager.swift` | 调整任务状态管理，确保上传流与缩略图流完全独立 |
+
+### 架构决策
+选择**方案A**：各司其职，上传和缩略图互不干扰：
+- 上传任务：TransferTaskManager → DirectoryService → SocketManager → 服务端
+- 缩略图任务：FileThumbnailService（独立 Task，异步，失败不影响上传）
+
+### 当前状态
+- 文件上传假死问题已修复
+- 缩略图服务作为独立模块存在
+- 04-08-video-file-pre-view 任务（文件列表可视化展示）尚未开始开发，状态为 planning
+
+**相关文件**:
+- `chat-storage/Services/FileThumbnailService.swift`（新增）
+- `chat-storage/Services/DirectoryService.swift`
+- `chat-storage/Services/TransferTaskManager.swift`
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `19b1a27` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
