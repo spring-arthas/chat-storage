@@ -347,6 +347,7 @@ class DirectoryService: ObservableObject {
         }
         
         print("✅ 文件删除成功")
+        Task { await FileThumbnailService.shared.deleteFromCache(fileId: fileId) }
     }
 
     /// 重命名文件 (0x44)
@@ -707,6 +708,7 @@ class FileTransferService: ObservableObject {
     ///   - targetDirId: 目标目录 ID
     ///   - userId: 用户 ID
     ///   - progressHandler: 进度回调 (0.0 - 1.0)
+    @discardableResult
     func uploadFile(
         fileUrl: URL,
         targetDirId: Int64,
@@ -715,14 +717,29 @@ class FileTransferService: ObservableObject {
         taskId: String,
         startOffset: Int64 = 0,
         progressHandler: ((Double, String) -> Void)? = nil
-    ) async throws {
+    ) async throws -> Int64? {
         print("🚀 开始上传文件: \(fileUrl.lastPathComponent) (TaskID: \(taskId))")
         
         // 1. 准备文件信息
         // 开启安全访问 (针对 Bookmark 恢复的 URL)
         let isSecurityScoped = fileUrl.startAccessingSecurityScopedResource()
         defer { if isSecurityScoped { fileUrl.stopAccessingSecurityScopedResource() } }
-        
+
+        // [缩略图] 在上传 scope 有效期内独立启动缩略图生成。
+        // Task.detached 立即执行自己的 startAccessingSecurityScopedResource，
+        // 确保自身 scope 在上传 scope 生命期内已建立，之后两者互不阻塞、各自管理生命周期。
+        let _thumbnailTaskId = taskId
+        let _thumbnailFileUrl = fileUrl
+        Task.detached(priority: .background) {
+            let isScoped = _thumbnailFileUrl.startAccessingSecurityScopedResource()
+            defer { if isScoped { _thumbnailFileUrl.stopAccessingSecurityScopedResource() } }
+            await FileThumbnailService.shared.buildFromLocal(
+                taskId: _thumbnailTaskId,
+                fileUrl: _thumbnailFileUrl,
+                fileName: _thumbnailFileUrl.lastPathComponent
+            )
+        }
+
         guard FileManager.default.fileExists(atPath: fileUrl.path) else {
             throw FileTransferError.fileNotFound
         }
@@ -743,7 +760,7 @@ class FileTransferService: ObservableObject {
             userName: userName,
             status: "Waiting",
             progress: 0.0,
-            uploadedBytes: 0,
+            uploadedBytes: startOffset, // [修改] 保留已上传字节数，断点续传时不归零
             md5: nil // MD5 计算后再更新
         )
         // --- Persistence Integration End ---
@@ -792,27 +809,35 @@ class FileTransferService: ObservableObject {
             
             // 使用字典构建 Frame
             let checkFrame = Frame(type: .resumeCheck, data: jsonData, flags: 0x00)
-            let checkResponseFrame = try await socketManager.sendFrameAndWait(checkFrame, expecting: .resumeAck, timeout: 30.0)
-            let resumeInfo = try FrameParser.decodePayload(checkResponseFrame, as: ResumeAckResponse.self)
-            
+
             var offset: Int64 = 0
             // 本地变量用于跟踪最终使用的 TaskID (初始化为传入的 ID)
             var finalTaskId: String = taskId
+            // 标记是否需要走全新上传路径
+            var needFreshUpload = false
+
+            let checkResponseFrame = try await socketManager.sendFrameAndWait(checkFrame, expecting: .resumeAck, timeout: 30.0)
+            let resumeInfo = try FrameParser.decodePayload(checkResponseFrame, as: ResumeAckResponse.self)
+
             if resumeInfo.status == "resume" {
                 // === 断点续传 ===
                 let serverTaskId = resumeInfo.taskId ?? ""
-                // 如果服务端返回了不为空的 ID 且与我们的不同，优先使用服务端的
                 if !serverTaskId.isEmpty && serverTaskId != taskId {
                     print("⚠️ 服务端返回了不同的 TaskId: \(serverTaskId) vs \(taskId)。将优先使用服务端的。")
                     finalTaskId = serverTaskId
                 }
                 offset = resumeInfo.uploadedSize ?? 0
                 print("🔄 发现断点记录，TaskId: \(finalTaskId), 已上传: \(offset) 字节，继续上传...")
-                
+
             } else if resumeInfo.status == "new" {
+                needFreshUpload = true
+            } else {
+                throw FileTransferError.serverError(resumeInfo.message ?? "未知状态")
+            }
+
+            if needFreshUpload {
                 // === 全新上传 ===
                 print("🆕 无断点记录，开始全新上传...")
-                // 发送元数据帧 (0x01)，发送元数据全新上传帧
                 let metaFrame = try FrameBuilder.build(type: .metaFrame, payload: metaRequest)
                 let metaResponseFrame = try await socketManager.sendFrameAndWait(metaFrame, expecting: .ackFrame, timeout: 30.0)
                 let ack = try FrameParser.decodePayload(metaResponseFrame, as: StandardAckResponse.self)
@@ -823,9 +848,6 @@ class FileTransferService: ObservableObject {
                     finalTaskId = newId
                 }
                 print("✅ 元数据握手成功，获取 TaskId: \(finalTaskId)")
-                
-            } else {
-                throw FileTransferError.serverError(resumeInfo.message ?? "未知状态")
             }
             
             
@@ -840,7 +862,7 @@ class FileTransferService: ObservableObject {
                 try await sendFileData(
                     fileUrl: fileUrl,
                     offset: offset,
-                    taskId: finalTaskId, // 使用 finalTaskId
+                    taskId: taskId, // [修改] 用本地 taskId 确保进度存入正确 DB 记录
                     fileSize: fileSize,
                     progressHandler: progressHandler
                 )
@@ -860,13 +882,15 @@ class FileTransferService: ObservableObject {
             } else {
                 throw FileTransferError.serverError(finalAck.message ?? "上传最终确认失败")
             }
-            
+
             // --- Persistence Complete ---
             // 任务完成，可以选择删除或标记为完成。 根据需求保留记录。
             PersistenceManager.shared.updateStatus(taskId: taskId, status: "Completed")
             // PersistenceManager.shared.deleteTask(taskId: taskId) // 暂时保留
             // --- Persistence End ---
-            
+
+            return finalAck.fileId
+
         } else {
              throw FileTransferError.invalidResponse // Replace with appropriate error if serialization fails
         }
@@ -1207,6 +1231,7 @@ struct StandardAckResponse: Codable {
     let status: String       // "ready", "success"
     let taskId: String?
     let message: String?
+    let fileId: Int64?
 }
 
 // MARK: - Errors

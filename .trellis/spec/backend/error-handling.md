@@ -257,3 +257,11 @@ if let code = dict["code"] as? Int, code != 200 {
 ---
 
 **核心原则**：在这个项目里，错误处理最重要的不是“抛错”，而是“所有失败路径都能被看见、被收尾、被反馈”。
+
+
+## Java Rules Overlay - Exception Strategy
+
+- 领域异常优先使用自定义 `RuntimeException`（带关键业务上下文），避免到处传播通用异常。
+- 禁止宽泛 `catch (Exception e)`（除顶层兜底）；禁止吞异常或只记录“失败”而不带主键上下文。
+- 对外错误响应禁止泄漏堆栈、SQL 细节、内部路径；内部日志保留完整异常堆栈用于排查。
+- 需要返回可空结果时优先 `Optional.orElseThrow(...)` 或显式分支，避免“空值继续流转”。

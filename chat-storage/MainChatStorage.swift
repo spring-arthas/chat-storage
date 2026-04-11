@@ -38,6 +38,11 @@ enum TelegramTheme {
     static var success: Color { Color(lightHex: successHex, darkHex: successHex) }
     static var danger: Color { Color(lightHex: dangerHex, darkHex: dangerHex) }
     static var warning: Color { Color(lightHex: lightWarningHex, darkHex: warningHex) }
+    static var transferHeaderText: Color { Color(lightHex: transferHeaderTextHex(isDark: false), darkHex: transferHeaderTextHex(isDark: true)) }
+
+    static func transferHeaderTextHex(isDark: Bool = true) -> String {
+        isDark ? textPrimaryHex : lightTextPrimaryHex
+    }
 
     static func statusColorHex(for status: String, isDark: Bool = true) -> String {
         switch status {
@@ -253,10 +258,8 @@ struct MainChatStorage: View {
     /// 是否开启自动排序
     @State private var isAutoSortEnabled = true
     
-    /// 传输列表面板高度（支持上下拖动调整）
-    @State private var transferPanelHeight: CGFloat = 240
-    @State private var transferPanelHeightAtDragStart: CGFloat = 240
-    @State private var isDraggingTransferPanel = false
+    /// 传输列表面板固定高度（不支持上下拖动）
+    private let transferPanelHeight: CGFloat = 260
 
     /// 主题模式状态 (持久化)
     @AppStorage("isDarkMode") private var isDarkMode = true
@@ -268,7 +271,7 @@ struct MainChatStorage: View {
     
     // MARK: - Cloud Storage UI Innovation & Theme
     /// 视图模式: 0 = 列表, 1 = 网格 (Cloud Hub Grid)
-    @State private var storageViewMode: Int = 1 
+    @State private var storageViewMode: Int = 0
     /// 网格项悬停状态，Key 为文件 ID
     @State private var gridHoverStates: [Int64: Bool] = [:]
     /// 是否开启网格背景网格动画
@@ -435,6 +438,9 @@ struct MainChatStorage: View {
         }
         // 应用主题设置
         .preferredColorScheme(isDarkMode ? .dark : .light)
+        .transaction { tx in
+            tx.animation = nil
+        }
     }
 
 
@@ -468,9 +474,7 @@ struct MainChatStorage: View {
             
             // 主题切换按钮
             Button(action: {
-                withAnimation {
-                    isDarkMode.toggle()
-                }
+                isDarkMode.toggle()
             }) {
                 Image(systemName: isDarkMode ? "moon.fill" : "sun.max.fill")
                     .foregroundColor(isDarkMode ? TelegramTheme.warning : TelegramTheme.accent)
@@ -624,11 +628,7 @@ struct MainChatStorage: View {
 
     
     private var mainContent: some View {
-        GeometryReader { proxy in
-            let minTransferHeight: CGFloat = 160
-            let maxTransferHeight = max(minTransferHeight, proxy.size.height * 0.62)
-            let clampedTransferHeight = min(max(transferPanelHeight, minTransferHeight), maxTransferHeight)
-
+        GeometryReader { _ in
             ZStack(alignment: .top) {
                 // 背景仅覆盖中间主内容面板
                 MeshGradientBackground()
@@ -646,7 +646,6 @@ struct MainChatStorage: View {
                         ZStack {
                             if storageViewMode == 0 {
                                 fileListView
-                                    .transition(.opacity)
                             } else {
                                 CloudGridView(
                                     items: currentFiles,
@@ -670,10 +669,8 @@ struct MainChatStorage: View {
                                         VideoWindowManager.shared.show(fileId: file.id, fileName: file.fileName, fileSize: file.fileSize ?? 0)
                                     }
                                 )
-                                .transition(.scale(scale: 0.95).combined(with: .opacity))
                             }
                         }
-                        .animation(.spring(), value: storageViewMode)
 
                         Divider()
                             .overlay(TelegramTheme.textSecondary.opacity(0.12))
@@ -685,40 +682,18 @@ struct MainChatStorage: View {
                     Divider()
                         .overlay(TelegramTheme.textSecondary.opacity(0.12))
 
-                    // 拖拽条：允许用户上下调整传输列表区域高度
-                    HStack {
-                        Capsule()
-                            .fill(TelegramTheme.textSecondary.opacity(0.55))
-                            .frame(width: 44, height: 5)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 14, maxHeight: 14)
-                    .background(TelegramTheme.panelBackground.opacity(0.94))
-                    .contentShape(Rectangle())
-                    .gesture(
-                        DragGesture(minimumDistance: 1)
-                            .onChanged { value in
-                                if !isDraggingTransferPanel {
-                                    isDraggingTransferPanel = true
-                                    transferPanelHeightAtDragStart = transferPanelHeight
-                                }
-                                let proposed = transferPanelHeightAtDragStart - value.translation.height
-                                transferPanelHeight = min(max(proposed, minTransferHeight), maxTransferHeight)
-                            }
-                            .onEnded { _ in
-                                isDraggingTransferPanel = false
-                                transferPanelHeight = min(max(transferPanelHeight, minTransferHeight), maxTransferHeight)
-                            }
-                    )
-
                     transferListView
                         .frame(maxWidth: .infinity)
-                        .frame(height: clampedTransferHeight)
+                        .frame(height: transferPanelHeight)
                         .background(TelegramTheme.panelBackground)
+                        .transaction { tx in
+                            tx.animation = nil
+                        }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .onChange(of: proxy.size.height) { newHeight in
-                    let resizedMax = max(minTransferHeight, newHeight * 0.62)
-                    transferPanelHeight = min(max(transferPanelHeight, minTransferHeight), resizedMax)
+                .transaction { tx in
+                    // 云盘区禁用隐式动画，避免登录后状态刷新导致上下抖动
+                    tx.animation = nil
                 }
             }
             .clipped()
@@ -828,46 +803,46 @@ struct MainChatStorage: View {
     
     private var fileListView: some View {
         VStack(spacing: 0) {
-            // 表头 (现代优化版)
-            HStack(spacing: 0) {
-                Toggle("", isOn: Binding(
-                    get: { isAllSelected },
-                    set: { _ in toggleAllSelection() }
-                ))
-                .toggleStyle(.checkbox)
-                .frame(width: 30, alignment: .center)
-                .padding(.leading, 14)
-                
-                FileTableHeaderView(items: [
-                    HeaderItem(title: "文件名称", icon: "doc", isSpacer: true),
-                    HeaderItem(title: "文件大小", icon: "externaldrive", width: 80),
-                    HeaderItem(title: "所属目录", icon: "folder", width: 100),
-                    HeaderItem(title: "上传时间", icon: "clock", width: 140),
-                    HeaderItem(title: "操作", width: 112, alignment: .center)
-                ], leadingPadding: 8)
-            }
-            .background(VisualEffectView(material: .headerView, blendingMode: .withinWindow))
-            .overlay(
-                Rectangle()
-                    .fill(TelegramTheme.panelBackground.opacity(0.82))
-            )
-
-            
-            // 文件列表内容区域
-            ScrollView {
-                if fileList.isEmpty {
-                    VStack(spacing: 12) {
-                        Image(systemName: "folder")
+            if currentFiles.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "folder")
                         .font(.system(size: 48))
                         .foregroundColor(TelegramTheme.textSecondary.opacity(0.55))
-                        
-                        Text("暂无文件")
-                            .font(.system(size: 14))
-                            .foregroundColor(TelegramTheme.textSecondary)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(40)
-                } else {
+
+                    Text("暂无文件")
+                        .font(.system(size: 14))
+                        .foregroundColor(TelegramTheme.textSecondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(40)
+                .background(TelegramTheme.appBackground.opacity(0.55))
+            } else {
+                // 表头 (现代优化版)
+                HStack(spacing: 0) {
+                    Toggle("", isOn: Binding(
+                        get: { isAllSelected },
+                        set: { _ in toggleAllSelection() }
+                    ))
+                    .toggleStyle(.checkbox)
+                    .frame(width: 30, alignment: .center)
+                    .padding(.leading, 14)
+
+                    FileTableHeaderView(items: [
+                        HeaderItem(title: "文件名称", icon: "doc", isSpacer: true),
+                        HeaderItem(title: "文件大小", icon: "externaldrive", width: 80),
+                        HeaderItem(title: "所属目录", icon: "folder", width: 100),
+                        HeaderItem(title: "上传时间", icon: "clock", width: 140),
+                        HeaderItem(title: "操作", width: 112, alignment: .center)
+                    ], leadingPadding: 8, titleColor: TelegramTheme.textPrimary, titleWeight: .bold, iconColor: TelegramTheme.transferHeaderText, iconOpacity: 1.0)
+                }
+                .background(VisualEffectView(material: .headerView, blendingMode: .withinWindow))
+                .overlay(
+                    Rectangle()
+                        .fill(TelegramTheme.panelBackground.opacity(0.18))
+                )
+
+                // 文件列表内容区域
+                ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(currentFiles) { file in
                             fileRow(file)
@@ -875,8 +850,8 @@ struct MainChatStorage: View {
                         }
                     }
                 }
+                .background(TelegramTheme.appBackground.opacity(0.55))
             }
-            .background(TelegramTheme.appBackground.opacity(0.55))
         }
     }
     
@@ -935,10 +910,8 @@ struct MainChatStorage: View {
             isChecked: selectedFiles.contains(file.id),
             onToggle: { toggleSelection(file.id) },
             onTap: {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    self.selectedFileId = file.id
-                    loadFileDetail(fileId: file.id)
-                }
+                self.selectedFileId = file.id
+                loadFileDetail(fileId: file.id)
             },
             onPlay: {
                 VideoWindowManager.shared.show(fileId: file.id, fileName: file.fileName, fileSize: file.fileSize ?? 0)
@@ -1013,7 +986,7 @@ struct MainChatStorage: View {
 
             Divider()
 
-            // 表头 (现代优化版)
+            // 表头 (固定显示，避免空/非空切换时布局上下跳动)
             FileTableHeaderView(items: [
                 HeaderItem(title: "序号", width: 36, alignment: .center),
                 HeaderItem(title: "文件名称", icon: "doc", isSpacer: true),
@@ -1023,24 +996,24 @@ struct MainChatStorage: View {
                 HeaderItem(title: "状态", icon: "waveform.path.ecg", width: 80),
                 HeaderItem(title: "传输进度", icon: "timer", width: 200),
                 HeaderItem(title: "操作", width: 80, alignment: .center)
-            ], leadingPadding: 0)
+            ], leadingPadding: 0, titleColor: TelegramTheme.textPrimary, titleWeight: .bold, titleFontSize: 12, iconColor: TelegramTheme.transferHeaderText, iconOpacity: 1.0)
 
-            
-            // 列表内容
-            ScrollView {
-                if transferList.isEmpty {
-                    VStack(spacing: 12) {
-                        Image(systemName: "arrow.up.arrow.down.square")
+            if transferList.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "arrow.up.arrow.down.square")
                         .font(.system(size: 40))
                         .foregroundColor(TelegramTheme.textSecondary.opacity(0.5))
-                        
-                        Text("无传输任务")
-                            .font(.system(size: 13))
-                            .foregroundColor(TelegramTheme.textSecondary)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(40)
-                } else {
+
+                    Text("无传输任务")
+                        .font(.system(size: 13))
+                        .foregroundColor(TelegramTheme.textSecondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(40)
+                .background(TelegramTheme.appBackground.opacity(0.55))
+            } else {
+                // 列表内容
+                ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(Array(transferList.enumerated()), id: \.element.id) { index, item in
                             transferRow(item, index: index + 1)
@@ -1048,8 +1021,8 @@ struct MainChatStorage: View {
                         }
                     }
                 }
+                .background(TelegramTheme.appBackground.opacity(0.55))
             }
-            .background(TelegramTheme.appBackground.opacity(0.55))
         }
     }
     // 文件传输列表一行记录的状态
@@ -1611,16 +1584,19 @@ struct MainChatStorage: View {
     private var storageView: some View {
         HSplitView {
             sidebar
-                .frame(minWidth: 190, idealWidth: 240, maxWidth: 340)
+                .frame(minWidth: 170, idealWidth: 210, maxWidth: 280)
                 .background(TelegramTheme.panelBackground)
 
             mainContent
-                .frame(minWidth: 520, idealWidth: 860, maxWidth: .infinity)
+                .frame(minWidth: 620, idealWidth: 760, maxWidth: .infinity)
                 .layoutPriority(1)
 
             detailSidebar
-                .frame(minWidth: 230, idealWidth: 320, maxWidth: 460)
+                .frame(minWidth: 273, idealWidth: 364, maxWidth: 468)
                 .background(TelegramTheme.panelBackground)
+        }
+        .transaction { tx in
+            tx.animation = nil
         }
     }
     
@@ -2317,6 +2293,9 @@ struct MainChatStorage: View {
                         // 简单重置，不再递归调用，下次交互会正常
                     }
                 }
+                // 文件列表加载完成后，后台预加载图片/视频缩略图
+                let items = await MainActor.run { self.fileList }
+                Task { await FileThumbnailService.shared.prefetch(items: items) }
             } catch {
                 print("❌ 加载文件列表失败: \(error)")
                 await MainActor.run {
@@ -4254,8 +4233,6 @@ struct TailChatBubbleShape: Shape {
 
 /// 动态背景：磨砂渐变效果
 private struct MeshGradientBackground: View {
-    @State private var animate = false
-    
     var body: some View {
         ZStack {
             // 基础渐变
@@ -4265,15 +4242,10 @@ private struct MeshGradientBackground: View {
                     TelegramTheme.panelBackground,
                     TelegramTheme.elevatedBackground
                 ],
-                startPoint: animate ? .topLeading : .bottomTrailing,
-                endPoint: animate ? .bottomTrailing : .topLeading
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .onAppear {
-                withAnimation(.easeInOut(duration: 10).repeatForever(autoreverses: true)) {
-                    animate.toggle()
-                }
-            }
 
             // 模糊层
             VisualEffectView(material: .underWindowBackground, blendingMode: .withinWindow)
@@ -4384,11 +4356,7 @@ private struct FileCard: View {
         .contentShape(Rectangle())
         .onTapGesture(count: 1, perform: onTap)
         .onTapGesture(count: 2, perform: onDoubleTap)
-        .onHover { h in withAnimation(.easeInOut(duration: 0.2)) { isHovering = h } }
-        .transition(.asymmetric(
-            insertion: .scale(scale: 0.9).combined(with: .opacity),
-            removal: .opacity
-        ))
+        .onHover { h in isHovering = h }
         .contextMenu {
             if item.iconName == "film" {
                 Button { onPlay() } label: { Label("播放", systemImage: "play.circle") }
@@ -4445,6 +4413,7 @@ private struct FileListRowView: View {
     let onDownload: () -> Void
     let onDelete: () -> Void
 
+    @State private var thumbnail: NSImage? = nil
     @State private var isHovering = false
     @State private var isPlayHovering = false
     @State private var isRenameHovering = false
@@ -4458,18 +4427,31 @@ private struct FileListRowView: View {
                 .toggleStyle(.checkbox)
                 .frame(width: 24)
 
-            // 文件图标（颜色渐变，按类型区分）
+            // 文件图标（图片/视频显示缩略图，其他保持 SF Symbol）
             ZStack {
                 RoundedRectangle(cornerRadius: 6)
                     .fill(file.isFile
                           ? TelegramTheme.accent.opacity(0.12)
                           : TelegramTheme.warning.opacity(0.14))
                     .frame(width: 32, height: 32)
-                Image(systemName: file.isFile ? file.iconName : "folder.fill")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(file.isFile
-                                     ? TelegramTheme.accent.gradient
-                                     : TelegramTheme.warning.gradient)
+                if let thumb = thumbnail {
+                    Image(nsImage: thumb)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 32, height: 32)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                } else {
+                    Image(systemName: file.isFile ? file.iconName : "folder.fill")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(file.isFile
+                                         ? TelegramTheme.accent.gradient
+                                         : TelegramTheme.warning.gradient)
+                }
+            }
+            .task {
+                guard file.isImageFile || file.isVideoFile else { return }
+                let img = await FileThumbnailService.shared.thumbnail(for: file)
+                await MainActor.run { self.thumbnail = img }
             }
 
             // 文件名
@@ -4502,7 +4484,6 @@ private struct FileListRowView: View {
                                              ? TelegramTheme.success
                                              : TelegramTheme.textSecondary.opacity(0.65))
                             .scaleEffect(isPlayHovering ? 1.15 : 1.0)
-                            .animation(.easeInOut(duration: 0.15), value: isPlayHovering)
                     }
                     .buttonStyle(.plain)
                     .help("播放")
@@ -4517,7 +4498,6 @@ private struct FileListRowView: View {
                                          ? TelegramTheme.accent
                                          : TelegramTheme.textSecondary.opacity(0.65))
                         .scaleEffect(isRenameHovering ? 1.15 : 1.0)
-                        .animation(.easeInOut(duration: 0.15), value: isRenameHovering)
                 }
                 .buttonStyle(.plain)
                 .help("重命名")
@@ -4531,7 +4511,6 @@ private struct FileListRowView: View {
                                          ? TelegramTheme.accent
                                          : TelegramTheme.textSecondary.opacity(0.65))
                         .scaleEffect(isDownloadHovering ? 1.15 : 1.0)
-                        .animation(.easeInOut(duration: 0.15), value: isDownloadHovering)
                 }
                 .buttonStyle(.plain)
                 .help("下载")
@@ -4545,7 +4524,6 @@ private struct FileListRowView: View {
                                          ? TelegramTheme.danger
                                          : TelegramTheme.textSecondary.opacity(0.55))
                         .scaleEffect(isDeleteHovering ? 1.15 : 1.0)
-                        .animation(.easeInOut(duration: 0.15), value: isDeleteHovering)
                 }
                 .buttonStyle(.plain)
                 .help("删除")
@@ -4582,11 +4560,8 @@ private struct FileListRowView: View {
             radius: 4, x: 0, y: 2
         )
         .contentShape(Rectangle())
-        .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.18)) { isHovering = hovering }
-        }
+        .onHover { hovering in isHovering = hovering }
         .onTapGesture { onTap() }
-        .animation(.easeInOut(duration: 0.18), value: isSelected)
     }
 }
 
@@ -4613,6 +4588,29 @@ struct HeaderItem: Identifiable {
 struct FileTableHeaderView: View {
     let items: [HeaderItem]
     let leadingPadding: CGFloat
+    let titleColor: Color
+    let titleWeight: Font.Weight
+    let titleFontSize: CGFloat
+    let iconColor: Color
+    let iconOpacity: Double
+
+    init(
+        items: [HeaderItem],
+        leadingPadding: CGFloat,
+        titleColor: Color = TelegramTheme.textSecondary.opacity(0.98),
+        titleWeight: Font.Weight = .semibold,
+        titleFontSize: CGFloat = 11,
+        iconColor: Color = TelegramTheme.accent,
+        iconOpacity: Double = 0.95
+    ) {
+        self.items = items
+        self.leadingPadding = leadingPadding
+        self.titleColor = titleColor
+        self.titleWeight = titleWeight
+        self.titleFontSize = titleFontSize
+        self.iconColor = iconColor
+        self.iconOpacity = iconOpacity
+    }
     
     var body: some View {
         HStack(spacing: 0) {
@@ -4627,13 +4625,13 @@ struct FileTableHeaderView: View {
                     if let icon = item.icon {
                         Image(systemName: icon)
                             .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(TelegramTheme.accent.gradient)
-                            .opacity(0.95)
+                            .foregroundStyle(iconColor)
+                            .opacity(iconOpacity)
                     }
                     
                     Text(item.title)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(TelegramTheme.textSecondary.opacity(0.98))
+                        .font(.system(size: titleFontSize, weight: titleWeight))
+                        .foregroundColor(titleColor)
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
                 }
@@ -4655,7 +4653,7 @@ struct FileTableHeaderView: View {
                 }
             }
         )
-        .overlay(TelegramTheme.panelBackground.opacity(0.85))
+        .overlay(TelegramTheme.panelBackground.opacity(0.18))
     }
 }
 
@@ -4746,7 +4744,7 @@ private struct TransferListRowView: View {
                     .foregroundColor(statusColor)
                     .clipShape(Capsule())
 
-                // 操作按钮（悬停时渐显）
+                // 操作按钮（无动画切换）
                 HStack(spacing: 6) {
                     if canResume {
                         Button(action: onStart) {
@@ -4756,7 +4754,6 @@ private struct TransferListRowView: View {
                         }
                         .buttonStyle(.plain)
                         .help(item.taskType == .upload ? "开始上传" : "开始下载")
-                        .transition(.opacity)
                     } else if isActive {
                         Button(action: onPause) {
                             Image(systemName: "pause.circle.fill")
@@ -4765,7 +4762,6 @@ private struct TransferListRowView: View {
                         }
                         .buttonStyle(.plain)
                         .help("暂停")
-                        .transition(.opacity)
                     }
 
                     Button(action: onCancel) {
@@ -4777,7 +4773,6 @@ private struct TransferListRowView: View {
                     .help("取消")
                 }
                 .opacity(isHovering ? 1 : 0.3)
-                .animation(.easeInOut(duration: 0.2), value: isHovering)
             }
 
             // 进度条（渐变样式）
@@ -4790,7 +4785,6 @@ private struct TransferListRowView: View {
                         Capsule()
                             .fill(progressGradient)
                             .frame(width: max(geo.size.width * CGFloat(item.progress), 0), height: 5)
-                            .animation(.easeInOut(duration: 0.4), value: item.progress)
                     }
                 }
                 .frame(height: 5)
@@ -4823,7 +4817,6 @@ private struct TransferListRowView: View {
         )
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
-        .animation(.easeInOut(duration: 0.18), value: isHovering)
     }
 }
 import Foundation

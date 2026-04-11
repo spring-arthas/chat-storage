@@ -228,3 +228,12 @@
 ---
 
 **核心原则**：这个项目后端层最重要的质量，不是“形式统一”，而是“链路正确、状态一致、异常可恢复”。
+
+
+## Java Rules Overlay - Coding Style and Patterns
+
+- 值对象优先使用 `record`（JDK 16+）；字段默认 `final`，公开集合返回防御性拷贝（`List.copyOf` / `Map.copyOf`）。
+- Service/Repository 坚持分层：Controller 只做入参和出参边界，业务编排放 Service，持久化细节封装在 Repository/DAO。
+- 依赖注入优先构造器注入，禁止字段注入（如 `@Autowired` 字段注入）。
+- `Optional` 仅用于返回值，禁止作为字段或方法入参；禁止无判空直接 `get()`。
+- Stream 管道保持短小（建议不超过 3-4 步），复杂逻辑优先显式循环，避免可读性下降。

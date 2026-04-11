@@ -6,6 +6,7 @@
 //
 
 import XCTest
+import Network
 @testable import chat_storage
 
 final class chat_storageTests: XCTestCase {
@@ -53,6 +54,88 @@ final class chat_storageTests: XCTestCase {
         XCTAssertEqual(AppWindowLayout.mainMinHeight, 700)
         XCTAssertEqual(AppWindowLayout.loginWidth, 500)
         XCTAssertEqual(AppWindowLayout.loginHeight, 550)
+    }
+
+    func testLocalMediaServerTreatsConnectionResetAsClientAbort() throws {
+        XCTAssertTrue(LocalMediaServer.isClientClosedConnectionError(NWError.posix(.ECONNRESET)))
+        XCTAssertTrue(LocalMediaServer.isClientClosedConnectionError(POSIXError(.EPIPE)))
+    }
+
+    func testLocalMediaServerKeepsRealConnectionFailuresVisible() throws {
+        XCTAssertFalse(LocalMediaServer.isClientClosedConnectionError(NWError.posix(.ETIMEDOUT)))
+        XCTAssertFalse(LocalMediaServer.isClientClosedConnectionError(SocketError.connectionFailed))
+    }
+
+    func testVideoStreamCacheCompletionLogOnlyForSequentialFullLoad() throws {
+        XCTAssertNotNil(
+            VideoStreamCache.completionLogMessage(
+                fileName: "demo.mp4",
+                fileSize: 1024,
+                writtenBytes: 1024,
+                downloadStartOffset: 0,
+                allowsSequentialCompletionLog: true
+            )
+        )
+
+        XCTAssertNil(
+            VideoStreamCache.completionLogMessage(
+                fileName: "demo.mp4",
+                fileSize: 1024,
+                writtenBytes: 768,
+                downloadStartOffset: 0,
+                allowsSequentialCompletionLog: true
+            )
+        )
+
+        XCTAssertNil(
+            VideoStreamCache.completionLogMessage(
+                fileName: "demo.mp4",
+                fileSize: 1024,
+                writtenBytes: 1024,
+                downloadStartOffset: 512,
+                allowsSequentialCompletionLog: true
+            )
+        )
+
+        XCTAssertNil(
+            VideoStreamCache.completionLogMessage(
+                fileName: "demo.mp4",
+                fileSize: 1024,
+                writtenBytes: 1024,
+                downloadStartOffset: 0,
+                allowsSequentialCompletionLog: false
+            )
+        )
+    }
+
+    func testVideoStreamCacheCompletionLogIncludesExactByteCounts() throws {
+        let message = try XCTUnwrap(
+            VideoStreamCache.completionLogMessage(
+                fileName: "movie.mov",
+                fileSize: 4096,
+                writtenBytes: 4096,
+                downloadStartOffset: 0,
+                allowsSequentialCompletionLog: true
+            )
+        )
+
+        XCTAssertTrue(message.contains("文件名称=movie.mov"))
+        XCTAssertTrue(message.contains("文件总流字节大小=4096"))
+        XCTAssertTrue(message.contains("已拉取的大小=4096"))
+    }
+
+    func testTransferHeaderUsesPrimaryTextContrastInBothThemes() throws {
+        XCTAssertEqual(TelegramTheme.transferHeaderTextHex(isDark: true), TelegramTheme.textPrimaryHex)
+        XCTAssertEqual(TelegramTheme.transferHeaderTextHex(isDark: false), TelegramTheme.lightTextPrimaryHex)
+    }
+
+    func testThumbnailPrefetchRangesUsesHeadAndTailForLargeFile() throws {
+        let ranges = VideoThumbnailResourceLoader.prefetchRanges(fileSize: 10 * 1024 * 1024, maxBytesPerRequest: 4 * 1024 * 1024)
+        XCTAssertEqual(ranges.count, 2)
+        XCTAssertEqual(ranges[0].offset, 0)
+        XCTAssertEqual(ranges[0].length, 4 * 1024 * 1024)
+        XCTAssertEqual(ranges[1].offset, 6 * 1024 * 1024)
+        XCTAssertEqual(ranges[1].length, 4 * 1024 * 1024)
     }
 
 }

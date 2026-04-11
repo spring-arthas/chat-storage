@@ -244,7 +244,7 @@ struct DirectoryItem: Identifiable, CustomDebugStringConvertible, Codable, Hasha
         let ext = (fileName as NSString).pathExtension.lowercased()
         switch ext {
         case "jpg", "jpeg", "png", "gif", "bmp": return "photo"
-        case "mp4", "mov", "avi", "mkv": return "film"
+        case "mp4", "m4v", "mov", "avi", "mkv": return "film"   // m4v = iTunes 视频格式
         case "mp3", "wav", "aac": return "music.note"
         case "doc", "docx": return "doc.text"
         case "xls", "xlsx": return "chart.bar.doc.horizontal"
@@ -254,6 +254,19 @@ struct DirectoryItem: Identifiable, CustomDebugStringConvertible, Codable, Hasha
         case "txt", "md", "json", "xml": return "doc.text"
         default: return "doc"
         }
+    }
+
+    var isImageFile: Bool {
+        guard isFile else { return false }
+        let ext = (fileName as NSString).pathExtension.lowercased()
+        return ["jpg", "jpeg", "png", "gif", "bmp"].contains(ext)
+    }
+
+    var isVideoFile: Bool {
+        guard isFile else { return false }
+        let ext = (fileName as NSString).pathExtension.lowercased()
+        // 与 iconName、buildFromLocal、VideoThumbnailResourceLoader.contentType 保持一致
+        return ["mp4", "m4v", "mov", "avi", "mkv"].contains(ext)
     }
 
     var debugDescription: String {

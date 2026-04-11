@@ -9,8 +9,10 @@ import SwiftUI
 import AppKit
 
 enum AppWindowLayout {
-    static let mainMinWidth: CGFloat = 1080
-    static let mainMinHeight: CGFloat = 700
+    static let mainMinWidth: CGFloat = 1220
+    static let mainMinHeight: CGFloat = 720
+    static let mainPreferredWidth: CGFloat = 1240
+    static let mainPreferredHeight: CGFloat = 760
     static let loginWidth: CGFloat = 500
     static let loginHeight: CGFloat = 550
     static let visibleAreaRatio: CGFloat = 0.95
@@ -89,9 +91,8 @@ struct chat_storageApp: App {
 
         if isLoggedIn {
             window.minSize = NSSize(width: AppWindowLayout.mainMinWidth, height: AppWindowLayout.mainMinHeight)
-
-            let targetWidth = min(max(window.frame.width, AppWindowLayout.mainMinWidth), maxWidth)
-            let targetHeight = min(max(window.frame.height, AppWindowLayout.mainMinHeight), maxHeight)
+            let targetWidth = min(max(AppWindowLayout.mainPreferredWidth, AppWindowLayout.mainMinWidth), maxWidth)
+            let targetHeight = min(max(AppWindowLayout.mainPreferredHeight, AppWindowLayout.mainMinHeight), maxHeight)
             window.setContentSize(NSSize(width: targetWidth, height: targetHeight))
         } else {
             window.minSize = NSSize(width: AppWindowLayout.loginWidth, height: AppWindowLayout.loginHeight)

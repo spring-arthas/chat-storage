@@ -116,13 +116,13 @@ class TransferTaskManager: ObservableObject {
             state.pendingQueue.append(task)
             return (state.pendingQueue.count, state.activeTasks.count)
         }
-        
+
         print("✅ [提交任务] ID: \(id), Name: \(task.name)")
         print("📋 [提交任务] 当前 pendingQueue 大小: \(counts.pendingCount), activeTasks 大小: \(counts.activeCount)")
-        
+
         let dumpStatus = state.withCriticalRegion { $0.activeTasks.keys.joined(separator: ", ") }
         print("📋 [DEBUG] 当前 execution keys: \(dumpStatus)")
-        
+
         scheduleNext()
     }
     
@@ -355,10 +355,10 @@ class TransferTaskManager: ObservableObject {
                     let service = FileTransferService(socketManager: socketManager)
                     
                     // 从数据库读取已上传字节数（用于断点续传）
-                    let startOffset = getUploadedBytes(taskId: idStr)
+                    let startOffset = self.getUploadedBytes(taskId: idStr)
                     print("🔄 从数据库读取上传断点: \(startOffset) bytes")
                     
-                    try await service.uploadFile(
+                    let uploadedFileId = try await service.uploadFile(
                         fileUrl: task.fileUrl,
                         targetDirId: task.targetDirId,
                         userId: Int32(task.userId),
@@ -369,6 +369,16 @@ class TransferTaskManager: ObservableObject {
                             self.updateTaskProgress(id: idStr, progress: progress, speed: speed)
                         }
                     )
+                    // [修改] 上传完成后将 taskId-key 缩略图迁移到 fileId-key，供文件列表直接命中。
+                    // 缩略图已在 submit 时生成（不依赖 fileId），此处仅做磁盘文件重命名。
+                    if let newFileId = uploadedFileId {
+                        let taskId = idStr
+                        Task {
+                            await FileThumbnailService.shared.remapToFileId(taskId: taskId, fileId: newFileId)
+                        }
+                    } else {
+                        print("[Thumbnail] 服务端未返回 fileId，跳过 remap（缩略图保留在 taskId-key）")
+                    }
                 } else {
                     // 下载功能
                     let downloadService = FileDownloadService(socketManager: socketManager)

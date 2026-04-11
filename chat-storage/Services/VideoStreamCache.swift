@@ -42,8 +42,11 @@ final class VideoStreamCache {
 
     /// 文件名，由 startDownload 设置，供 restartDownload 复用。
     private(set) var fileName: String = ""
+    private var allowsSequentialCompletionLog = true
+    private var hasPrintedSequentialCompletionLog = false
 
     private var downloadTask: Task<Void, Never>?
+    private var streamingService: VideoStreamingService?
 
     /// 等待后台流写盘的 Range 请求列表，在 cacheIOQueue 上访问。
     private var waiters: [RangeWaiter] = []
@@ -78,6 +81,8 @@ final class VideoStreamCache {
 
     func startDownload(fileName: String) {
         self.fileName = fileName
+        self.allowsSequentialCompletionLog = true
+        self.hasPrintedSequentialCompletionLog = false
         guard !isInvalid else { return }
         launchDownloadTask(from: 0)
     }
@@ -104,16 +109,36 @@ final class VideoStreamCache {
 
             let fileOffset = range.lowerBound - downloadStartOffset
             let count = Int(range.upperBound - range.lowerBound + 1)
+            guard count > 0 else { return Data() }
 
-            let fd = open(tempFileURL.path, O_RDONLY)
-            guard fd >= 0 else { throw VideoStreamCacheError.fileReadFailed }
-            defer { close(fd) }
+            let handle: FileHandle
+            do {
+                handle = try FileHandle(forReadingFrom: tempFileURL)
+            } catch {
+                throw VideoStreamCacheError.fileReadFailed
+            }
+            defer { try? handle.close() }
 
-            var buffer = [UInt8](repeating: 0, count: count)
-            let bytesRead = Darwin.pread(fd, &buffer, count, off_t(fileOffset))
-            guard bytesRead == count else { throw VideoStreamCacheError.fileReadFailed }
+            do {
+                try handle.seek(toOffset: UInt64(fileOffset))
+            } catch {
+                throw VideoStreamCacheError.fileReadFailed
+            }
 
-            return Data(buffer)
+            let maxChunkSize = 1 * 1024 * 1024
+            var remaining = count
+            var result = Data()
+            result.reserveCapacity(count)
+
+            while remaining > 0 {
+                let chunk = min(maxChunkSize, remaining)
+                let part = try handle.read(upToCount: chunk) ?? Data()
+                guard !part.isEmpty else { throw VideoStreamCacheError.fileReadFailed }
+                result.append(part)
+                remaining -= part.count
+            }
+
+            return result
         }
     }
 
@@ -175,6 +200,8 @@ final class VideoStreamCache {
                 self.downloadStartOffset = newOffset
                 self.isFullyLoaded = false
                 self.isInvalid = false
+                self.allowsSequentialCompletionLog = false
+                self.hasPrintedSequentialCompletionLog = false
 
                 // 注册新 Waiter，然后启动下载
                 let waiter = RangeWaiter(
@@ -219,6 +246,18 @@ final class VideoStreamCache {
             self.writeHandle = nil
             self.notifyWaiters()
             print("✅ [VideoStreamCache] fileId=\(self.fileId) 全量缓存完成，共 \(self.writtenBytes) 字节")
+            guard !self.hasPrintedSequentialCompletionLog,
+                  let message = Self.completionLogMessage(
+                    fileName: self.fileName,
+                    fileSize: self.fileSize,
+                    writtenBytes: self.writtenBytes,
+                    downloadStartOffset: self.downloadStartOffset,
+                    allowsSequentialCompletionLog: self.allowsSequentialCompletionLog
+                  ) else {
+                return
+            }
+            self.hasPrintedSequentialCompletionLog = true
+            print(message)
         }
     }
 
@@ -230,11 +269,19 @@ final class VideoStreamCache {
         }
     }
 
+    func disableSequentialCompletionLog() {
+        cacheIOQueue.async { [weak self] in
+            self?.allowsSequentialCompletionLog = false
+        }
+    }
+
     // MARK: - 取消与清理
 
     func cancel() {
         downloadTask?.cancel()
         downloadTask = nil
+        streamingService?.cancel()
+        streamingService = nil
 
         let url = tempFileURL
         let handle = writeHandle
@@ -254,22 +301,35 @@ final class VideoStreamCache {
     private func launchDownloadTask(from offset: Int64) {
         let fid = fileId
         let name = fileName
+        let totalSize = fileSize
         downloadTask = Task { [weak self] in
             guard let self else { return }
-            let service = VideoStreamingService()
-            let delegate = CacheWriterDelegate(cache: self)
             do {
-                try await service.startCustomVideoStreaming(
-                    fileId: fid,
-                    startOffset: offset,
-                    delegate: delegate
-                )
+                let windowSize: Int64 = 1 * 1024 * 1024 // 1MB 窗口，兼顾 seek 响应与内存占用
+                var nextOffset = offset
+                var service = VideoStreamingService()
+                self.streamingService = service
+                while !Task.isCancelled && nextOffset < totalSize {
+                    let requestLength = min(windowSize, totalSize - nextOffset)
+                    let received = try await self.pullWindowWithRetry(
+                        service: &service,
+                        fileId: fid,
+                        startOffset: nextOffset,
+                        length: requestLength
+                    )
+                    guard received > 0 else { throw VideoStreamCacheError.fileReadFailed }
+                    nextOffset += received
+                }
+                if !Task.isCancelled {
+                    self.markFullyLoaded()
+                }
             } catch is CancellationError {
                 // 正常取消路径
             } catch {
                 self.markInvalid()
                 print("❌ [VideoStreamCache] 后台下载失败 [\(name)]: \(error)")
             }
+            self.streamingService = nil
         }
     }
 
@@ -277,22 +337,76 @@ final class VideoStreamCache {
     private func launchDownloadTaskOnIOQueue(from offset: Int64) {
         let fid = fileId
         let name = fileName
+        let totalSize = fileSize
         downloadTask = Task { [weak self] in
             guard let self else { return }
-            let service = VideoStreamingService()
-            let delegate = CacheWriterDelegate(cache: self)
             do {
-                try await service.startCustomVideoStreaming(
-                    fileId: fid,
-                    startOffset: offset,
-                    delegate: delegate
-                )
+                let windowSize: Int64 = 1 * 1024 * 1024
+                var nextOffset = offset
+                var service = VideoStreamingService()
+                self.streamingService = service
+                while !Task.isCancelled && nextOffset < totalSize {
+                    let requestLength = min(windowSize, totalSize - nextOffset)
+                    let received = try await self.pullWindowWithRetry(
+                        service: &service,
+                        fileId: fid,
+                        startOffset: nextOffset,
+                        length: requestLength
+                    )
+                    guard received > 0 else { throw VideoStreamCacheError.fileReadFailed }
+                    nextOffset += received
+                }
+                if !Task.isCancelled {
+                    self.markFullyLoaded()
+                }
             } catch is CancellationError { }
             catch {
                 self.markInvalid()
                 print("❌ [VideoStreamCache] 重启后台下载失败 [\(name)]: \(error)")
             }
+            self.streamingService = nil
         }
+    }
+
+    private func pullWindowWithRetry(
+        service: inout VideoStreamingService,
+        fileId: Int64,
+        startOffset: Int64,
+        length: Int64
+    ) async throws -> Int64 {
+        let maxRetries = 3
+        var lastError: Error?
+
+        for attempt in 1...maxRetries {
+            try Task.checkCancellation()
+            let delegate = CacheWriterDelegate(cache: self)
+            do {
+                let received = try await service.startCustomVideoStreaming(
+                    fileId: fileId,
+                    startOffset: startOffset,
+                    length: length,
+                    delegate: delegate
+                )
+                if received > 0 {
+                    return received
+                }
+                lastError = VideoStreamCacheError.fileReadFailed
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lastError = error
+                service.cancel()
+                service = VideoStreamingService()
+                self.streamingService = service
+            }
+
+            if attempt < maxRetries {
+                print("⚠️ [VideoStreamCache] 窗口拉流重试 \(attempt)/\(maxRetries) offset=\(startOffset) length=\(length)")
+                try await Task.sleep(nanoseconds: 200_000_000)
+            }
+        }
+
+        throw lastError ?? VideoStreamCacheError.fileReadFailed
     }
 
     /// 检查并唤醒所有已满足的 Waiter，同时清除超时的 Waiter。
@@ -327,6 +441,20 @@ final class VideoStreamCache {
         let relativeEnd = range.upperBound - downloadStartOffset
         return isFullyLoaded || writtenBytes > relativeEnd
     }
+
+    static func completionLogMessage(
+        fileName: String,
+        fileSize: Int64,
+        writtenBytes: Int64,
+        downloadStartOffset: Int64,
+        allowsSequentialCompletionLog: Bool
+    ) -> String? {
+        guard allowsSequentialCompletionLog, downloadStartOffset == 0, writtenBytes == fileSize else {
+            return nil
+        }
+
+        return "✅ [VideoStreamCache] 本次视频文件拉流完成，可以正常拖动播放，文件名称=\(fileName)，文件总流字节大小=\(fileSize)，已拉取的大小=\(writtenBytes)"
+    }
 }
 
 // MARK: - CacheWriterDelegate
@@ -344,12 +472,11 @@ private final class CacheWriterDelegate: VideoStreamLoaderDelegate {
         cache?.appendData(data)
     }
 
-    func didFinishLoading() {
-        cache?.markFullyLoaded()
-    }
+    // V2 协议下 END_FRAME 仅表示单个窗口结束，不代表全量文件已结束。
+    func didFinishLoading() {}
 
     func didFail(with error: Error) {
-        cache?.markInvalid()
+        // 失败由外层窗口重试逻辑兜底；仅在重试耗尽后由调用方 markInvalid。
         print("❌ [CacheWriterDelegate] 流失败: \(error)")
     }
 }
@@ -392,6 +519,14 @@ final class VideoStreamCacheManager {
 
         cache?.cancel()
         print("⏹️ [VideoStreamCacheManager] 停止缓存 fileId=\(fileId)")
+    }
+
+    func disableSequentialCompletionLog(fileId: Int64) {
+        lock.lock()
+        let cache = caches[fileId]
+        lock.unlock()
+
+        cache?.disableSequentialCompletionLog()
     }
 }
 

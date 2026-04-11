@@ -74,3 +74,16 @@
 ---
 
 **核心原则**：先承认现状，再在现状上写出稳定、可追踪、可恢复的服务逻辑。
+
+
+## Java Rules Overlay
+
+> 来源：`~/.claude/rules/java/*.md`，用于补充 Trellis 规范，不替代本项目既有规则。
+
+- `coding-style.md`：补充 Java 命名、不可变优先、现代语法（record/sealed/switch expression）建议。
+- `patterns.md`：补充 Repository + Service 分层、构造器注入、DTO 边界映射、统一响应包裹（按项目实际采用）。
+- `testing.md`：补充 JUnit 5 + AssertJ + Mockito +（必要时）Testcontainers 的测试基线。
+- `security.md`：补充密钥管理、参数化 SQL、输入校验、依赖漏洞扫描要求。
+- `hooks.md`：补充 `google-java-format` / `checkstyle` / `mvnw compile` 或 `gradlew compileJava` 的编辑后校验。
+
+适用范围：仅对 `*.java` 及 Java 构建文件（`pom.xml`、`build.gradle*`）生效。非 Java 模块按各自语言规范执行。

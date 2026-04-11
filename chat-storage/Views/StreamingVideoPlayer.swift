@@ -31,6 +31,7 @@ struct StreamingVideoPlayer: View {
     let fileName: String
     let fileSize: Int64
     @ObservedObject var viewModel: StreamingVideoViewModel
+    @State private var draggingProgress: Double? = nil
 
     var body: some View {
         ZStack {
@@ -159,18 +160,61 @@ struct StreamingVideoPlayer: View {
     }
 
     private var progressSlider: some View {
-        Slider(
-            value: Binding(
-                get: { viewModel.sliderPosition },
-                set: { newValue in
-                    viewModel.seekToFraction(newValue)
+        VStack(spacing: 4) {
+            GeometryReader { geo in
+                let width = max(geo.size.width, 1)
+                let progress = min(max(draggingProgress ?? viewModel.sliderPosition, 0), 1)
+                let thumbX = max(6, min(width - 6, width * progress))
+
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.white.opacity(0.22))
+                        .frame(height: 6)
+
+                    Capsule()
+                        .fill(Color(red: 0.23, green: 0.67, blue: 0.98))
+                        .frame(width: width * progress, height: 6)
+
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: 12, height: 12)
+                        .offset(x: thumbX - 6)
                 }
-            ),
-            in: 0...1
-        )
-        .accentColor(.white)
-        .padding(.horizontal, 12)
-        .disabled(viewModel.duration <= 0 || viewModel.playState == .stopped)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            guard viewModel.duration > 0, viewModel.playState != .stopped else { return }
+                            let x = min(max(0, value.location.x), width)
+                            draggingProgress = x / width
+                        }
+                        .onEnded { value in
+                            guard viewModel.duration > 0, viewModel.playState != .stopped else {
+                                draggingProgress = nil
+                                return
+                            }
+                            let x = min(max(0, value.location.x), width)
+                            let fraction = x / width
+                            draggingProgress = nil
+                            viewModel.seekToFraction(fraction)
+                        }
+                )
+            }
+            .frame(height: 18)
+            .padding(.horizontal, 12)
+
+            HStack {
+                let preview = draggingProgress.map { $0 * max(viewModel.duration, 0) } ?? viewModel.currentTime
+                Text(formatTime(preview))
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.92))
+                Spacer()
+                Text(formatTime(viewModel.duration))
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.72))
+            }
+            .padding(.horizontal, 12)
+        }
     }
 
     private var playPauseIcon: String {
@@ -266,7 +310,8 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
 
         let item = AVPlayerItem(url: url)
         let player = AVPlayer(playerItem: item)
-        player.automaticallyWaitsToMinimizeStalling = true
+        // 优先响应用户播放/暂停操作，避免继续播放需要较长等待
+        player.automaticallyWaitsToMinimizeStalling = false
 
         // 观察缓冲状态
         playerStatusObservation = player.observe(\AVPlayer.timeControlStatus, options: [.initial, .new]) { [weak self] observedPlayer, _ in
@@ -326,25 +371,29 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
         }
 
         self.player = player
-        player.play()
+        player.playImmediately(atRate: 1.0)
         playState = .playing
     }
 
     // MARK: - 播放控制
 
     func pause() {
+        player?.rate = 0
         player?.pause()
         playState = .paused
     }
 
     func resume() {
-        player?.play()
+        player?.playImmediately(atRate: 1.0)
         playState = .playing
     }
 
     /// Seek 到进度比例 fraction（0...1），Seek 完成后若在播放状态则恢复播放。
     func seekToFraction(_ fraction: Double) {
         guard let player, duration > 0 else { return }
+        if let currentFileId {
+            VideoStreamCacheManager.shared.disableSequentialCompletionLog(fileId: currentFileId)
+        }
         let targetSeconds = fraction * duration
         let targetTime = CMTime(seconds: targetSeconds, preferredTimescale: 600)
 
@@ -361,8 +410,8 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
             DispatchQueue.main.async {
                 self.isSeeking = false
                 if finished && self.playState == .playing {
-                    // seek 完成后保持播放状态（核心修复：避免 seek 后停留在暂停）
-                    self.player?.play()
+                    // seek 完成后保持播放状态，并立即恢复播放
+                    self.player?.playImmediately(atRate: 1.0)
                 }
             }
         }

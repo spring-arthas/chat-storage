@@ -49,6 +49,8 @@
 		9F6A1C2B3D4E5F60718293A5 /* LocalMediaServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F6A1C2B3D4E5F60718293A4 /* LocalMediaServer.swift */; };
 		F367581AF0A30FDA474AEFE6 /* StreamingVideoPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F0DEAC3AAE6F6EDB94346C /* StreamingVideoPlayer.swift */; };
 		F376FF2A8792AEC068D20113 /* AVKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BD0B61B09A0C287FDAA8E760 /* AVKit.framework */; };
+		AA1B2C3D4E5F6071A2B3C4D5 /* FileThumbnailService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1B2C3D4E5F6071A2B3C4D4 /* FileThumbnailService.swift */; };
+		BB2C3D4E5F6071A2B3C4D5E6 /* VideoThumbnailResourceLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2C3D4E5F6071A2B3C4D5E5 /* VideoThumbnailResourceLoader.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -115,6 +117,8 @@
 		9F6A1C2B3D4E5F60718293A4 /* LocalMediaServer.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = LocalMediaServer.swift; sourceTree = "<group>"; };
 		BD0B61B09A0C287FDAA8E760 /* AVKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVKit.framework; path = System/Library/Frameworks/AVKit.framework; sourceTree = SDKROOT; };
 		C2F0DEAC3AAE6F6EDB94346C /* StreamingVideoPlayer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Views/StreamingVideoPlayer.swift; sourceTree = "<group>"; };
+		AA1B2C3D4E5F6071A2B3C4D4 /* FileThumbnailService.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = FileThumbnailService.swift; sourceTree = "<group>"; };
+		BB2C3D4E5F6071A2B3C4D5E5 /* VideoThumbnailResourceLoader.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = VideoThumbnailResourceLoader.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -287,6 +291,8 @@
 				767210282F2DE4D70067C257 /* DirectoryService.swift */,
 				4ED769D02F2CB903006CFB2F /* AuthenticationService.swift */,
 				8C25750653B3817FE0C7D25A /* VideoWindowManager.swift */,
+				AA1B2C3D4E5F6071A2B3C4D4 /* FileThumbnailService.swift */,
+				BB2C3D4E5F6071A2B3C4D5E5 /* VideoThumbnailResourceLoader.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -457,6 +463,8 @@
 				B3F1E2A4C5D6708192A3B4C5 /* VideoStreamCache.swift in Sources */,
 				1A9C1AFBF514D6EB09347A01 /* VideoWindowManager.swift in Sources */,
 				F367581AF0A30FDA474AEFE6 /* StreamingVideoPlayer.swift in Sources */,
+				AA1B2C3D4E5F6071A2B3C4D5 /* FileThumbnailService.swift in Sources */,
+				BB2C3D4E5F6071A2B3C4D5E6 /* VideoThumbnailResourceLoader.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

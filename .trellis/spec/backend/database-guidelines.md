@@ -234,3 +234,11 @@ DOWNLOAD_FILE_ID_12345
 ---
 
 **核心原则**：本地持久化在这个项目里是“恢复运行状态”的工具，不是主业务数据源。
+
+
+## Java Rules Overlay - Database and Security
+
+- 严禁字符串拼接 SQL；必须使用参数化查询（`PreparedStatement` / MyBatis 参数绑定 / 框架参数化 API）。
+- 所有边界输入先校验再入库：必填、长度、枚举取值、数值范围；校验失败返回可读错误，不写脏数据。
+- 多表联动写入必须显式事务边界；批量写入优先批处理，禁止可批量场景下循环逐条写库。
+- 定期执行依赖安全扫描（如 OWASP Dependency-Check / Snyk）并修复高危漏洞。

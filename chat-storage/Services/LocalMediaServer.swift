@@ -11,6 +11,7 @@ import Network
 /// 后台流（VideoStreamCache）与播放状态解耦，暂停不停流。
 final class LocalMediaServer {
     static let shared = LocalMediaServer()
+    private static let cacheSendChunkSize = 256 * 1024 // 256KB
 
     private let queue = DispatchQueue(label: "com.chatstorage.local-media-server", qos: .userInitiated)
     private var listener: NWListener?
@@ -146,7 +147,9 @@ final class LocalMediaServer {
             guard let self, let connection else { return }
             switch state {
             case .failed(let error):
-                print("❌ [LocalMediaServer] connection failed: \(error)")
+                if !Self.isClientClosedConnectionError(error) {
+                    print("❌ [LocalMediaServer] connection failed: \(error)")
+                }
                 self.cleanupConnection(connection)
             case .cancelled:
                 self.cleanupConnection(connection)
@@ -173,7 +176,9 @@ final class LocalMediaServer {
             guard let self else { return }
 
             if let error {
-                print("❌ [LocalMediaServer] receive error: \(error)")
+                if !Self.isClientClosedConnectionError(error) {
+                    print("❌ [LocalMediaServer] receive error: \(error)")
+                }
                 connection.cancel()
                 return
             }
@@ -315,8 +320,7 @@ final class LocalMediaServer {
         }
 
         if needsDedicatedStream {
-            // 路径 3：专用短生命周期流（处理 moov 探针、大幅 seek、无缓存等情形）
-            //         不影响后台流，不重启后台流，仅服务这一个 Range。
+            // 路径 3：窗口化专用拉流，适配服务端 range_pull，实现 seek 快速响应。
             print("🔀 [LocalMediaServer] 专用流: bytes=\(startOffset)-\(endOffset)")
             createDedicatedStream(fileId: fileId, startOffset: startOffset, endOffset: endOffset, to: connection)
         } else {
@@ -335,13 +339,7 @@ final class LocalMediaServer {
                     return
                 }
                 self.queue.async {
-                    do {
-                        let data = try cache.readData(range: startOffset...endOffset)
-                        self.sendData(data, on: connection, closeAfter: true)
-                    } catch {
-                        print("❌ [LocalMediaServer] Waiter 读盘失败 [\(startOffset)-\(endOffset)]: \(error)")
-                        connection.cancel()
-                    }
+                    self.streamCacheRange(cache, range: startOffset...endOffset, to: connection)
                 }
             }
             cache.registerWaiter(for: startOffset...endOffset, serve: serve, cancel: { connection.cancel() })
@@ -363,31 +361,27 @@ final class LocalMediaServer {
             onCancelStream: { [weak streamingService] in streamingService?.cancel() }
         )
 
-        // 当连接失败/关闭时，取消专用流
         let connectionID = ObjectIdentifier(connection)
-        connection.stateUpdateHandler = { [weak self, weak connection, weak delegate] state in
-            guard let self, let connection else { return }
-            switch state {
-            case .failed, .cancelled:
-                delegate?.cancel()
-                self.cleanupConnection(connection)
-            default:
-                break
-            }
-        }
-
         let task = Task { [weak self] in
             defer {
-                self?.queue.async {
-                    self?.dedicatedStreamTasks.removeValue(forKey: connectionID)
-                }
+                self?.removeDedicatedStreamTask(for: connectionID)
             }
             do {
-                try await streamingService.startCustomVideoStreaming(
-                    fileId: fileId,
-                    startOffset: startOffset,
-                    delegate: delegate
-                )
+                let windowSize: Int64 = 1 * 1024 * 1024 // 1MB，降低单次请求时延，提升 seek 体验
+                var nextOffset = startOffset
+                while !Task.isCancelled && nextOffset <= endOffset {
+                    let requestLength = min(windowSize, endOffset - nextOffset + 1)
+                    let received = try await streamingService.startCustomVideoStreaming(
+                        fileId: fileId,
+                        startOffset: nextOffset,
+                        length: requestLength,
+                        delegate: delegate
+                    )
+                    guard received > 0 else {
+                        throw SocketError.invalidResponse
+                    }
+                    nextOffset += received
+                }
             } catch is CancellationError {
                 // 正常路径：Range 满足或连接关闭
             } catch {
@@ -399,6 +393,12 @@ final class LocalMediaServer {
         }
     }
 
+    private func removeDedicatedStreamTask(for connectionID: ObjectIdentifier) {
+        queue.async { [weak self] in
+            self?.dedicatedStreamTasks.removeValue(forKey: connectionID)
+        }
+    }
+
     // MARK: - 缓存读取与发送
 
     private func serveFromCache(
@@ -407,15 +407,84 @@ final class LocalMediaServer {
         to connection: NWConnection
     ) {
         queue.async { [weak self] in
-            guard let self else { return }
-            do {
-                let data = try cache.readData(range: range)
-                self.sendData(data, on: connection, closeAfter: true)
-            } catch {
-                print("❌ [LocalMediaServer] 缓存读取失败: \(error)")
-                connection.cancel()
-            }
+            self?.streamCacheRange(cache, range: range, to: connection)
         }
+    }
+
+    private func streamCacheRange(
+        _ cache: VideoStreamCache,
+        range: ClosedRange<Int64>,
+        to connection: NWConnection
+    ) {
+        guard range.lowerBound >= cache.downloadStartOffset else {
+            print("❌ [LocalMediaServer] 缓存读取失败: outOfRange")
+            connection.cancel()
+            return
+        }
+        let fileOffset = range.lowerBound - cache.downloadStartOffset
+        let totalCount = Int(range.upperBound - range.lowerBound + 1)
+        guard totalCount > 0 else {
+            sendData(Data(), on: connection, closeAfter: true)
+            return
+        }
+
+        do {
+            let handle = try FileHandle(forReadingFrom: cache.tempFileURL)
+            try handle.seek(toOffset: UInt64(fileOffset))
+            sendNextCacheChunk(handle: handle, remaining: totalCount, to: connection)
+        } catch {
+            print("❌ [LocalMediaServer] 缓存读取失败: \(error)")
+            connection.cancel()
+        }
+    }
+
+    private func sendNextCacheChunk(
+        handle: FileHandle,
+        remaining: Int,
+        to connection: NWConnection
+    ) {
+        guard remaining > 0 else {
+            try? handle.close()
+            return
+        }
+
+        let chunkSize = min(Self.cacheSendChunkSize, remaining)
+        let chunk = (try? handle.read(upToCount: chunkSize)) ?? Data()
+        guard !chunk.isEmpty else {
+            try? handle.close()
+            connection.cancel()
+            return
+        }
+
+        let nextRemaining = remaining - chunk.count
+        let isLast = nextRemaining == 0
+
+        connection.send(
+            content: chunk,
+            contentContext: .defaultMessage,
+            isComplete: isLast,
+            completion: .contentProcessed { [weak self] error in
+                guard let self else {
+                    try? handle.close()
+                    return
+                }
+                if let error {
+                    if !Self.isClientClosedConnectionError(error) {
+                        print("❌ [LocalMediaServer] send error: \(error)")
+                    }
+                    try? handle.close()
+                    connection.cancel()
+                    return
+                }
+                if isLast {
+                    try? handle.close()
+                } else {
+                    self.queue.async {
+                        self.sendNextCacheChunk(handle: handle, remaining: nextRemaining, to: connection)
+                    }
+                }
+            }
+        )
     }
 
     private func sendSimpleResponse(statusLine: String, on connection: NWConnection) {
@@ -430,11 +499,35 @@ final class LocalMediaServer {
             isComplete: closeAfter,
             completion: .contentProcessed { error in
                 if let error {
-                    print("❌ [LocalMediaServer] send error: \(error)")
+                    if !Self.isClientClosedConnectionError(error) {
+                        print("❌ [LocalMediaServer] send error: \(error)")
+                    }
                     connection.cancel()
                 }
             }
         )
+    }
+
+    static func isClientClosedConnectionError(_ error: Error) -> Bool {
+        if let nwError = error as? NWError {
+            switch nwError {
+            case .posix(.ECONNRESET), .posix(.EPIPE):
+                return true
+            default:
+                break
+            }
+        }
+
+        if let posixError = error as? POSIXError {
+            switch posixError.code {
+            case .ECONNRESET, .EPIPE:
+                return true
+            default:
+                break
+            }
+        }
+
+        return false
     }
 
     // MARK: - Range 解析
@@ -548,10 +641,11 @@ private final class RangeStreamDelegate: VideoStreamLoaderDelegate {
             completion: .contentProcessed { [weak self] error in
                 guard let self else { return }
                 if let error {
-                    print("❌ [RangeStreamDelegate] 发送失败: \(error)")
+                    if !LocalMediaServer.isClientClosedConnectionError(error) {
+                        print("❌ [RangeStreamDelegate] 发送失败: \(error)")
+                    }
                     self.markCompleted()
                     self.onCancelStream()
-                    self.connection.cancel()
                     return
                 }
                 if isLast {
@@ -563,18 +657,13 @@ private final class RangeStreamDelegate: VideoStreamLoaderDelegate {
     }
 
     func didFinishLoading() {
-        lock.lock()
-        guard !hasCompleted else { lock.unlock(); return }
-        hasCompleted = true
-        lock.unlock()
-        // 若最后一个 dataFrame 已经以 isComplete:true 发出（isLast=true 路径），
-        // 此处调用会是在 connection 关闭后，直接忽略即可。
-        connection.send(content: nil, contentContext: .defaultMessage, isComplete: true, completion: .contentProcessed { _ in })
+        // range_pull 协议下 END_FRAME 仅表示“当前窗口结束”，不能在此关闭连接。
     }
 
     func didFail(with error: Error) {
         print("❌ [RangeStreamDelegate] 流失败: \(error)")
         markCompleted()
+        onCancelStream()
         connection.cancel()
     }
 
