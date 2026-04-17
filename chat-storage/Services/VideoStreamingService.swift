@@ -19,6 +19,8 @@ final class VideoStreamingService {
     private var isCancelled = false
     private var hasCompleted = false
     private var hasDisconnectedSocket = false
+    private var activeStreamHandlerToken: UUID?
+    private var requestGeneration: UInt64 = 0
 
     init(host: String, port: UInt32 = 10088) {
         self.targetHost = host
@@ -31,37 +33,50 @@ final class VideoStreamingService {
         self.init(host: host)
     }
 
-    deinit {}
+    deinit {
+        cancel()
+    }
 
     func startCustomVideoStreaming(
         fileId: Int64,
         startOffset: Int64,
+        length: Int64,
         delegate: VideoStreamLoaderDelegate
-    ) async throws {
+    ) async throws -> Int64 {
+        let generation = prepareForNewRequest()
         try await connectIfNeeded()
 
         let taskId = UUID().uuidString
+        let requestId = UUID().uuidString
+        let windowLength = max(1, length)
         let request: [String: Any] = [
+            "op": "range_pull",
+            "protocolVersion": 2,
             "fileId": fileId,
             "taskId": taskId,
+            "requestId": requestId,
             "startOffset": startOffset,
+            "length": windowLength,
         ]
 
         guard let requestData = try? JSONSerialization.data(withJSONObject: request) else {
             throw DirectoryError.invalidData
         }
 
-        let requestFrame = Frame(type: .metaFrame, data: requestData, flags: 0x00)
-        try socketManager.sendFrame(requestFrame)
+        var receivedBytesInWindow: Int64 = 0
+        var hasSentReadyAck = false
+        var hasReportedContentInfo = false
+        var loggedEndFrameAsDataFallback = false
 
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                storeContinuation(continuation)
+                guard self.storeContinuation(continuation, for: generation) else { return }
                 var receivedSize = startOffset
 
                 let types: Set<FrameTypeEnum> = [.metaFrame, .dataFrame, .endFrame, .fileResponse, .ackFrame]
-                socketManager.registerStreamHandler(for: types) { [weak self] frame in
+                let token = socketManager.registerStreamHandler(for: types) { [weak self] frame in
                     guard let self = self else { return false }
+                    guard self.isGenerationCurrent(generation) else { return false }
 
                     if self.currentlyCancelled {
                         self.complete(.failure(CancellationError()))
@@ -82,13 +97,20 @@ final class VideoStreamingService {
                                 return false
                             }
 
-                            if let size = Self.int64Value(from: dict["fileSize"]) {
+                            if let size = Self.int64Value(from: dict["fileSize"]), !hasReportedContentInfo {
+                                hasReportedContentInfo = true
                                 delegate.didReceiveContentInfo(totalSize: size, mimeType: "video/mp4")
 
-                                let readyAck: [String: Any] = ["taskId": taskId, "status": "ready"]
-                                if let readyData = try? JSONSerialization.data(withJSONObject: readyAck) {
-                                    let readyFrame = Frame(type: .ackFrame, data: readyData, flags: 0x00)
-                                    try? self.socketManager.sendFrame(readyFrame)
+                                // 兼容旧服务端：旧协议需要客户端发送 ready 才开始推流。
+                                // 新协议(range_pull)通常不需要该确认帧。
+                                let isRangePullAck = dict["chunkSize"] != nil || (dict["requestId"] as? String) != nil
+                                if !isRangePullAck && !hasSentReadyAck {
+                                    hasSentReadyAck = true
+                                    let readyAck: [String: Any] = ["taskId": taskId, "status": "ready"]
+                                    if let readyData = try? JSONSerialization.data(withJSONObject: readyAck) {
+                                        let readyFrame = Frame(type: .ackFrame, data: readyData, flags: 0x00)
+                                        try? self.socketManager.sendFrame(readyFrame)
+                                    }
                                 }
                             }
                         }
@@ -99,9 +121,48 @@ final class VideoStreamingService {
                         let range = receivedSize..<(receivedSize + Int64(data.count))
                         delegate.didReceiveVideoData(data, range: range)
                         receivedSize += Int64(data.count)
+                        receivedBytesInWindow += Int64(data.count)
                         return !self.currentlyCancelled
 
                     case .endFrame:
+                        // 兼容服务端实现差异：
+                        // 若 END_FRAME 载荷是二进制块（常见 65536），按数据帧处理而不是结束信号。
+                        if !frame.data.isEmpty {
+                            let jsonDict: [String: Any]? = {
+                                guard let jsonString = String(data: frame.data, encoding: .utf8),
+                                      let data = jsonString.data(using: .utf8) else { return nil }
+                                return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? nil
+                            }()
+
+                            let looksLikeControlEnd = {
+                                guard let dict = jsonDict else { return false }
+                                return dict["status"] != nil || dict["totalBytes"] != nil || dict["sentBytes"] != nil || dict["eof"] != nil || dict["message"] != nil
+                            }()
+
+                            if !looksLikeControlEnd {
+                                if !loggedEndFrameAsDataFallback {
+                                    loggedEndFrameAsDataFallback = true
+                                    print("⚠️ [VideoStreamingService] END_FRAME 载荷疑似数据块，启用兼容回退为数据帧处理")
+                                }
+                                let data = frame.data
+                                let range = receivedSize..<(receivedSize + Int64(data.count))
+                                delegate.didReceiveVideoData(data, range: range)
+                                receivedSize += Int64(data.count)
+                                receivedBytesInWindow += Int64(data.count)
+                                return !self.currentlyCancelled
+                            }
+
+                            if let dict = jsonDict,
+                               let status = dict["status"] as? String,
+                               status == "error" || status == "fail" {
+                                let msg = dict["message"] as? String ?? "窗口拉流失败"
+                                let code = (dict["code"] as? Int) ?? -1
+                                let error = DirectoryError.serverError(code: code, message: msg)
+                                delegate.didFail(with: error)
+                                self.complete(.failure(error))
+                                return false
+                            }
+                        }
                         delegate.didFinishLoading()
                         self.complete(.success(()))
                         return false
@@ -121,10 +182,21 @@ final class VideoStreamingService {
                         return true
                     }
                 }
+                self.replaceStreamHandlerToken(token, for: generation)
+                
+                // 已经注册好 handler 后，再发送请求帧，防止竞态条件导致第一包响应被丢弃
+                do {
+                    let requestFrame = Frame(type: .metaFrame, data: requestData, flags: 0x00)
+                    try self.socketManager.sendFrame(requestFrame)
+                } catch {
+                    self.complete(.failure(error))
+                }
             }
         } onCancel: {
             self.cancel()
         }
+
+        return receivedBytesInWindow
     }
 
     func cancel() {
@@ -138,14 +210,39 @@ final class VideoStreamingService {
         let continuation = self.continuation
         self.continuation = nil
         hasCompleted = true
+        let token = activeStreamHandlerToken
+        activeStreamHandlerToken = nil
         let shouldDisconnect = !hasDisconnectedSocket
         hasDisconnectedSocket = true
         stateLock.unlock()
 
+        if let token {
+            socketManager.unregisterStreamHandler(token: token)
+        }
         if shouldDisconnect {
             disconnectSocket()
         }
         continuation?.resume(throwing: CancellationError())
+    }
+
+    @discardableResult
+    private func prepareForNewRequest() -> UInt64 {
+        stateLock.lock()
+        // 每个窗口请求都是独立生命周期，必须重置状态机
+        requestGeneration += 1
+        let generation = requestGeneration
+        isCancelled = false
+        hasCompleted = false
+        hasDisconnectedSocket = false
+        continuation = nil
+        let previousToken = activeStreamHandlerToken
+        activeStreamHandlerToken = nil
+        stateLock.unlock()
+
+        if let previousToken {
+            socketManager.unregisterStreamHandler(token: previousToken)
+        }
+        return generation
     }
 
     private var currentlyCancelled: Bool {
@@ -154,10 +251,38 @@ final class VideoStreamingService {
         return isCancelled
     }
 
-    private func storeContinuation(_ continuation: CheckedContinuation<Void, Error>) {
+    private func storeContinuation(_ continuation: CheckedContinuation<Void, Error>, for generation: UInt64) -> Bool {
         stateLock.lock()
+        guard requestGeneration == generation else {
+            stateLock.unlock()
+            continuation.resume(throwing: CancellationError())
+            return false
+        }
         self.continuation = continuation
         stateLock.unlock()
+        return true
+    }
+
+    private func replaceStreamHandlerToken(_ token: UUID, for generation: UInt64) {
+        var tokenToUnregister: UUID?
+        stateLock.lock()
+        if requestGeneration == generation {
+            tokenToUnregister = activeStreamHandlerToken
+            activeStreamHandlerToken = token
+            stateLock.unlock()
+            if let tokenToUnregister, tokenToUnregister != token {
+                socketManager.unregisterStreamHandler(token: tokenToUnregister)
+            }
+        } else {
+            stateLock.unlock()
+            socketManager.unregisterStreamHandler(token: token)
+        }
+    }
+
+    private func isGenerationCurrent(_ generation: UInt64) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return requestGeneration == generation
     }
 
     private func complete(_ result: Result<Void, Error>) {
@@ -170,10 +295,24 @@ final class VideoStreamingService {
         hasCompleted = true
         let continuation = self.continuation
         self.continuation = nil
-        let shouldDisconnect = !hasDisconnectedSocket
-        hasDisconnectedSocket = true
+        let token = activeStreamHandlerToken
+        activeStreamHandlerToken = nil
+        // 成功窗口请求保持连接复用；失败时断开并在下一次请求重连。
+        let shouldDisconnect: Bool
+        switch result {
+        case .success:
+            shouldDisconnect = false
+        case .failure:
+            shouldDisconnect = !hasDisconnectedSocket
+            if shouldDisconnect {
+                hasDisconnectedSocket = true
+            }
+        }
         stateLock.unlock()
 
+        if let token {
+            socketManager.unregisterStreamHandler(token: token)
+        }
         if shouldDisconnect {
             disconnectSocket()
         }
@@ -188,34 +327,55 @@ final class VideoStreamingService {
     }
 
     private func connectIfNeeded() async throws {
-        if socketManager.connectionState == .connected {
+        if isSocketReadyForStreaming() {
             return
         }
+        if socketManager.connectionState == .connected {
+            socketManager.disconnect(notifyUI: false)
+        }
 
+        let host = self.targetHost
+        let port = self.targetPort
         await MainActor.run {
-            self.socketManager.switchConnection(host: self.targetHost, port: self.targetPort)
+            // 直接调用 connect()，不通过 switchConnection()，
+            // 避免 switchConnection 内部的 Thread.sleep(0.1) 阻塞主 RunLoop。
+            // VideoStreamingService 的 SocketManager 始终是全新实例，无需先 disconnect。
+            self.socketManager.connect(host: host, port: port)
         }
 
         var attempts = 0
         while attempts < 50 {
-            switch socketManager.connectionState {
-            case .connected:
+            if isSocketReadyForStreaming() {
                 return
-            case .error(let message):
-                throw DirectoryError.serverError(code: -1, message: message)
-            default:
-                attempts += 1
-                try? await Task.sleep(nanoseconds: 100_000_000)
             }
+
+            if case .error(let message) = socketManager.connectionState {
+                throw DirectoryError.serverError(code: -1, message: message)
+            }
+
+            attempts += 1
+            try? await Task.sleep(nanoseconds: 100_000_000)
         }
 
         throw SocketError.timeout
     }
 
-    private func disconnectSocket() {
-        Task { @MainActor in
-            self.socketManager.disconnect(notifyUI: false)
+    private func isSocketReadyForStreaming() -> Bool {
+        guard socketManager.connectionState == .connected,
+              let inputStream = socketManager.inputStream,
+              let outputStream = socketManager.outputStream else {
+            return false
         }
+
+        let inputReady: Set<Stream.Status> = [.open, .reading]
+        let outputReady: Set<Stream.Status> = [.open, .writing]
+        return inputReady.contains(inputStream.streamStatus) &&
+               outputReady.contains(outputStream.streamStatus)
+    }
+
+    private func disconnectSocket() {
+        // 同步断开，避免旧连接与新连接并存导致内存叠加
+        socketManager.disconnect(notifyUI: false)
     }
 
     private static func int64Value(from value: Any?) -> Int64? {

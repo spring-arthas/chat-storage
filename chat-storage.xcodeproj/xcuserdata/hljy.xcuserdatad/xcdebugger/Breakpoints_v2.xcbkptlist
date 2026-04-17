@@ -16,8 +16,8 @@
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "629"
             endingLineNumber = "629"
-            landmarkName = "errorDescription"
-            landmarkType = "24">
+            landmarkName = "init(from:)"
+            landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>
       <BreakpointProxy
@@ -32,7 +32,7 @@
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "717"
             endingLineNumber = "717"
-            landmarkName = "uploadFile(fileUrl:targetDirId:userId:userName:taskId:progressHandler:)"
+            landmarkName = "uploadFile(fileUrl:targetDirId:userId:userName:taskId:startOffset:progressHandler:)"
             landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>
@@ -48,7 +48,7 @@
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "1200"
             endingLineNumber = "1200"
-            landmarkName = "loadDirectoryFromServer()"
+            landmarkName = "handleFileAction(_:action:)"
             landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>
@@ -64,8 +64,8 @@
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "1224"
             endingLineNumber = "1224"
-            landmarkName = "loadDirectoryFromServer()"
-            landmarkType = "7">
+            landmarkName = "MainChatStorage"
+            landmarkType = "14">
          </BreakpointContent>
       </BreakpointProxy>
       <BreakpointProxy
@@ -96,7 +96,7 @@
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "1206"
             endingLineNumber = "1206"
-            landmarkName = "loadDirectoryFromServer()"
+            landmarkName = "handleFileAction(_:action:)"
             landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>
@@ -240,7 +240,55 @@
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "847"
             endingLineNumber = "847"
-            landmarkName = "statusColor(_:)"
+            landmarkName = "fileListView"
+            landmarkType = "24">
+         </BreakpointContent>
+      </BreakpointProxy>
+      <BreakpointProxy
+         BreakpointExtensionID = "Xcode.Breakpoint.FileBreakpoint">
+         <BreakpointContent
+            uuid = "715D46A5-7453-4110-AF7C-F31C6AD3B08E"
+            shouldBeEnabled = "No"
+            ignoreCount = "0"
+            continueAfterRunningActions = "No"
+            filePath = "chat-storage/Services/DirectoryService.swift"
+            startingColumnNumber = "9223372036854775807"
+            endingColumnNumber = "9223372036854775807"
+            startingLineNumber = "744"
+            endingLineNumber = "744"
+            landmarkName = "uploadFile(fileUrl:targetDirId:userId:userName:taskId:startOffset:progressHandler:)"
+            landmarkType = "7">
+         </BreakpointContent>
+      </BreakpointProxy>
+      <BreakpointProxy
+         BreakpointExtensionID = "Xcode.Breakpoint.FileBreakpoint">
+         <BreakpointContent
+            uuid = "E3EB8C9B-1EC7-42F3-B05D-D73CE13D4DE3"
+            shouldBeEnabled = "No"
+            ignoreCount = "0"
+            continueAfterRunningActions = "No"
+            filePath = "chat-storage/SocketManager.swift"
+            startingColumnNumber = "9223372036854775807"
+            endingColumnNumber = "9223372036854775807"
+            startingLineNumber = "52"
+            endingLineNumber = "52"
+            landmarkName = "SocketError"
+            landmarkType = "13">
+         </BreakpointContent>
+      </BreakpointProxy>
+      <BreakpointProxy
+         BreakpointExtensionID = "Xcode.Breakpoint.FileBreakpoint">
+         <BreakpointContent
+            uuid = "2FEF70AC-C905-4C34-9B32-96CCABB05E84"
+            shouldBeEnabled = "No"
+            ignoreCount = "0"
+            continueAfterRunningActions = "No"
+            filePath = "chat-storage/SocketManager.swift"
+            startingColumnNumber = "9223372036854775807"
+            endingColumnNumber = "9223372036854775807"
+            startingLineNumber = "177"
+            endingLineNumber = "177"
+            landmarkName = "connect(host:port:)"
             landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>

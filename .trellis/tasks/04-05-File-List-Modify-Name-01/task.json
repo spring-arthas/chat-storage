@@ -1,0 +1,44 @@
+{
+  "id": "File-List-Modify-Name-01",
+  "name": "File-List-Modify-Name-01",
+  "title": "关于新增云盘模块中文件列表中支持文件修改文件名称",
+  "description": "关于新增支持云盘模块中文件列表中支持文件修改文件名称",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "priority": "P1",
+  "creator": "veneno",
+  "assignee": "veneno",
+  "createdAt": "2026-04-05",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "feature-v1.0",
+  "worktree_path": null,
+  "current_phase": 0,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}

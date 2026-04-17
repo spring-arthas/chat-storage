@@ -6,6 +6,7 @@ SCHEME_NAME="chat-storage"
 DMG_NAME="${PROJECT_NAME}.dmg"
 BUILD_DIR="./build"
 APP_PATH="${BUILD_DIR}/Build/Products/Release/${PROJECT_NAME}.app"
+FFMPEG_BIN="${FFMPEG_BIN:-./vendor/ffmpeg/ffmpeg}"
 
 echo "🚀 Starting cleaning..."
 xcodebuild clean -project "${PROJECT_NAME}.xcodeproj" -scheme "${SCHEME_NAME}" -configuration Release | xcpretty || true
@@ -35,6 +36,17 @@ mkdir -p "${DMG_SOURCE_DIR}"
 
 # Copy App to source dir
 cp -R "${APP_PATH}" "${DMG_SOURCE_DIR}/"
+
+# Optional: bundle ffmpeg into app for non-technical end users.
+APP_IN_DMG="${DMG_SOURCE_DIR}/${PROJECT_NAME}.app"
+if [ -f "${FFMPEG_BIN}" ]; then
+    echo "📎 Bundling ffmpeg from: ${FFMPEG_BIN}"
+    mkdir -p "${APP_IN_DMG}/Contents/Resources"
+    cp "${FFMPEG_BIN}" "${APP_IN_DMG}/Contents/Resources/ffmpeg"
+    chmod +x "${APP_IN_DMG}/Contents/Resources/ffmpeg"
+else
+    echo "⚠️ ffmpeg binary not found at ${FFMPEG_BIN}. Skipping bundle step."
+fi
 
 # Create Applications symlink
 ln -s /Applications "${DMG_SOURCE_DIR}/Applications"

@@ -15,9 +15,7 @@
             startingColumnNumber = "9223372036854775807"
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "94"
-            endingLineNumber = "94"
-            landmarkName = "sendFrameAndWait(_:expecting:timeout:)"
-            landmarkType = "7">
+            endingLineNumber = "94">
          </BreakpointContent>
       </BreakpointProxy>
    </Breakpoints>

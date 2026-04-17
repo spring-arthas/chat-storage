@@ -347,6 +347,53 @@ class DirectoryService: ObservableObject {
         }
         
         print("✅ 文件删除成功")
+        Task { await FileThumbnailService.shared.deleteFromCache(fileId: fileId) }
+    }
+
+    /// 重命名文件 (0x44)
+    /// - Parameters:
+    ///   - fileId: 文件ID
+    ///   - newFileName: 新文件名（含扩展名）
+    /// - Throws: 网络或服务端错误
+    func renameFile(fileId: Int64, newFileName: String) async throws {
+        print("✏️ 请求重命名文件: fileId=\(fileId), newFileName=\(newFileName)")
+
+        struct RenameFileRequest: Codable {
+            let fileId: Int64
+            let newFileName: String
+        }
+
+        let request = RenameFileRequest(fileId: fileId, newFileName: newFileName)
+        let jsonData = try JSONEncoder().encode(request)
+
+        let frame = Frame(
+            type: .fileRenameReq,
+            data: jsonData,
+            flags: 0x00
+        )
+
+        let responseFrame = try await socketManager.sendFrameAndWait(
+            frame,
+            expecting: .fileResponse,
+            timeout: 10.0
+        )
+
+        guard let dict = try? FrameParser.decodeAsDictionary(responseFrame) else {
+            throw DirectoryError.invalidResponse("无法解析重命名响应")
+        }
+
+        // 兼容 success(bool) 和 code(int) 两种响应格式
+        if let success = dict["success"] as? Bool {
+            if !success {
+                let message = dict["message"] as? String ?? "未知错误"
+                throw DirectoryError.serverError(code: 500, message: message)
+            }
+        } else if let code = dict["code"] as? Int, code != 200 {
+            let message = dict["message"] as? String ?? "未知错误"
+            throw DirectoryError.serverError(code: code, message: message)
+        }
+
+        print("✅ 文件重命名成功")
     }
 
     /// 解析目录响应帧
@@ -641,11 +688,21 @@ enum DirectoryError: LocalizedError {
 
 /// 文件传输服务 (上传/下载)
 class FileTransferService: ObservableObject {
+    private struct FileHashCacheEntry: Codable {
+        let md5: String
+        let fileSize: Int64
+        let modifiedAt: TimeInterval
+    }
     
     // MARK: - Private Properties
     
     private let socketManager: SocketManager
     private let chunkSize: Int = 8 * 1024 // 8KB 分块
+    private static let md5ChunkSize = 4 * 1024 * 1024 // 4MB
+    private static let hashCacheLock = NSLock()
+    private static var hashCacheLoaded = false
+    private static var hashCache: [String: FileHashCacheEntry] = [:]
+    private static var hashComputationTasks: [String: Task<String, Error>] = [:]
     
     // MARK: - Initializer
     
@@ -661,6 +718,7 @@ class FileTransferService: ObservableObject {
     ///   - targetDirId: 目标目录 ID
     ///   - userId: 用户 ID
     ///   - progressHandler: 进度回调 (0.0 - 1.0)
+    @discardableResult
     func uploadFile(
         fileUrl: URL,
         targetDirId: Int64,
@@ -669,14 +727,29 @@ class FileTransferService: ObservableObject {
         taskId: String,
         startOffset: Int64 = 0,
         progressHandler: ((Double, String) -> Void)? = nil
-    ) async throws {
+    ) async throws -> Int64? {
         print("🚀 开始上传文件: \(fileUrl.lastPathComponent) (TaskID: \(taskId))")
         
         // 1. 准备文件信息
         // 开启安全访问 (针对 Bookmark 恢复的 URL)
         let isSecurityScoped = fileUrl.startAccessingSecurityScopedResource()
         defer { if isSecurityScoped { fileUrl.stopAccessingSecurityScopedResource() } }
-        
+
+        // [缩略图] 在上传 scope 有效期内独立启动缩略图生成。
+        // Task.detached 立即执行自己的 startAccessingSecurityScopedResource，
+        // 确保自身 scope 在上传 scope 生命期内已建立，之后两者互不阻塞、各自管理生命周期。
+        let _thumbnailTaskId = taskId
+        let _thumbnailFileUrl = fileUrl
+        Task.detached(priority: .background) {
+            let isScoped = _thumbnailFileUrl.startAccessingSecurityScopedResource()
+            defer { if isScoped { _thumbnailFileUrl.stopAccessingSecurityScopedResource() } }
+            await FileThumbnailService.shared.buildFromLocal(
+                taskId: _thumbnailTaskId,
+                fileUrl: _thumbnailFileUrl,
+                fileName: _thumbnailFileUrl.lastPathComponent
+            )
+        }
+
         guard FileManager.default.fileExists(atPath: fileUrl.path) else {
             throw FileTransferError.fileNotFound
         }
@@ -697,14 +770,15 @@ class FileTransferService: ObservableObject {
             userName: userName,
             status: "Waiting",
             progress: 0.0,
-            uploadedBytes: 0,
+            uploadedBytes: startOffset, // [修改] 保留已上传字节数，断点续传时不归零
             md5: nil // MD5 计算后再更新
         )
         // --- Persistence Integration End ---
         
         // 2. 计算 MD5
+        PersistenceManager.shared.updateStatus(taskId: taskId, status: "Hashing")
         print("⏳ 正在计算 MD5...")
-        let md5 = try calculateMD5(for: fileUrl)
+        let md5 = try await resolveOrComputeMD5(for: fileUrl, fileSize: fileSize)
         print("✅ MD5 计算完成: \(md5)")
         
         // --- Persistence Update MD5 ---
@@ -746,27 +820,35 @@ class FileTransferService: ObservableObject {
             
             // 使用字典构建 Frame
             let checkFrame = Frame(type: .resumeCheck, data: jsonData, flags: 0x00)
-            let checkResponseFrame = try await socketManager.sendFrameAndWait(checkFrame, expecting: .resumeAck, timeout: 30.0)
-            let resumeInfo = try FrameParser.decodePayload(checkResponseFrame, as: ResumeAckResponse.self)
-            
+
             var offset: Int64 = 0
             // 本地变量用于跟踪最终使用的 TaskID (初始化为传入的 ID)
             var finalTaskId: String = taskId
+            // 标记是否需要走全新上传路径
+            var needFreshUpload = false
+
+            let checkResponseFrame = try await socketManager.sendFrameAndWait(checkFrame, expecting: .resumeAck, timeout: 30.0)
+            let resumeInfo = try FrameParser.decodePayload(checkResponseFrame, as: ResumeAckResponse.self)
+
             if resumeInfo.status == "resume" {
                 // === 断点续传 ===
                 let serverTaskId = resumeInfo.taskId ?? ""
-                // 如果服务端返回了不为空的 ID 且与我们的不同，优先使用服务端的
                 if !serverTaskId.isEmpty && serverTaskId != taskId {
                     print("⚠️ 服务端返回了不同的 TaskId: \(serverTaskId) vs \(taskId)。将优先使用服务端的。")
                     finalTaskId = serverTaskId
                 }
                 offset = resumeInfo.uploadedSize ?? 0
                 print("🔄 发现断点记录，TaskId: \(finalTaskId), 已上传: \(offset) 字节，继续上传...")
-                
+
             } else if resumeInfo.status == "new" {
+                needFreshUpload = true
+            } else {
+                throw FileTransferError.serverError(resumeInfo.message ?? "未知状态")
+            }
+
+            if needFreshUpload {
                 // === 全新上传 ===
                 print("🆕 无断点记录，开始全新上传...")
-                // 发送元数据帧 (0x01)，发送元数据全新上传帧
                 let metaFrame = try FrameBuilder.build(type: .metaFrame, payload: metaRequest)
                 let metaResponseFrame = try await socketManager.sendFrameAndWait(metaFrame, expecting: .ackFrame, timeout: 30.0)
                 let ack = try FrameParser.decodePayload(metaResponseFrame, as: StandardAckResponse.self)
@@ -777,9 +859,6 @@ class FileTransferService: ObservableObject {
                     finalTaskId = newId
                 }
                 print("✅ 元数据握手成功，获取 TaskId: \(finalTaskId)")
-                
-            } else {
-                throw FileTransferError.serverError(resumeInfo.message ?? "未知状态")
             }
             
             
@@ -794,7 +873,7 @@ class FileTransferService: ObservableObject {
                 try await sendFileData(
                     fileUrl: fileUrl,
                     offset: offset,
-                    taskId: finalTaskId, // 使用 finalTaskId
+                    taskId: taskId, // [修改] 用本地 taskId 确保进度存入正确 DB 记录
                     fileSize: fileSize,
                     progressHandler: progressHandler
                 )
@@ -814,13 +893,15 @@ class FileTransferService: ObservableObject {
             } else {
                 throw FileTransferError.serverError(finalAck.message ?? "上传最终确认失败")
             }
-            
+
             // --- Persistence Complete ---
             // 任务完成，可以选择删除或标记为完成。 根据需求保留记录。
             PersistenceManager.shared.updateStatus(taskId: taskId, status: "Completed")
             // PersistenceManager.shared.deleteTask(taskId: taskId) // 暂时保留
             // --- Persistence End ---
-            
+
+            return finalAck.fileId
+
         } else {
              throw FileTransferError.invalidResponse // Replace with appropriate error if serialization fails
         }
@@ -879,7 +960,7 @@ class FileTransferService: ObservableObject {
             // 发送数据帧 (不等待响应)
             // 注意：Data Frame 的 payload 直接是 raw bytes，不是 JSON
             let dataFrame = Frame(type: .dataFrame, data: data)
-            try socketManager.sendFrame(dataFrame)
+            try await socketManager.sendFrameAsync(dataFrame)
             
             // 每次发送后主动交出控制权，确保 RunLoop 能处理 socket 输入事件（如 ACK）和 UI 更新
             // 虽然 waitForWritable 已经提供了挂起机会，但在全速发送时仍需保证 responsiveness
@@ -929,19 +1010,107 @@ class FileTransferService: ObservableObject {
     
     // MARK: - Helper Methods
     
-    /// 计算文件 MD5 (优化：仅使用文件名计算，避免读取大文件)
-    private func calculateMD5(for url: URL) throws -> String {
-        // 使用文件名作为 MD5 计算源
-        let fileName = url.lastPathComponent
-        guard let data = fileName.data(using: .utf8) else {
-            throw FileTransferError.fileNotFound // 如果文件名无法转码，抛出错误
+    private func resolveOrComputeMD5(for url: URL, fileSize: Int64) async throws -> String {
+        let fileURL = url.standardizedFileURL
+        let cacheKey = fileURL.path
+        let values = try fileURL.resourceValues(forKeys: [.contentModificationDateKey])
+        let modifiedAt = values.contentModificationDate?.timeIntervalSince1970 ?? 0
+
+        if let hit = Self.withHashCacheLock({
+            Self.loadHashCacheIfNeededLocked()
+            if let cached = Self.hashCache[cacheKey],
+               cached.fileSize == fileSize,
+               abs(cached.modifiedAt - modifiedAt) < 0.0001 {
+                return cached.md5
+            }
+            return nil
+        }) {
+            print("♻️ 命中本地 MD5 缓存: \(fileURL.lastPathComponent)")
+            return hit
         }
-        
+
+        if let existingTask = Self.withHashCacheLock({ Self.hashComputationTasks[cacheKey] }) {
+            return try await existingTask.value
+        }
+
+        let computeTask = Task.detached(priority: .utility) {
+            try Self.computeContentMD5(for: fileURL)
+        }
+        Self.withHashCacheLock {
+            Self.hashComputationTasks[cacheKey] = computeTask
+        }
+
+        do {
+            let md5 = try await computeTask.value
+            Self.withHashCacheLock {
+                Self.hashComputationTasks.removeValue(forKey: cacheKey)
+                Self.hashCache[cacheKey] = FileHashCacheEntry(
+                    md5: md5,
+                    fileSize: fileSize,
+                    modifiedAt: modifiedAt
+                )
+                Self.persistHashCacheLocked()
+            }
+            return md5
+        } catch {
+            _ = Self.withHashCacheLock {
+                Self.hashComputationTasks.removeValue(forKey: cacheKey)
+            }
+            throw error
+        }
+    }
+
+    private static func hashCacheFileURL() -> URL {
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let dir = base.appendingPathComponent("chat-storage", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("upload_md5_cache.json")
+    }
+
+    private static func loadHashCacheIfNeededLocked() {
+        guard !hashCacheLoaded else { return }
+        hashCacheLoaded = true
+        let url = hashCacheFileURL()
+        guard let data = try? Data(contentsOf: url),
+              let decoded = try? JSONDecoder().decode([String: FileHashCacheEntry].self, from: data) else {
+            hashCache = [:]
+            return
+        }
+        hashCache = decoded
+    }
+
+    private static func persistHashCacheLocked() {
+        let url = hashCacheFileURL()
+        guard let data = try? JSONEncoder().encode(hashCache) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
+    private static func withHashCacheLock<T>(_ body: () -> T) -> T {
+        hashCacheLock.lock()
+        defer { hashCacheLock.unlock() }
+        return body()
+    }
+
+    /// 计算文件内容 MD5（分块流式），避免一次性读取大文件导致内存飙升。
+    private static func computeContentMD5(for url: URL) throws -> String {
+        let fileHandle = try FileHandle(forReadingFrom: url)
+        defer { try? fileHandle.close() }
+
+        var context = CC_MD5_CTX()
+        CC_MD5_Init(&context)
+
+        while true {
+            let chunk = try fileHandle.read(upToCount: md5ChunkSize) ?? Data()
+            if chunk.isEmpty { break }
+            chunk.withUnsafeBytes { bytes in
+                guard let baseAddress = bytes.baseAddress else { return }
+                CC_MD5_Update(&context, baseAddress, CC_LONG(chunk.count))
+            }
+        }
+
         var digest = [UInt8](repeating: 0, count: Int(CC_MD5_DIGEST_LENGTH))
-        data.withUnsafeBytes {
-            _ = CC_MD5($0.baseAddress, CC_LONG(data.count), &digest)
-        }
-        
+        CC_MD5_Final(&digest, &context)
         return digest.map { String(format: "%02x", $0) }.joined()
     }
     
@@ -951,6 +1120,7 @@ class FileTransferService: ObservableObject {
     /// - Parameters:
     ///   - fileId: 文件ID
     ///   - delegate: 代理
+    @available(*, unavailable, message: "Use VideoStreamingService for isolated video streaming sockets.")
     nonisolated public func startVideoStreaming(fileId: Int64, delegate: VideoStreamLoaderDelegate) async throws {
         print("🎥 [Stream] 请求视频流: \(fileId)")
         
@@ -1044,6 +1214,7 @@ class FileTransferService: ObservableObject {
     ///   - fileId: 文件ID
     ///   - startOffset: 二进制开始偏移位置 (针对 Http Range 请求)
     ///   - delegate: 代理
+    @available(*, unavailable, message: "Use VideoStreamingService for isolated range streaming sockets.")
     nonisolated public func startCustomVideoStreaming(fileId: Int64, startOffset: Int64, delegate: VideoStreamLoaderDelegate) async throws {
         print("🎥 [Stream] 请求视频流: fileId=\(fileId) range-start=\(startOffset)")
         
@@ -1161,6 +1332,7 @@ struct StandardAckResponse: Codable {
     let status: String       // "ready", "success"
     let taskId: String?
     let message: String?
+    let fileId: Int64?
 }
 
 // MARK: - Errors

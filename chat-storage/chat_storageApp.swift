@@ -6,6 +6,14 @@
 //
 
 import SwiftUI
+import AppKit
+
+enum AppWindowLayout {
+    static let mainWidth: CGFloat = 1240
+    static let mainHeight: CGFloat = 760
+    static let loginWidth: CGFloat = 500
+    static let loginHeight: CGFloat = 550
+}
 
 @main
 struct chat_storageApp: App {
@@ -29,42 +37,36 @@ struct chat_storageApp: App {
                         .environment(\.managedObjectContext, persistenceController.container.viewContext)
                         .environmentObject(socketManager)
                         .environmentObject(authService)
-                        .frame(minWidth: 1650, idealWidth: 3300, minHeight: 1050, idealHeight: 2100) // 尺寸扩大 0.5 倍
+                        .frame(width: AppWindowLayout.mainWidth, height: AppWindowLayout.mainHeight)
                 } else {
                     // 登录界面
                     LoginView(isLoggedIn: $isLoggedIn)
                         .environment(\.managedObjectContext, persistenceController.container.viewContext)
                         .environmentObject(socketManager)
                         .environmentObject(authService)
-                        .frame(width: 500, height: 550) // 登录界面固定尺寸
+                        .frame(width: AppWindowLayout.loginWidth, height: AppWindowLayout.loginHeight)
                 }
             }
             .onAppear {
-                // 确保窗口在启动时居中显示
-                DispatchQueue.main.async {
-                    if let window = NSApplication.shared.windows.first {
-                        window.center()
-                        window.makeKeyAndOrderFront(nil)
-                    }
-                }
+                DispatchQueue.main.async { configureWindowForCurrentState() }
             }
             .onChange(of: isLoggedIn) { newValue in
                 if newValue {
                     // 请求桌面通知权限
                     NotificationManager.shared.requestAuthorization()
-                    
-                    // 登录成功后，延迟执行居中，确保窗口尺寸调整已完成
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                        if let window = NSApplication.shared.windows.first {
-                            window.center()
-                            window.makeKeyAndOrderFront(nil)
-                        }
-                    }
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    configureWindowForCurrentState()
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+                DispatchQueue.main.async {
+                    configureWindowForCurrentState()
                 }
             }
         }
         .windowStyle(.hiddenTitleBar)
-        .windowResizability(isLoggedIn ? .contentMinSize : .contentSize)
+        .windowResizability(.contentSize)
         .commands {
             // 在应用菜单中添加连接控制（可选）
         }
@@ -75,5 +77,24 @@ struct chat_storageApp: App {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             SocketManager.shared.connect()
         }
+    }
+
+    private func configureWindowForCurrentState() {
+        guard let window = NSApplication.shared.windows.first else { return }
+
+        if isLoggedIn {
+            let fixedSize = NSSize(width: AppWindowLayout.mainWidth, height: AppWindowLayout.mainHeight)
+            window.minSize = fixedSize
+            window.maxSize = fixedSize
+            window.setContentSize(fixedSize)
+        } else {
+            let fixedSize = NSSize(width: AppWindowLayout.loginWidth, height: AppWindowLayout.loginHeight)
+            window.minSize = fixedSize
+            window.maxSize = fixedSize
+            window.setContentSize(fixedSize)
+        }
+
+        window.center()
+        window.makeKeyAndOrderFront(nil)
     }
 }

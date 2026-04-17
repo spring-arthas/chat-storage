@@ -1,0 +1,18 @@
+{
+  "id": "ws_2be9b172",
+  "name": "chat-storage",
+  "slug": "chat-storage",
+  "defaults": {
+    "permissionMode": "safe",
+    "cyclablePermissionModes": [
+      "safe",
+      "allow-all"
+    ],
+    "enabledSourceSlugs": []
+  },
+  "localMcpServers": {
+    "enabled": true
+  },
+  "createdAt": 1775310444605,
+  "updatedAt": 1775310444607
+}

@@ -45,9 +45,12 @@
 		7672102B2F2DE52C0067C257 /* FileDto.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7672102A2F2DE52C0067C257 /* FileDto.swift */; };
 		8A4C2D1E6F708192A3B4C5D6 /* ManagedCriticalState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A4C2D1E6F708192A3B4C5D5 /* ManagedCriticalState.swift */; };
 		8A4C2D1E6F708192A3B4C5D8 /* VideoStreamingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A4C2D1E6F708192A3B4C5D7 /* VideoStreamingService.swift */; };
+		B3F1E2A4C5D6708192A3B4C5 /* VideoStreamCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3F1E2A4C5D6708192A3B4C4 /* VideoStreamCache.swift */; };
 		9F6A1C2B3D4E5F60718293A5 /* LocalMediaServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F6A1C2B3D4E5F60718293A4 /* LocalMediaServer.swift */; };
 		F367581AF0A30FDA474AEFE6 /* StreamingVideoPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F0DEAC3AAE6F6EDB94346C /* StreamingVideoPlayer.swift */; };
 		F376FF2A8792AEC068D20113 /* AVKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BD0B61B09A0C287FDAA8E760 /* AVKit.framework */; };
+		AA1B2C3D4E5F6071A2B3C4D5 /* FileThumbnailService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1B2C3D4E5F6071A2B3C4D4 /* FileThumbnailService.swift */; };
+		BB2C3D4E5F6071A2B3C4D5E6 /* VideoThumbnailResourceLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2C3D4E5F6071A2B3C4D5E5 /* VideoThumbnailResourceLoader.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -109,10 +112,13 @@
 		7672102A2F2DE52C0067C257 /* FileDto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileDto.swift; sourceTree = "<group>"; };
 		8A4C2D1E6F708192A3B4C5D5 /* ManagedCriticalState.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ManagedCriticalState.swift; sourceTree = "<group>"; };
 		8A4C2D1E6F708192A3B4C5D7 /* VideoStreamingService.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = VideoStreamingService.swift; sourceTree = "<group>"; };
+		B3F1E2A4C5D6708192A3B4C4 /* VideoStreamCache.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = VideoStreamCache.swift; sourceTree = "<group>"; };
 		8C25750653B3817FE0C7D25A /* VideoWindowManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VideoWindowManager.swift; sourceTree = "<group>"; };
 		9F6A1C2B3D4E5F60718293A4 /* LocalMediaServer.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = LocalMediaServer.swift; sourceTree = "<group>"; };
 		BD0B61B09A0C287FDAA8E760 /* AVKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVKit.framework; path = System/Library/Frameworks/AVKit.framework; sourceTree = SDKROOT; };
 		C2F0DEAC3AAE6F6EDB94346C /* StreamingVideoPlayer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Views/StreamingVideoPlayer.swift; sourceTree = "<group>"; };
+		AA1B2C3D4E5F6071A2B3C4D4 /* FileThumbnailService.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = FileThumbnailService.swift; sourceTree = "<group>"; };
+		BB2C3D4E5F6071A2B3C4D5E5 /* VideoThumbnailResourceLoader.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = VideoThumbnailResourceLoader.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -280,10 +286,13 @@
 				4E2B8E372F37294600EE9F33 /* TransferModels.swift */,
 				4E2B8E382F37294600EE9F33 /* VideoPlayerView.swift */,
 				8A4C2D1E6F708192A3B4C5D7 /* VideoStreamingService.swift */,
+				B3F1E2A4C5D6708192A3B4C4 /* VideoStreamCache.swift */,
 				4E2B8E352F37294600EE9F33 /* VideoStreamLoaderDelegate.swift */,
 				767210282F2DE4D70067C257 /* DirectoryService.swift */,
 				4ED769D02F2CB903006CFB2F /* AuthenticationService.swift */,
 				8C25750653B3817FE0C7D25A /* VideoWindowManager.swift */,
+				AA1B2C3D4E5F6071A2B3C4D4 /* FileThumbnailService.swift */,
+				BB2C3D4E5F6071A2B3C4D5E5 /* VideoThumbnailResourceLoader.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -298,6 +307,7 @@
 				4E15EB152F2B48230093C805 /* Sources */,
 				4E15EB162F2B48230093C805 /* Frameworks */,
 				4E15EB172F2B48230093C805 /* Resources */,
+				D1E2F3A4B5C60718293A4B5C /* Bundle ffmpeg */,
 			);
 			buildRules = (
 			);
@@ -415,6 +425,27 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		D1E2F3A4B5C60718293A4B5C /* Bundle ffmpeg */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Bundle ffmpeg";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nFFMPEG_BIN=\"${FFMPEG_BIN:-$SRCROOT/vendor/ffmpeg/ffmpeg}\"\nDEST_DIR=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"\nDEST_BIN=\"$DEST_DIR/ffmpeg\"\nif [ -f \"$FFMPEG_BIN\" ]; then\n  mkdir -p \"$DEST_DIR\"\n  cp \"$FFMPEG_BIN\" \"$DEST_BIN\"\n  chmod +x \"$DEST_BIN\"\n  echo \"[ffmpeg] bundled: $DEST_BIN\"\nelse\n  echo \"[ffmpeg] skip: source not found at $FFMPEG_BIN\"\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		4E15EB152F2B48230093C805 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -451,8 +482,11 @@
 				767210292F2DE4D70067C257 /* DirectoryService.swift in Sources */,
 				4E2B8E3F2F37294600EE9F33 /* VideoPlayerView.swift in Sources */,
 				8A4C2D1E6F708192A3B4C5D8 /* VideoStreamingService.swift in Sources */,
+				B3F1E2A4C5D6708192A3B4C5 /* VideoStreamCache.swift in Sources */,
 				1A9C1AFBF514D6EB09347A01 /* VideoWindowManager.swift in Sources */,
 				F367581AF0A30FDA474AEFE6 /* StreamingVideoPlayer.swift in Sources */,
+				AA1B2C3D4E5F6071A2B3C4D5 /* FileThumbnailService.swift in Sources */,
+				BB2C3D4E5F6071A2B3C4D5E6 /* VideoThumbnailResourceLoader.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
