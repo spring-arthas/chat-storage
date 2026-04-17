@@ -5,6 +5,7 @@ APP_NAME="chat-storage"
 DMG_NAME="${APP_NAME}.dmg"
 APP_DIR="build_data/Build/Products/Release/${APP_NAME}.app"
 STAGING_DIR="dmg_stage"
+FFMPEG_BIN="${FFMPEG_BIN:-./vendor/ffmpeg/ffmpeg}"
 
 echo "======================================"
 echo "➡️  Building $APP_NAME for Release..."
@@ -24,6 +25,16 @@ mkdir -p "$STAGING_DIR"
 
 echo "➡️  Copying App..."
 cp -R "$APP_DIR" "$STAGING_DIR/"
+
+APP_IN_STAGE="${STAGING_DIR}/${APP_NAME}.app"
+if [ -f "$FFMPEG_BIN" ]; then
+    echo "➡️  Bundling ffmpeg from $FFMPEG_BIN ..."
+    mkdir -p "${APP_IN_STAGE}/Contents/Resources"
+    cp "$FFMPEG_BIN" "${APP_IN_STAGE}/Contents/Resources/ffmpeg"
+    chmod +x "${APP_IN_STAGE}/Contents/Resources/ffmpeg"
+else
+    echo "⚠️  ffmpeg binary not found at $FFMPEG_BIN, skipping bundle."
+fi
 
 echo "➡️  Creating Applications symlink..."
 ln -s /Applications "$STAGING_DIR/Applications"

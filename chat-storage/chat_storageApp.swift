@@ -9,13 +9,10 @@ import SwiftUI
 import AppKit
 
 enum AppWindowLayout {
-    static let mainMinWidth: CGFloat = 1220
-    static let mainMinHeight: CGFloat = 720
-    static let mainPreferredWidth: CGFloat = 1240
-    static let mainPreferredHeight: CGFloat = 760
+    static let mainWidth: CGFloat = 1240
+    static let mainHeight: CGFloat = 760
     static let loginWidth: CGFloat = 500
     static let loginHeight: CGFloat = 550
-    static let visibleAreaRatio: CGFloat = 0.95
 }
 
 @main
@@ -40,7 +37,7 @@ struct chat_storageApp: App {
                         .environment(\.managedObjectContext, persistenceController.container.viewContext)
                         .environmentObject(socketManager)
                         .environmentObject(authService)
-                        .frame(minWidth: AppWindowLayout.mainMinWidth, minHeight: AppWindowLayout.mainMinHeight)
+                        .frame(width: AppWindowLayout.mainWidth, height: AppWindowLayout.mainHeight)
                 } else {
                     // 登录界面
                     LoginView(isLoggedIn: $isLoggedIn)
@@ -85,20 +82,16 @@ struct chat_storageApp: App {
     private func configureWindowForCurrentState() {
         guard let window = NSApplication.shared.windows.first else { return }
 
-        let screenFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let maxWidth = screenFrame.width * AppWindowLayout.visibleAreaRatio
-        let maxHeight = screenFrame.height * AppWindowLayout.visibleAreaRatio
-
         if isLoggedIn {
-            window.minSize = NSSize(width: AppWindowLayout.mainMinWidth, height: AppWindowLayout.mainMinHeight)
-            let targetWidth = min(max(AppWindowLayout.mainPreferredWidth, AppWindowLayout.mainMinWidth), maxWidth)
-            let targetHeight = min(max(AppWindowLayout.mainPreferredHeight, AppWindowLayout.mainMinHeight), maxHeight)
-            window.setContentSize(NSSize(width: targetWidth, height: targetHeight))
+            let fixedSize = NSSize(width: AppWindowLayout.mainWidth, height: AppWindowLayout.mainHeight)
+            window.minSize = fixedSize
+            window.maxSize = fixedSize
+            window.setContentSize(fixedSize)
         } else {
-            window.minSize = NSSize(width: AppWindowLayout.loginWidth, height: AppWindowLayout.loginHeight)
-            let targetWidth = min(AppWindowLayout.loginWidth, maxWidth)
-            let targetHeight = min(AppWindowLayout.loginHeight, maxHeight)
-            window.setContentSize(NSSize(width: targetWidth, height: targetHeight))
+            let fixedSize = NSSize(width: AppWindowLayout.loginWidth, height: AppWindowLayout.loginHeight)
+            window.minSize = fixedSize
+            window.maxSize = fixedSize
+            window.setContentSize(fixedSize)
         }
 
         window.center()

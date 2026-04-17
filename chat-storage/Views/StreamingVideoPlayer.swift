@@ -281,8 +281,10 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
     private var playerStatusObservation: NSKeyValueObservation?
     private var itemStatusObservation: NSKeyValueObservation?
     private var playbackEndObserver: NSObjectProtocol?
+    private var playbackFinishedObserver: NSObjectProtocol?
     private var timeObserver: Any?
     private var currentFileId: Int64?
+    var onPlaybackSessionTerminated: (() -> Void)?
 
     // 记录是否正在 seek，防止 seek 期间时间观察者覆盖 slider 位置
     private var isSeeking = false
@@ -355,6 +357,18 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
             } else {
                 self?.errorMessage = "视频播放中断"
             }
+            self?.stopAndClearResources()
+        }
+
+        // 播放完成通知：会话结束后强制释放本次播放资源。
+        playbackFinishedObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.stopAndClearResources()
+            self.onPlaybackSessionTerminated?()
         }
 
         // 周期性时间观察（更新进度条）
@@ -447,8 +461,13 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
             NotificationCenter.default.removeObserver(playbackEndObserver)
             self.playbackEndObserver = nil
         }
+        if let playbackFinishedObserver {
+            NotificationCenter.default.removeObserver(playbackFinishedObserver)
+            self.playbackFinishedObserver = nil
+        }
 
         if let fid = currentFileId {
+            LocalMediaServer.shared.stopStreaming(fileId: fid)
             VideoStreamCacheManager.shared.stop(fileId: fid)
             currentFileId = nil
         }
@@ -463,6 +482,7 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
         }
         // stopPlaying 中其他清理也在此兜底
         if let fid = currentFileId {
+            LocalMediaServer.shared.stopStreaming(fileId: fid)
             VideoStreamCacheManager.shared.stop(fileId: fid)
         }
     }

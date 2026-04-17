@@ -56,7 +56,7 @@ class FrameParser {
         // 8. 构建帧对象
         let frame = Frame(type: type, data: Data(frameData), flags: flags)
         
-        print("✅ 帧解析成功: \(type.description), 数据长度: \(length)")
+        /*print("✅ 帧解析成功: \(type.description), 数据长度:\(length)")*/
         return frame
     }
     

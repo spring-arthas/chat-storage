@@ -2295,7 +2295,7 @@ struct MainChatStorage: View {
                 }
                 // 文件列表加载完成后，后台预加载图片/视频缩略图
                 let items = await MainActor.run { self.fileList }
-                Task { await FileThumbnailService.shared.prefetch(items: items) }
+                await FileThumbnailService.shared.prefetch(items: items)
             } catch {
                 print("❌ 加载文件列表失败: \(error)")
                 await MainActor.run {
@@ -4297,7 +4297,8 @@ private struct FileCard: View {
     let onPlay: () -> Void
     
     @State private var isHovering = false
-    
+    @State private var thumbnail: NSImage? = nil
+
     var body: some View {
         VStack(spacing: 12) {
             // 图标区域
@@ -4309,12 +4310,22 @@ private struct FileCard: View {
                         RoundedRectangle(cornerRadius: 16)
                             .stroke(isSelected ? TelegramTheme.accent : TelegramTheme.textSecondary.opacity(0.2), lineWidth: isSelected ? 2 : 1)
                     )
-                
-                Image(systemName: item.isFile ? item.iconName : "folder.fill")
-                    .font(.system(size: 44))
-                    .foregroundColor(item.isFile ? TelegramTheme.accent : TelegramTheme.warning)
-                    .symbolRenderingMode(.hierarchical)
-                    .scaleEffect(isHovering ? 1.1 : 1.0)
+
+                if let thumb = thumbnail {
+                    Image(nsImage: thumb)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity, maxHeight: 100)
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                }
+
+                if thumbnail == nil {
+                    Image(systemName: item.isFile ? item.iconName : "folder.fill")
+                        .font(.system(size: 44))
+                        .foregroundColor(item.isFile ? TelegramTheme.accent : TelegramTheme.warning)
+                        .symbolRenderingMode(.hierarchical)
+                        .scaleEffect(isHovering ? 1.1 : 1.0)
+                }
                 
                 if isSelected {
                     Image(systemName: "checkmark.circle.fill")
@@ -4357,6 +4368,11 @@ private struct FileCard: View {
         .onTapGesture(count: 1, perform: onTap)
         .onTapGesture(count: 2, perform: onDoubleTap)
         .onHover { h in isHovering = h }
+        .task {
+            guard item.isImageFile || item.isVideoFile else { return }
+            let img = await FileThumbnailService.shared.thumbnail(for: item)
+            await MainActor.run { self.thumbnail = img }
+        }
         .contextMenu {
             if item.iconName == "film" {
                 Button { onPlay() } label: { Label("播放", systemImage: "play.circle") }
@@ -4437,7 +4453,7 @@ private struct FileListRowView: View {
                 if let thumb = thumbnail {
                     Image(nsImage: thumb)
                         .resizable()
-                        .scaledToFill()
+                        .scaledToFit()
                         .frame(width: 32, height: 32)
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                 } else {

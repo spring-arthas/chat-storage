@@ -117,8 +117,10 @@ public class SocketManager: NSObject, ObservableObject {
     internal var continuationTypeMap: [FrameTypeEnum: UUID] = [:]
     /// 活动的 Continuation (请求ID -> Continuation)
     internal var activeContinuations: [UUID: CheckedContinuation<Frame, Error>] = [:]
-    /// 流式处理回调 (帧类型 -> 处理闭包)
-    internal var streamHandlers: [FrameTypeEnum: (Frame) -> Bool] = [:]
+    /// 流式处理回调 (帧类型 -> [token: 处理闭包])
+    internal var streamHandlers: [FrameTypeEnum: [UUID: (Frame) -> Bool]] = [:]
+    /// token 到帧类型集合映射，用于按 token 注销 handler
+    internal var streamHandlerTypeMap: [UUID: Set<FrameTypeEnum>] = [:]
     
     /// 响应队列锁
     internal let continuationLock = NSLock()
@@ -235,6 +237,8 @@ public class SocketManager: NSObject, ObservableObject {
         }
         activeContinuations.removeAll()
         continuationTypeMap.removeAll()
+        streamHandlers.removeAll()
+        streamHandlerTypeMap.removeAll()
         continuationLock.unlock()
         
         if notifyUI {
@@ -245,8 +249,6 @@ public class SocketManager: NSObject, ObservableObject {
     /// 切换连接 (用于断点续传/多端口)
     func switchConnection(host: String, port: UInt32) {
         disconnect(notifyUI: false)
-        // 延迟一点时间重连，避免端口占用
-        Thread.sleep(forTimeInterval: 0.1)
         connect(host: host, port: port)
     }
     
@@ -297,6 +299,42 @@ public class SocketManager: NSObject, ObservableObject {
         
         // print("📤 发送帧: \(frame.type.description), 长度: \(data.count) 字节")
     }
+
+    /// 异步发送帧，避免同步 sleep 造成线程阻塞。
+    func sendFrameAsync(_ frame: Frame) async throws {
+        guard connectionState == .connected || connectionState == .connecting else {
+            throw SocketError.notConnected
+        }
+
+        guard let outputStream = outputStream,
+              [.open, .writing].contains(outputStream.streamStatus) else {
+            throw SocketError.notConnected
+        }
+
+        let data = frame.toBytes()
+        var totalBytesWritten = 0
+
+        while totalBytesWritten < data.count {
+            try Task.checkCancellation()
+
+            if outputStream.hasSpaceAvailable {
+                let bytesWritten = data.withUnsafeBytes { buffer -> Int in
+                    guard let baseAddress = buffer.baseAddress else { return 0 }
+                    let advancedAddress = baseAddress.assumingMemoryBound(to: UInt8.self).advanced(by: totalBytesWritten)
+                    return outputStream.write(advancedAddress, maxLength: data.count - totalBytesWritten)
+                }
+
+                if bytesWritten < 0 {
+                    print("❌ Socket 写入失败: \(outputStream.streamError?.localizedDescription ?? "未知错误")")
+                    throw SocketError.sendFailed
+                }
+
+                totalBytesWritten += bytesWritten
+            } else {
+                try await Task.sleep(nanoseconds: 2_000_000) // 2ms
+            }
+        }
+    }
     
     /// 发送帧并等待响应 (支持多种可能的响应类型)
     func sendFrameAndWait(
@@ -313,7 +351,7 @@ public class SocketManager: NSObject, ObservableObject {
                 try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
                 
                 do {
-                    try sendFrame(frame)
+                    try await sendFrameAsync(frame)
                 } catch {
                     removeAndResumeContinuation(for: id, with: error)
                 }
@@ -363,12 +401,37 @@ public class SocketManager: NSObject, ObservableObject {
         }
     }
     
-    func registerStreamHandler(for types: Set<FrameTypeEnum>, handler: @escaping (Frame) -> Bool) {
+    @discardableResult
+    func registerStreamHandler(for types: Set<FrameTypeEnum>, handler: @escaping (Frame) -> Bool) -> UUID {
         continuationLock.lock()
         defer { continuationLock.unlock() }
-        
+
+        let token = UUID()
         for type in types {
-            streamHandlers[type] = handler
+            var handlers = streamHandlers[type] ?? [:]
+            handlers[token] = handler
+            streamHandlers[type] = handlers
+        }
+        streamHandlerTypeMap[token] = types
+        return token
+    }
+
+    func unregisterStreamHandler(token: UUID) {
+        continuationLock.lock()
+        defer { continuationLock.unlock() }
+        removeStreamHandlerLocked(token: token)
+    }
+
+    private func removeStreamHandlerLocked(token: UUID) {
+        guard let types = streamHandlerTypeMap.removeValue(forKey: token) else { return }
+        for type in types {
+            var handlers = streamHandlers[type] ?? [:]
+            handlers.removeValue(forKey: token)
+            if handlers.isEmpty {
+                streamHandlers.removeValue(forKey: type)
+            } else {
+                streamHandlers[type] = handlers
+            }
         }
     }
     
@@ -554,7 +617,7 @@ extension SocketManager {
     
     /// 恢复等待的 continuation 或调用流式处理器
     private func resumeContinuation(for frame: Frame) {
-        var streamHandler: ((Frame) -> Bool)? = nil
+        var handlersForType: [UUID: (Frame) -> Bool] = [:]
         
         self.continuationLock.lock()
         
@@ -574,18 +637,24 @@ extension SocketManager {
         }
         
         // 2. 检查流式处理器
-        if let handler = self.streamHandlers[frame.type] {
-            streamHandler = handler
-        }
+        handlersForType = self.streamHandlers[frame.type] ?? [:]
         
         self.continuationLock.unlock()
         
         // 执行流式处理
-        if let handler = streamHandler {
-            let shouldContinue = handler(frame)
-            if !shouldContinue {
+        if !handlersForType.isEmpty {
+            var tokensToRemove: [UUID] = []
+            for (token, handler) in handlersForType {
+                let shouldContinue = handler(frame)
+                if !shouldContinue {
+                    tokensToRemove.append(token)
+                }
+            }
+            if !tokensToRemove.isEmpty {
                 self.continuationLock.lock()
-                self.streamHandlers.removeValue(forKey: frame.type)
+                for token in tokensToRemove {
+                    self.removeStreamHandlerLocked(token: token)
+                }
                 self.continuationLock.unlock()
             }
             return

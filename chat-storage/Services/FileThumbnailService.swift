@@ -11,14 +11,56 @@
 import Foundation
 import AppKit
 import AVFoundation
+import Darwin
+
+enum ThumbnailRemapState: String, Codable {
+    case thumbnailPending
+    case thumbnailReady
+    case thumbnailFailed
+    case uploadSucceeded
+    case uploadSucceededNoFileId
+    case remapPending
+    case remapRetrying
+    case remapDone
+    case remapExhausted
+}
+
+struct ThumbnailRemapRecord: Codable, Equatable {
+    let taskId: String
+    var fileId: Int64?
+    var state: ThumbnailRemapState
+    var attempts: Int
+    var lastError: String?
+    var updatedAt: Date
+}
+
+private enum FFmpegAvailability {
+    case unknown
+    case unavailable
+    case available(String)
+}
+
+struct LocalVideoThumbnailProfile: Equatable {
+    let seekPoints: [Int]
+    let ffmpegQuality: Int
+    let timeoutSeconds: TimeInterval
+    let outputWidth: Int
+    let outputHeight: Int
+}
 
 actor FileThumbnailService {
     static let shared = FileThumbnailService()
+    private static let fullHDSize = CGSize(width: 1920, height: 1080)
+    private static let supportedLocalVideoExtensions: Set<String> = [
+        "mp4", "m4v", "mov", "avi", "mkv", "webm", "wmv", "flv", "mpg", "mpeg", "ts", "m2ts", "3gp"
+    ]
 
     // MARK: - 缓存
 
     private let memCache = NSCache<NSNumber, NSImage>()
+    private let taskMemCache = NSCache<NSString, NSImage>()
     private let diskCacheDir: URL
+    private let ledgerFilePath: URL
 
     // MARK: - 并发控制
 
@@ -27,14 +69,33 @@ actor FileThumbnailService {
     /// 同时进行的加载任务上限（每个视频任务内部可能再创建多个 socket，不受此限制）
     private var activeCount = 0
     private let maxConcurrent = 3
+    private var loadSlotWaiters: [CheckedContinuation<Void, Never>] = []
+    private var remapInFlight: Set<String> = []
+    private var remapLedger: [String: ThumbnailRemapRecord] = [:]
+    private var ffmpegAvailability: FFmpegAvailability = .unknown
+    private var prefetchQueue: [Int64: DirectoryItem] = [:]
+    private var prefetchWorker: Task<Void, Never>?
 
     // MARK: - Init
 
-    private init() {
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        diskCacheDir = caches.appendingPathComponent("chat-storage/thumbnails", isDirectory: true)
+    init(testDiskCacheDir: URL? = nil) {
+        if let testDiskCacheDir {
+            diskCacheDir = testDiskCacheDir
+        } else {
+            let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+            diskCacheDir = caches.appendingPathComponent("chat-storage/thumbnails", isDirectory: true)
+        }
+        ledgerFilePath = diskCacheDir.appendingPathComponent("thumbnail_reconcile_ledger.json")
         try? FileManager.default.createDirectory(at: diskCacheDir, withIntermediateDirectories: true)
         memCache.countLimit = 200
+        taskMemCache.countLimit = 300
+        remapLedger = Self.loadLedgerFromDisk(at: ledgerFilePath)
+
+        // 启动后补偿：对已知 fileId 但未 remapDone 的记录做后台重试。
+        Task {
+            await self.recoverPendingRemapsFromLedger()
+        }
+        // 历史缩略图不再做启动迁移，仅保证新上传视频输出 1080P。
     }
 
     // MARK: - 磁盘路径
@@ -46,6 +107,75 @@ actor FileThumbnailService {
     /// 上传任务进行中时，以 taskId 为 key 的临时磁盘路径
     private func taskDiskPath(for taskId: String) -> URL {
         diskCacheDir.appendingPathComponent("task_\(taskId).jpg")
+    }
+
+    private func taskCacheKey(for taskId: String) -> NSString {
+        NSString(string: "task_\(taskId)")
+    }
+
+    // MARK: - 迁移账本
+
+    private static func loadLedgerFromDisk(at ledgerPath: URL) -> [String: ThumbnailRemapRecord] {
+        guard let data = try? Data(contentsOf: ledgerPath) else { return [:] }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let decoded = try? decoder.decode([String: ThumbnailRemapRecord].self, from: data) else {
+            return [:]
+        }
+        return decoded
+    }
+
+    private func saveLedgerToDisk() {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(remapLedger) else { return }
+        try? data.write(to: ledgerFilePath, options: .atomic)
+    }
+
+    private func upsertLedger(
+        taskId: String,
+        fileId: Int64? = nil,
+        state: ThumbnailRemapState,
+        incrementAttempts: Bool = false,
+        lastError: String? = nil
+    ) {
+        var record = remapLedger[taskId] ?? ThumbnailRemapRecord(
+            taskId: taskId,
+            fileId: nil,
+            state: state,
+            attempts: 0,
+            lastError: nil,
+            updatedAt: Date()
+        )
+        if let fileId {
+            record.fileId = fileId
+        }
+        record.state = state
+        if incrementAttempts {
+            record.attempts += 1
+        }
+        record.lastError = lastError
+        record.updatedAt = Date()
+        remapLedger[taskId] = record
+        saveLedgerToDisk()
+    }
+
+    private func shouldAttemptRemap(record: ThumbnailRemapRecord) -> Bool {
+        guard record.fileId != nil else { return false }
+        switch record.state {
+        case .remapDone, .uploadSucceededNoFileId, .remapExhausted:
+            return false
+        default:
+            return true
+        }
+    }
+
+    private func recoverPendingRemapsFromLedger() async {
+        for record in remapLedger.values where shouldAttemptRemap(record: record) {
+            guard let fileId = record.fileId else { continue }
+            startRemapTaskIfNeeded(taskId: record.taskId, fileId: fileId)
+        }
     }
 
     // MARK: - 核心查询方法
@@ -70,9 +200,7 @@ actor FileThumbnailService {
         }
 
         // 4. 并发限制：轮询等待空位
-        while activeCount >= maxConcurrent {
-            try? await Task.sleep(nanoseconds: 100_000_000)
-        }
+        await waitForLoadSlotIfNeeded()
 
         // 5. 发起加载
         let task = Task<NSImage?, Never> { [weak self] in
@@ -90,6 +218,7 @@ actor FileThumbnailService {
     private func finishLoad(fileId: Int64, img: NSImage?, path: URL, key: NSNumber) {
         activeCount -= 1
         inFlight.removeValue(forKey: fileId)
+        signalLoadSlotIfNeeded()
         guard let img else { return }
         memCache.setObject(img, forKey: key)
         saveJPEG(img, to: path)
@@ -105,8 +234,41 @@ actor FileThumbnailService {
             guard memCache.object(forKey: key) == nil,
                   !FileManager.default.fileExists(atPath: diskPath(for: item.id).path),
                   inFlight[item.id] == nil else { continue }
-            Task { await thumbnail(for: item) }
+            prefetchQueue[item.id] = item
         }
+        startPrefetchWorkerIfNeeded()
+    }
+
+    private func startPrefetchWorkerIfNeeded() {
+        guard prefetchWorker == nil else { return }
+        prefetchWorker = Task { [weak self] in
+            await self?.drainPrefetchQueue()
+        }
+    }
+
+    private func drainPrefetchQueue() async {
+        while !Task.isCancelled {
+            guard let item = prefetchQueue.values.first else {
+                prefetchWorker = nil
+                return
+            }
+            prefetchQueue.removeValue(forKey: item.id)
+            _ = await thumbnail(for: item)
+        }
+        prefetchWorker = nil
+    }
+
+    private func waitForLoadSlotIfNeeded() async {
+        if activeCount < maxConcurrent { return }
+        await withCheckedContinuation { continuation in
+            loadSlotWaiters.append(continuation)
+        }
+    }
+
+    private func signalLoadSlotIfNeeded() {
+        guard activeCount < maxConcurrent, !loadSlotWaiters.isEmpty else { return }
+        let waiter = loadSlotWaiters.removeFirst()
+        waiter.resume()
     }
 
     // MARK: - 本地文件直接生成缩略图（提交上传任务时调用）
@@ -115,17 +277,23 @@ actor FileThumbnailService {
     /// 必须在 URL 安全访问权限有效期内调用（即 submit 时机）。
     /// 上传完成拿到 fileId 后，调用 remapToFileId 完成 key 迁移。
     func buildFromLocal(taskId: String, fileUrl: URL, fileName: String) async {
+        upsertLedger(taskId: taskId, state: .thumbnailPending)
         let path = taskDiskPath(for: taskId)
-        guard !FileManager.default.fileExists(atPath: path.path) else {
+        if FileManager.default.fileExists(atPath: path.path) {
+            upsertLedger(taskId: taskId, state: .thumbnailReady)
             print("[Thumbnail] 跳过生成，已有临时缓存: taskId=\(taskId)")
+            if let fileId = remapLedger[taskId]?.fileId {
+                startRemapTaskIfNeeded(taskId: taskId, fileId: fileId)
+            }
             return
         }
 
         let ext = (fileName as NSString).pathExtension.lowercased()
+        let isVideoFile = Self.supportedLocalVideoExtensions.contains(ext)
         let img: NSImage?
         if ["jpg", "jpeg", "png", "gif", "bmp"].contains(ext) {
             img = NSImage(contentsOf: fileUrl).map { scaled($0) }
-        } else if ["mp4", "m4v", "mov", "avi", "mkv"].contains(ext) {
+        } else if isVideoFile {
             img = await extractFrameFromLocalVideo(url: fileUrl)
         } else {
             print("[Thumbnail] 不支持的文件类型，跳过: \(fileName)")
@@ -133,34 +301,124 @@ actor FileThumbnailService {
         }
 
         guard let thumbnail = img else {
+            upsertLedger(taskId: taskId, state: .thumbnailFailed, lastError: "extract_failed")
             print("[Thumbnail] 本地缩略图提取失败: \(fileName)")
             return
         }
-        saveJPEG(thumbnail, to: path)
+        let normalizedThumbnail: NSImage
+        if isVideoFile {
+            normalizedThumbnail = Self.isFullHD(thumbnail.size) ? thumbnail : normalizedToFullHD(thumbnail)
+        } else {
+            normalizedThumbnail = thumbnail
+        }
+        // 视频缩略图使用更高 JPEG 质量，减少细节损失。
+        saveJPEG(normalizedThumbnail, to: path, compressionFactor: isVideoFile ? 0.95 : 0.85)
+        taskMemCache.setObject(normalizedThumbnail, forKey: taskCacheKey(for: taskId))
+        upsertLedger(taskId: taskId, state: .thumbnailReady)
         print("[Thumbnail] 本地缩略图生成完成: taskId=\(taskId), file=\(fileName)")
+        if isVideoFile {
+            let diskRecorded = FileManager.default.fileExists(atPath: path.path)
+            let memRecorded = taskMemCache.object(forKey: taskCacheKey(for: taskId)) != nil
+            if diskRecorded && memRecorded {
+                print(Self.thumbnailProcessingCompletedLog(
+                    fileName: fileName,
+                    thumbnailPath: path.path,
+                    taskId: taskId
+                ))
+            }
+        }
+
+        // 若上传结果已返回 fileId，则补偿触发 remap（不阻塞上传主链）。
+        if let fileId = remapLedger[taskId]?.fileId {
+            startRemapTaskIfNeeded(taskId: taskId, fileId: fileId)
+        }
     }
 
-    /// 上传完成后，将 taskId-key 的磁盘缩略图迁移到 fileId-key，供文件列表直接命中。
+    func markUploadSucceeded(taskId: String, fileId: Int64?) {
+        guard let fileId else {
+            upsertLedger(taskId: taskId, state: .uploadSucceededNoFileId)
+            return
+        }
+        upsertLedger(taskId: taskId, fileId: fileId, state: .uploadSucceeded)
+        startRemapTaskIfNeeded(taskId: taskId, fileId: fileId)
+    }
+
+    private func startRemapTaskIfNeeded(taskId: String, fileId: Int64) {
+        guard !remapInFlight.contains(taskId) else { return }
+        remapInFlight.insert(taskId)
+        upsertLedger(taskId: taskId, fileId: fileId, state: .remapPending)
+        let service = self
+        Task {
+            let success = await service.remapToFileIdWithRetry(taskId: taskId, fileId: fileId)
+            await service.finishRemapTask(taskId: taskId, success: success, fileId: fileId)
+        }
+    }
+
+    private func finishRemapTask(taskId: String, success: Bool, fileId: Int64) {
+        remapInFlight.remove(taskId)
+        if success {
+            upsertLedger(taskId: taskId, fileId: fileId, state: .remapDone)
+        }
+    }
+
+    /// 向后兼容：保留原入口，改为后台重试 remap。
     func remapToFileId(taskId: String, fileId: Int64) {
+        markUploadSucceeded(taskId: taskId, fileId: fileId)
+    }
+
+    /// 上传完成后，将 taskId-key 的缩略图迁移到 fileId-key。该方法仅在后台任务中调用。
+    @discardableResult
+    func remapToFileIdWithRetry(
+        taskId: String,
+        fileId: Int64,
+        timeoutSeconds: TimeInterval = 30.0,
+        pollIntervalSeconds: TimeInterval = 0.5
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            if remapToFileIdOnce(taskId: taskId, fileId: fileId) {
+                return true
+            }
+            upsertLedger(taskId: taskId, fileId: fileId, state: .remapRetrying, incrementAttempts: true, lastError: "temp_missing_or_target_exists")
+            try? await Task.sleep(nanoseconds: UInt64(max(0.1, pollIntervalSeconds) * 1_000_000_000))
+        }
+        upsertLedger(taskId: taskId, fileId: fileId, state: .remapExhausted, lastError: "retry_timeout")
+        print("[Thumbnail] remap 超时放弃: taskId=\(taskId), fileId=\(fileId)")
+        return false
+    }
+
+    private func remapToFileIdOnce(taskId: String, fileId: Int64) -> Bool {
         let taskPath = taskDiskPath(for: taskId)
         let filePath = diskPath(for: fileId)
 
-        // fileId-key 已存在则无需迁移
-        guard FileManager.default.fileExists(atPath: taskPath.path),
-              !FileManager.default.fileExists(atPath: filePath.path) else {
-            print("[Thumbnail] remap 跳过: taskId=\(taskId), fileId=\(fileId), taskPath存在=\(FileManager.default.fileExists(atPath: taskPath.path)), fileIdPath存在=\(FileManager.default.fileExists(atPath: filePath.path))")
-            return
+        // 目标已存在时视为成功，避免重复迁移导致失败噪音。
+        if FileManager.default.fileExists(atPath: filePath.path) {
+            if let img = NSImage(contentsOf: filePath) {
+                memCache.setObject(img, forKey: NSNumber(value: fileId))
+            }
+            taskMemCache.removeObject(forKey: taskCacheKey(for: taskId))
+            return true
+        }
+
+        guard FileManager.default.fileExists(atPath: taskPath.path) else {
+            return false
         }
 
         do {
             try FileManager.default.moveItem(at: taskPath, to: filePath)
             // 同时写入内存缓存，文件列表下次渲染直接命中
-            if let img = NSImage(contentsOf: filePath) {
+            if let taskImg = taskMemCache.object(forKey: taskCacheKey(for: taskId)) {
+                memCache.setObject(taskImg, forKey: NSNumber(value: fileId))
+                taskMemCache.removeObject(forKey: taskCacheKey(for: taskId))
+            } else if let img = NSImage(contentsOf: filePath) {
                 memCache.setObject(img, forKey: NSNumber(value: fileId))
             }
             print("[Thumbnail] remap 完成: taskId=\(taskId) → fileId=\(fileId)")
+            return true
         } catch {
+            upsertLedger(taskId: taskId, fileId: fileId, state: .remapRetrying, incrementAttempts: true, lastError: error.localizedDescription)
             print("[Thumbnail] remap 失败: \(error)")
+            return false
         }
     }
 
@@ -287,12 +545,111 @@ actor FileThumbnailService {
 
         guard let cgImage else { return nil }
         let nsImage = NSImage(cgImage: cgImage, size: .zero)
-        return scaled(nsImage)
+        return normalizedToFullHD(nsImage)
     }
 
     // MARK: - 本地视频帧提取
 
     private func extractFrameFromLocalVideo(url: URL) async -> NSImage? {
+        if let ffmpegImage = await extractFrameFromLocalVideoWithFFmpeg(url: url) {
+            return ffmpegImage
+        }
+        return await extractFrameFromLocalVideoWithAVAsset(url: url)
+    }
+
+    private func extractFrameFromLocalVideoWithFFmpeg(url: URL) async -> NSImage? {
+        guard let ffmpegPath = resolveFFmpegPath() else {
+            return nil
+        }
+
+        let ext = url.pathExtension.lowercased()
+        let fileSize = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) }
+        let profile = Self.localVideoThumbnailProfile(fileSize: fileSize, fileExtension: ext)
+        let outputURL = diskCacheDir.appendingPathComponent("ffmpeg_\(UUID().uuidString).jpg")
+        defer { try? FileManager.default.removeItem(at: outputURL) }
+
+        // 按文件规模/格式探测关键帧，输出统一 1080P 画质。
+        for second in profile.seekPoints {
+            let args = Self.buildFFmpegArguments(
+                inputPath: url.path,
+                outputPath: outputURL.path,
+                seekSeconds: second,
+                outputWidth: profile.outputWidth,
+                outputHeight: profile.outputHeight,
+                quality: profile.ffmpegQuality
+            )
+
+            let success = await runFFmpeg(
+                executablePath: ffmpegPath,
+                arguments: args,
+                timeoutSeconds: profile.timeoutSeconds
+            )
+            guard success else { continue }
+            guard let image = NSImage(contentsOf: outputURL) else { continue }
+            print("[Thumbnail] ffmpeg 抽帧成功: file=\(url.lastPathComponent) seek=\(second)s")
+            return normalizedToFullHD(image)
+        }
+
+        print("[Thumbnail] ffmpeg 抽帧失败，回退 AVAsset: file=\(url.lastPathComponent)")
+        return nil
+    }
+
+    private func resolveFFmpegPath() -> String? {
+        switch ffmpegAvailability {
+        case .available(let path):
+            return path
+        case .unavailable:
+            return nil
+        case .unknown:
+            let fileManager = FileManager.default
+            for candidate in Self.ffmpegCandidatePaths(
+                bundleResourcePath: Bundle.main.resourceURL?.path,
+                bundlePath: Bundle.main.bundlePath,
+                privateFrameworksPath: Bundle.main.privateFrameworksPath,
+                pathEnv: ProcessInfo.processInfo.environment["PATH"]
+            ) {
+                if fileManager.isExecutableFile(atPath: candidate) {
+                    ffmpegAvailability = .available(candidate)
+                    return candidate
+                }
+            }
+            ffmpegAvailability = .unavailable
+            return nil
+        }
+    }
+
+    private func runFFmpeg(executablePath: String, arguments: [String], timeoutSeconds: TimeInterval) async -> Bool {
+        await Task.detached(priority: .utility) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: executablePath)
+            process.arguments = arguments
+            process.standardOutput = Pipe()
+            process.standardError = Pipe()
+
+            do {
+                try process.run()
+            } catch {
+                return false
+            }
+
+            let deadline = Date().addingTimeInterval(timeoutSeconds)
+            while process.isRunning {
+                if Date() >= deadline {
+                    process.terminate()
+                    usleep(200_000)
+                    if process.isRunning {
+                        process.interrupt()
+                    }
+                    return false
+                }
+                usleep(100_000)
+            }
+
+            return process.terminationStatus == 0
+        }.value
+    }
+
+    private func extractFrameFromLocalVideoWithAVAsset(url: URL) async -> NSImage? {
         let asset = AVAsset(url: url)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
@@ -324,15 +681,157 @@ actor FileThumbnailService {
         }
 
         guard let cgImage else { return nil }
-        return scaled(NSImage(cgImage: cgImage, size: .zero))
+        return normalizedToFullHD(NSImage(cgImage: cgImage, size: .zero))
     }
 
     // MARK: - 工具方法
 
-    private func saveJPEG(_ image: NSImage, to url: URL) {
+    static func buildFFmpegArguments(
+        inputPath: String,
+        outputPath: String,
+        seekSeconds: Int,
+        outputWidth: Int,
+        outputHeight: Int,
+        quality: Int
+    ) -> [String] {
+        [
+            "-y",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-ss", String(seekSeconds),
+            "-i", inputPath,
+            "-frames:v", "1",
+            "-vf", "scale=\(outputWidth):\(outputHeight):force_original_aspect_ratio=decrease:flags=lanczos,pad=\(outputWidth):\(outputHeight):(ow-iw)/2:(oh-ih)/2:color=black",
+            "-q:v", String(quality),
+            outputPath
+        ]
+    }
+
+    static func localVideoThumbnailProfile(fileSize: Int64?, fileExtension: String) -> LocalVideoThumbnailProfile {
+        let ext = fileExtension.lowercased()
+        let size = max(0, fileSize ?? 0)
+
+        // 超大文件或容器复杂格式：更保守的抽帧点与更高质量。
+        if size >= 2_000_000_000 || ["mkv", "mov", "avi", "ts", "m2ts"].contains(ext) {
+            return LocalVideoThumbnailProfile(
+                seekPoints: [5, 12, 20],
+                ffmpegQuality: 2,
+                timeoutSeconds: 45,
+                outputWidth: 1920,
+                outputHeight: 1080
+            )
+        }
+        if size >= 800_000_000 {
+            return LocalVideoThumbnailProfile(
+                seekPoints: [3, 10, 16],
+                ffmpegQuality: 2,
+                timeoutSeconds: 35,
+                outputWidth: 1920,
+                outputHeight: 1080
+            )
+        }
+        if size >= 200_000_000 {
+            return LocalVideoThumbnailProfile(
+                seekPoints: [3, 8, 12],
+                ffmpegQuality: 3,
+                timeoutSeconds: 30,
+                outputWidth: 1920,
+                outputHeight: 1080
+            )
+        }
+        return LocalVideoThumbnailProfile(
+            seekPoints: [2, 5, 8],
+            ffmpegQuality: 3,
+            timeoutSeconds: 20,
+            outputWidth: 1920,
+            outputHeight: 1080
+        )
+    }
+
+    static func ffmpegCandidatePaths(
+        bundleResourcePath: String?,
+        bundlePath: String?,
+        privateFrameworksPath: String?,
+        pathEnv: String?
+    ) -> [String] {
+        var candidates: [String] = []
+
+        // App 内置 ffmpeg（优先）
+        if let bundleResourcePath, !bundleResourcePath.isEmpty {
+            candidates.append(bundleResourcePath + "/ffmpeg")
+            candidates.append(bundleResourcePath + "/tools/ffmpeg")
+            candidates.append(bundleResourcePath + "/ffmpeg/bin/ffmpeg")
+        }
+        if let privateFrameworksPath, !privateFrameworksPath.isEmpty {
+            candidates.append(privateFrameworksPath + "/ffmpeg")
+        }
+        if let bundlePath, !bundlePath.isEmpty {
+            candidates.append(bundlePath + "/Contents/MacOS/ffmpeg")
+            candidates.append(bundlePath + "/Contents/Frameworks/ffmpeg")
+            candidates.append(bundlePath + "/Contents/Resources/ffmpeg")
+        }
+
+        // 系统路径兜底
+        candidates.append(contentsOf: [
+            "/opt/homebrew/bin/ffmpeg",
+            "/usr/local/bin/ffmpeg",
+            "/usr/bin/ffmpeg"
+        ])
+
+        if let pathEnv, !pathEnv.isEmpty {
+            let fromEnv = pathEnv
+                .split(separator: ":")
+                .map { String($0) + "/ffmpeg" }
+            candidates.append(contentsOf: fromEnv)
+        }
+
+        // 去重，保持先后优先级。
+        var deduped: [String] = []
+        for path in candidates where !deduped.contains(path) {
+            deduped.append(path)
+        }
+        return deduped
+    }
+
+    private static func thumbnailProcessingCompletedLog(fileName: String, thumbnailPath: String, taskId: String) -> String {
+        "[Thumbnail] 视频缩略图处理完成 | 文件名称: \(fileName) | 缩略图文件位置: \(thumbnailPath) | 上传任务Id: \(taskId)"
+    }
+
+    private static func isFullHD(_ size: CGSize) -> Bool {
+        let w = Int(size.width.rounded())
+        let h = Int(size.height.rounded())
+        return w == 1920 && h == 1080
+    }
+
+    private func normalizedToFullHD(_ image: NSImage) -> NSImage {
+        let target = NSImage(size: Self.fullHDSize)
+        target.lockFocus()
+        NSColor.black.setFill()
+        NSBezierPath(rect: CGRect(origin: .zero, size: Self.fullHDSize)).fill()
+
+        let srcSize = image.size
+        let srcW = max(1, srcSize.width)
+        let srcH = max(1, srcSize.height)
+        let scale = min(Self.fullHDSize.width / srcW, Self.fullHDSize.height / srcH)
+        let drawW = srcW * scale
+        let drawH = srcH * scale
+        let drawX = (Self.fullHDSize.width - drawW) / 2.0
+        let drawY = (Self.fullHDSize.height - drawH) / 2.0
+
+        image.draw(
+            in: CGRect(x: drawX, y: drawY, width: drawW, height: drawH),
+            from: .zero,
+            operation: .copy,
+            fraction: 1.0
+        )
+        target.unlockFocus()
+        return target
+    }
+
+    private func saveJPEG(_ image: NSImage, to url: URL, compressionFactor: Double = 0.8) {
         guard let tiff = image.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: tiff),
-              let jpeg = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.8])
+              let jpeg = bitmap.representation(using: .jpeg, properties: [.compressionFactor: compressionFactor])
         else { return }
         try? jpeg.write(to: url)
     }
@@ -345,12 +844,91 @@ actor FileThumbnailService {
 
     func clearAllCache() {
         memCache.removeAllObjects()
+        taskMemCache.removeAllObjects()
         let files = (try? FileManager.default.contentsOfDirectory(
             at: diskCacheDir, includingPropertiesForKeys: nil)) ?? []
         for file in files where file.pathExtension == "jpg" {
             try? FileManager.default.removeItem(at: file)
         }
         print("[Thumbnail] 缓存已清空，共删除 \(files.count) 个文件")
+    }
+
+    // MARK: - Test Hooks
+
+    static func debugFFmpegArguments(
+        inputPath: String,
+        outputPath: String,
+        seekSeconds: Int,
+        outputWidth: Int = 1920,
+        outputHeight: Int = 1080,
+        quality: Int = 2
+    ) -> [String] {
+        buildFFmpegArguments(
+            inputPath: inputPath,
+            outputPath: outputPath,
+            seekSeconds: seekSeconds,
+            outputWidth: outputWidth,
+            outputHeight: outputHeight,
+            quality: quality
+        )
+    }
+
+    static func debugLocalVideoThumbnailProfile(fileSize: Int64?, fileExtension: String) -> LocalVideoThumbnailProfile {
+        localVideoThumbnailProfile(fileSize: fileSize, fileExtension: fileExtension)
+    }
+
+    static func debugIsFullHD(width: CGFloat, height: CGFloat) -> Bool {
+        isFullHD(CGSize(width: width, height: height))
+    }
+
+    static func debugThumbnailProcessingCompletedLog(fileName: String, thumbnailPath: String, taskId: String) -> String {
+        thumbnailProcessingCompletedLog(fileName: fileName, thumbnailPath: thumbnailPath, taskId: taskId)
+    }
+
+    static func debugFFmpegCandidatePaths(pathEnv: String?) -> [String] {
+        ffmpegCandidatePaths(
+            bundleResourcePath: nil,
+            bundlePath: nil,
+            privateFrameworksPath: nil,
+            pathEnv: pathEnv
+        )
+    }
+
+    static func debugFFmpegCandidatePaths(
+        bundleResourcePath: String?,
+        bundlePath: String?,
+        privateFrameworksPath: String?,
+        pathEnv: String?
+    ) -> [String] {
+        ffmpegCandidatePaths(
+            bundleResourcePath: bundleResourcePath,
+            bundlePath: bundlePath,
+            privateFrameworksPath: privateFrameworksPath,
+            pathEnv: pathEnv
+        )
+    }
+
+    func debugMarkThumbnailReady(taskId: String) {
+        upsertLedger(taskId: taskId, state: .thumbnailReady)
+    }
+
+    func debugMarkUploadSucceeded(taskId: String, fileId: Int64?) {
+        guard let fileId else {
+            upsertLedger(taskId: taskId, state: .uploadSucceededNoFileId)
+            return
+        }
+        upsertLedger(taskId: taskId, fileId: fileId, state: .uploadSucceeded)
+    }
+
+    func debugLedgerRecord(taskId: String) -> ThumbnailRemapRecord? {
+        remapLedger[taskId]
+    }
+
+    func debugPendingRemapTaskIds() -> [String] {
+        remapLedger.values
+            .filter { shouldAttemptRemap(record: $0) }
+            .map { $0.taskId }
+            .sorted()
     }
 }
 

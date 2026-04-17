@@ -17,6 +17,8 @@ final class LocalMediaServer {
     private var listener: NWListener?
     private var port: NWEndpoint.Port?
     private var connections: [ObjectIdentifier: NWConnection] = [:]
+    /// 连接对应的 fileId，用于会话结束时按文件精准回收连接。
+    private var connectionFileIds: [ObjectIdentifier: Int64] = [:]
     /// 专用流 Task，仅用于路径 3（非顺序访问）的清理。
     private var dedicatedStreamTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
     private var listenerReadySemaphore: DispatchSemaphore?
@@ -50,7 +52,28 @@ final class LocalMediaServer {
 
             let allConnections = Array(connections.values)
             connections.removeAll()
+            connectionFileIds.removeAll()
             allConnections.forEach { $0.cancel() }
+        }
+    }
+
+    /// 按文件强制停止本地流会话，确保切换播放前旧会话连接与专用拉流任务全部释放。
+    func stopStreaming(fileId: Int64) {
+        queue.sync {
+            let targetConnectionIds = connectionFileIds.compactMap { key, value in
+                value == fileId ? key : nil
+            }
+            guard !targetConnectionIds.isEmpty else { return }
+
+            for connectionID in targetConnectionIds {
+                dedicatedStreamTasks[connectionID]?.cancel()
+                dedicatedStreamTasks.removeValue(forKey: connectionID)
+                connectionFileIds.removeValue(forKey: connectionID)
+                if let connection = connections.removeValue(forKey: connectionID) {
+                    connection.cancel()
+                }
+            }
+            print("🧹 [LocalMediaServer] 已回收 fileId=\(fileId) 的本地流连接数: \(targetConnectionIds.count)")
         }
     }
 
@@ -167,6 +190,7 @@ final class LocalMediaServer {
         dedicatedStreamTasks[id]?.cancel()
         dedicatedStreamTasks.removeValue(forKey: id)
         connections.removeValue(forKey: id)
+        connectionFileIds.removeValue(forKey: id)
     }
 
     // MARK: - HTTP 请求处理
@@ -238,6 +262,7 @@ final class LocalMediaServer {
 
         let fileName = components.queryItems?.first(where: { $0.name == "name" })?.value ?? "video.mp4"
         let mimeType = Self.mimeType(for: fileName)
+        connectionFileIds[ObjectIdentifier(connection)] = fileId
 
         let rangeHeader = lines.first { $0.lowercased().starts(with: "range:") }
         let byteRange = Self.parseRange(rangeHeader, totalSize: totalSize)
@@ -371,12 +396,13 @@ final class LocalMediaServer {
                 var nextOffset = startOffset
                 while !Task.isCancelled && nextOffset <= endOffset {
                     let requestLength = min(windowSize, endOffset - nextOffset + 1)
-                    let received = try await streamingService.startCustomVideoStreaming(
+                    let received = try await self?.pullDedicatedWindowWithRetry(
+                        service: streamingService,
                         fileId: fileId,
                         startOffset: nextOffset,
                         length: requestLength,
                         delegate: delegate
-                    )
+                    ) ?? 0
                     guard received > 0 else {
                         throw SocketError.invalidResponse
                     }
@@ -391,6 +417,45 @@ final class LocalMediaServer {
         queue.async { [weak self] in
             self?.dedicatedStreamTasks[connectionID] = task
         }
+    }
+
+    private func pullDedicatedWindowWithRetry(
+        service: VideoStreamingService,
+        fileId: Int64,
+        startOffset: Int64,
+        length: Int64,
+        delegate: VideoStreamLoaderDelegate
+    ) async throws -> Int64 {
+        let maxRetries = 3
+        var lastError: Error?
+
+        for attempt in 1...maxRetries {
+            do {
+                let received = try await service.startCustomVideoStreaming(
+                    fileId: fileId,
+                    startOffset: startOffset,
+                    length: length,
+                    delegate: delegate
+                )
+                if received > 0 {
+                    if attempt > 1 {
+                        print("✅ [LocalMediaServer] 专用流重试成功 attempt=\(attempt) offset=\(startOffset) length=\(length)")
+                    }
+                    return received
+                }
+                lastError = SocketError.invalidResponse
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lastError = error
+                if attempt < maxRetries {
+                    print("⚠️ [LocalMediaServer] 专用流窗口重试 \(attempt)/\(maxRetries) offset=\(startOffset) length=\(length), error=\(error)")
+                    try? await Task.sleep(nanoseconds: 150_000_000)
+                }
+            }
+        }
+
+        throw lastError ?? SocketError.invalidResponse
     }
 
     private func removeDedicatedStreamTask(for connectionID: ObjectIdentifier) {

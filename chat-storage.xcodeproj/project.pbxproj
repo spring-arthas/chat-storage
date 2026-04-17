@@ -307,6 +307,7 @@
 				4E15EB152F2B48230093C805 /* Sources */,
 				4E15EB162F2B48230093C805 /* Frameworks */,
 				4E15EB172F2B48230093C805 /* Resources */,
+				D1E2F3A4B5C60718293A4B5C /* Bundle ffmpeg */,
 			);
 			buildRules = (
 			);
@@ -423,6 +424,27 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		D1E2F3A4B5C60718293A4B5C /* Bundle ffmpeg */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Bundle ffmpeg";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nFFMPEG_BIN=\"${FFMPEG_BIN:-$SRCROOT/vendor/ffmpeg/ffmpeg}\"\nDEST_DIR=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"\nDEST_BIN=\"$DEST_DIR/ffmpeg\"\nif [ -f \"$FFMPEG_BIN\" ]; then\n  mkdir -p \"$DEST_DIR\"\n  cp \"$FFMPEG_BIN\" \"$DEST_BIN\"\n  chmod +x \"$DEST_BIN\"\n  echo \"[ffmpeg] bundled: $DEST_BIN\"\nelse\n  echo \"[ffmpeg] skip: source not found at $FFMPEG_BIN\"\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		4E15EB152F2B48230093C805 /* Sources */ = {

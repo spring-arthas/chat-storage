@@ -327,9 +327,10 @@ class TransferTaskManager: ObservableObject {
                 let transferPort: UInt32 = task.taskType == .upload ? 10087 : 10088
                 print("📡 连接到传输端口: \(transferPort) (\(task.taskType == .upload ? "上传" : "下载"))")
                 
-                // 异步连接到传输端口（不阻塞主线程）
+                // 在主 RunLoop 上建立 Stream，但避免使用含阻塞 sleep 的 switchConnection。
                 await MainActor.run {
-                    socketManager.switchConnection(host: currentHost, port: transferPort)
+                    socketManager.disconnect(notifyUI: false)
+                    socketManager.connect(host: currentHost, port: transferPort)
                 }
                 
                 // 等待连接建立（带超时）
@@ -377,6 +378,10 @@ class TransferTaskManager: ObservableObject {
                             await FileThumbnailService.shared.remapToFileId(taskId: taskId, fileId: newFileId)
                         }
                     } else {
+                        let taskId = idStr
+                        Task {
+                            await FileThumbnailService.shared.markUploadSucceeded(taskId: taskId, fileId: nil)
+                        }
                         print("[Thumbnail] 服务端未返回 fileId，跳过 remap（缩略图保留在 taskId-key）")
                     }
                 } else {

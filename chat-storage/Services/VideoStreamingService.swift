@@ -19,6 +19,8 @@ final class VideoStreamingService {
     private var isCancelled = false
     private var hasCompleted = false
     private var hasDisconnectedSocket = false
+    private var activeStreamHandlerToken: UUID?
+    private var requestGeneration: UInt64 = 0
 
     init(host: String, port: UInt32 = 10088) {
         self.targetHost = host
@@ -41,7 +43,7 @@ final class VideoStreamingService {
         length: Int64,
         delegate: VideoStreamLoaderDelegate
     ) async throws -> Int64 {
-        prepareForNewRequest()
+        let generation = prepareForNewRequest()
         try await connectIfNeeded()
 
         let taskId = UUID().uuidString
@@ -68,12 +70,13 @@ final class VideoStreamingService {
 
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                storeContinuation(continuation)
+                guard self.storeContinuation(continuation, for: generation) else { return }
                 var receivedSize = startOffset
 
                 let types: Set<FrameTypeEnum> = [.metaFrame, .dataFrame, .endFrame, .fileResponse, .ackFrame]
-                socketManager.registerStreamHandler(for: types) { [weak self] frame in
+                let token = socketManager.registerStreamHandler(for: types) { [weak self] frame in
                     guard let self = self else { return false }
+                    guard self.isGenerationCurrent(generation) else { return false }
 
                     if self.currentlyCancelled {
                         self.complete(.failure(CancellationError()))
@@ -179,6 +182,7 @@ final class VideoStreamingService {
                         return true
                     }
                 }
+                self.replaceStreamHandlerToken(token, for: generation)
                 
                 // 已经注册好 handler 后，再发送请求帧，防止竞态条件导致第一包响应被丢弃
                 do {
@@ -206,24 +210,39 @@ final class VideoStreamingService {
         let continuation = self.continuation
         self.continuation = nil
         hasCompleted = true
+        let token = activeStreamHandlerToken
+        activeStreamHandlerToken = nil
         let shouldDisconnect = !hasDisconnectedSocket
         hasDisconnectedSocket = true
         stateLock.unlock()
 
+        if let token {
+            socketManager.unregisterStreamHandler(token: token)
+        }
         if shouldDisconnect {
             disconnectSocket()
         }
         continuation?.resume(throwing: CancellationError())
     }
 
-    private func prepareForNewRequest() {
+    @discardableResult
+    private func prepareForNewRequest() -> UInt64 {
         stateLock.lock()
         // 每个窗口请求都是独立生命周期，必须重置状态机
+        requestGeneration += 1
+        let generation = requestGeneration
         isCancelled = false
         hasCompleted = false
         hasDisconnectedSocket = false
         continuation = nil
+        let previousToken = activeStreamHandlerToken
+        activeStreamHandlerToken = nil
         stateLock.unlock()
+
+        if let previousToken {
+            socketManager.unregisterStreamHandler(token: previousToken)
+        }
+        return generation
     }
 
     private var currentlyCancelled: Bool {
@@ -232,10 +251,38 @@ final class VideoStreamingService {
         return isCancelled
     }
 
-    private func storeContinuation(_ continuation: CheckedContinuation<Void, Error>) {
+    private func storeContinuation(_ continuation: CheckedContinuation<Void, Error>, for generation: UInt64) -> Bool {
         stateLock.lock()
+        guard requestGeneration == generation else {
+            stateLock.unlock()
+            continuation.resume(throwing: CancellationError())
+            return false
+        }
         self.continuation = continuation
         stateLock.unlock()
+        return true
+    }
+
+    private func replaceStreamHandlerToken(_ token: UUID, for generation: UInt64) {
+        var tokenToUnregister: UUID?
+        stateLock.lock()
+        if requestGeneration == generation {
+            tokenToUnregister = activeStreamHandlerToken
+            activeStreamHandlerToken = token
+            stateLock.unlock()
+            if let tokenToUnregister, tokenToUnregister != token {
+                socketManager.unregisterStreamHandler(token: tokenToUnregister)
+            }
+        } else {
+            stateLock.unlock()
+            socketManager.unregisterStreamHandler(token: token)
+        }
+    }
+
+    private func isGenerationCurrent(_ generation: UInt64) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return requestGeneration == generation
     }
 
     private func complete(_ result: Result<Void, Error>) {
@@ -248,6 +295,8 @@ final class VideoStreamingService {
         hasCompleted = true
         let continuation = self.continuation
         self.continuation = nil
+        let token = activeStreamHandlerToken
+        activeStreamHandlerToken = nil
         // 成功窗口请求保持连接复用；失败时断开并在下一次请求重连。
         let shouldDisconnect: Bool
         switch result {
@@ -261,6 +310,9 @@ final class VideoStreamingService {
         }
         stateLock.unlock()
 
+        if let token {
+            socketManager.unregisterStreamHandler(token: token)
+        }
         if shouldDisconnect {
             disconnectSocket()
         }
@@ -275,8 +327,11 @@ final class VideoStreamingService {
     }
 
     private func connectIfNeeded() async throws {
-        if socketManager.connectionState == .connected {
+        if isSocketReadyForStreaming() {
             return
+        }
+        if socketManager.connectionState == .connected {
+            socketManager.disconnect(notifyUI: false)
         }
 
         let host = self.targetHost
@@ -290,18 +345,32 @@ final class VideoStreamingService {
 
         var attempts = 0
         while attempts < 50 {
-            switch socketManager.connectionState {
-            case .connected:
+            if isSocketReadyForStreaming() {
                 return
-            case .error(let message):
-                throw DirectoryError.serverError(code: -1, message: message)
-            default:
-                attempts += 1
-                try? await Task.sleep(nanoseconds: 100_000_000)
             }
+
+            if case .error(let message) = socketManager.connectionState {
+                throw DirectoryError.serverError(code: -1, message: message)
+            }
+
+            attempts += 1
+            try? await Task.sleep(nanoseconds: 100_000_000)
         }
 
         throw SocketError.timeout
+    }
+
+    private func isSocketReadyForStreaming() -> Bool {
+        guard socketManager.connectionState == .connected,
+              let inputStream = socketManager.inputStream,
+              let outputStream = socketManager.outputStream else {
+            return false
+        }
+
+        let inputReady: Set<Stream.Status> = [.open, .reading]
+        let outputReady: Set<Stream.Status> = [.open, .writing]
+        return inputReady.contains(inputStream.streamStatus) &&
+               outputReady.contains(outputStream.streamStatus)
     }
 
     private func disconnectSocket() {
