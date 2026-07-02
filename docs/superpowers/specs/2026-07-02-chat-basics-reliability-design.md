@@ -1,101 +1,101 @@
-# Chat Basics And Reliability Phase 1 Design
+# 聊天基础体验与可靠性第一阶段设计
 
-## Purpose
+## 目标
 
-Phase 1 improves the chat experience in `chat-storage` so it feels like a normal macOS IM client while keeping the existing cloud-drive, friend, thumbnail, video, and file-transfer behavior intact.
+第一阶段用于提升 `chat-storage` 的聊天体验，让它更接近一个正常 macOS 即时通讯客户端，同时不影响现有云盘、好友、缩略图、视频播放和文件传输能力。
 
-The phase combines:
+本阶段包含：
 
-- Basic message operations.
-- Emoji and input ergonomics.
-- Clipboard image sending.
-- Message send reliability.
-- Small, targeted component extraction from the current large `MainChatStorage.swift`.
+- 消息基础操作。
+- Emoji 与输入体验。
+- 剪贴板图片发送。
+- 消息发送可靠性。
+- 对当前庞大的 `MainChatStorage.swift` 做小范围、目标明确的聊天组件拆分。
 
-## Current Context
+## 当前上下文
 
-The client is a SwiftUI macOS app using a custom binary frame protocol:
+客户端是 SwiftUI macOS 应用，使用自定义二进制帧协议：
 
 ```text
-Magic(2 bytes: FA CE) + Type(1 byte) + Flags(1 byte) + Length(4 bytes) + Data(N bytes)
+Magic(2 字节: FA CE) + Type(1 字节) + Flags(1 字节) + Length(4 字节) + Data(N 字节)
 ```
 
-Important current chat and friend frame usage:
+当前聊天和好友相关帧号使用情况：
 
-| Frame | Current meaning |
+| 帧号 | 当前含义 |
 | --- | --- |
-| `0x50` | Chat send request |
-| `0x51` | Chat push |
-| `0x52` | Chat receipt |
-| `0x53` | Chat history request |
-| `0x54` | Chat history response |
-| `0x55` | Clear unread request |
-| `0x56` | Clear unread response |
-| `0x57` | Friend alias update request |
-| `0x58` | Friend alias update response |
+| `0x50` | 发送聊天消息请求 |
+| `0x51` | 聊天消息推送 |
+| `0x52` | 聊天消息回执 |
+| `0x53` | 聊天历史请求 |
+| `0x54` | 聊天历史响应 |
+| `0x55` | 清除未读请求 |
+| `0x56` | 清除未读响应 |
+| `0x57` | 修改好友备注请求 |
+| `0x58` | 修改好友备注响应 |
 
-`0x57` and `0x58` are already implemented for friend alias updates. Phase 1 must not reuse them for chat message actions.
+`0x57` 和 `0x58` 已经用于好友备注修改。第一阶段不能把它们复用于聊天消息操作。
 
-`MainChatStorage.swift` currently contains the main cloud-drive UI and much of the chat UI. It is over 5000 lines, so Phase 1 must extract focused chat components instead of adding more chat logic to the main file.
+`MainChatStorage.swift` 当前同时承载云盘主界面和大量聊天 UI，文件已经超过 5000 行。第一阶段必须拆分出聚焦的聊天组件，不能继续把聊天逻辑堆回主文件。
 
-## Goals
+## 功能范围
 
-1. Add message context actions:
-   - Copy text.
-   - Delete locally.
-   - Retract for both sides when permitted.
-2. Add quote reply:
-   - Select a message to quote.
-   - Show a quote preview above the input.
-   - Send quote metadata with the message.
-   - Render quote metadata in push and history messages.
-3. Improve input:
-   - Enter sends.
-   - Shift+Enter or Option+Enter inserts a newline.
-   - Input height grows up to a capped height, then scrolls.
-4. Add emoji:
-   - Emoji button in the input toolbar.
-   - Emoji picker panel.
-   - Click inserts emoji at the current caret position.
-   - Recent emoji list is persisted locally.
-5. Add clipboard image sending:
-   - Cmd+V in the chat input captures image content.
-   - Show a send preview.
-   - Upload the image through the existing file upload path.
-   - Send a chat message with `msgType = "IMAGE"` after upload succeeds.
-6. Add send reliability:
-   - Outgoing messages appear immediately as `sending`.
-   - Server receipt turns them into `success`.
-   - Timeout or error turns them into `failed`.
-   - Failed messages can retry.
-7. Preserve compatibility:
-   - Existing TEXT messages still display.
-   - Existing friend alias frames keep working.
-   - Optional new fields do not break older payloads.
+1. 增加消息上下文操作：
+   - 复制文本。
+   - 本地删除。
+   - 在允许条件下双向撤回。
+2. 增加引用回复：
+   - 从消息菜单选择一条消息作为引用。
+   - 在输入框上方展示引用预览。
+   - 发送消息时携带引用元数据。
+   - 推送消息和历史消息中可以渲染引用信息。
+3. 优化输入体验：
+   - Enter 发送。
+   - Shift+Enter 或 Option+Enter 换行。
+   - 输入框高度随内容增长，到达上限后内部滚动。
+4. 增加 Emoji：
+   - 输入区表情按钮。
+   - Emoji 面板。
+   - 点击表情后插入到当前光标位置。
+   - 本地持久化最近使用表情。
+5. 增加剪贴板图片发送：
+   - 在聊天输入框中按 Cmd+V 时捕获图片内容。
+   - 展示发送预览。
+   - 通过现有文件上传链路上传图片。
+   - 上传成功后发送 `msgType = "IMAGE"` 的聊天消息。
+6. 增加发送可靠性：
+   - 发送消息后立即以 `sending` 状态展示在本地。
+   - 收到服务端回执后变为 `success`。
+   - 超时或失败后变为 `failed`。
+   - 失败消息支持重试。
+7. 保持兼容：
+   - 现有 TEXT 消息仍正常展示。
+   - 现有好友备注帧继续工作。
+   - 新增字段全部为可选字段，不破坏旧 payload 解析。
 
-## Non-Goals
+## 非目标
 
-These are not part of Phase 1:
+以下内容不属于第一阶段：
 
-- Cloud-drive file cards in chat.
-- Save chat files to cloud-drive.
-- Chat video playback from file cards.
-- Conversation pinning.
-- Do-not-disturb.
-- Global chat history search.
-- Read receipts.
-- Full offline sync engine.
-- Group chat.
+- 聊天中的云盘文件卡片。
+- 将聊天文件保存到云盘。
+- 从聊天文件卡片直接播放视频。
+- 会话置顶。
+- 免打扰。
+- 全局聊天记录搜索。
+- 已读回执。
+- 完整离线同步引擎。
+- 群聊。
 
-## Protocol Design
+## 协议设计
 
-### Reused Frames
+### 复用现有帧
 
-`0x50`, `0x51`, `0x52`, and `0x54` must be extended with optional fields instead of replaced.
+`0x50`、`0x51`、`0x52`、`0x54` 必须通过可选字段扩展，不能替换原协议。
 
-#### Chat Send Request: `0x50`
+#### 发送聊天消息请求：`0x50`
 
-Existing fields remain:
+保留现有字段：
 
 ```json
 {
@@ -105,7 +105,7 @@ Existing fields remain:
 }
 ```
 
-Phase 1 optional fields:
+第一阶段新增可选字段：
 
 ```json
 {
@@ -116,16 +116,16 @@ Phase 1 optional fields:
 }
 ```
 
-Rules:
+规则：
 
-- `clientMsgId` is generated on the client before sending and is required for reliable local state matching.
-- `quote*` fields are optional.
-- Emoji stays plain Unicode text in `content`.
-- For images, `msgType` is `IMAGE`; `content` must be a compact JSON string or stable file identifier produced by the existing upload flow. The implementation plan must verify current backend image-message support before enabling the final send path.
+- `clientMsgId` 由客户端在发送前生成，用于本地消息状态和服务端回执匹配。
+- `quote*` 字段全部可选。
+- Emoji 作为普通 Unicode 文本放在 `content` 中，不新增帧。
+- 图片消息使用 `msgType = "IMAGE"`；`content` 必须是现有上传流程产出的稳定文件标识，或紧凑 JSON 字符串。实现计划必须先验证当前后端图片消息支持情况，再启用最终发送链路。
 
-#### Chat Push: `0x51`
+#### 聊天消息推送：`0x51`
 
-Existing fields remain:
+保留现有字段：
 
 ```json
 {
@@ -138,7 +138,7 @@ Existing fields remain:
 }
 ```
 
-Phase 1 optional fields:
+第一阶段新增可选字段：
 
 ```json
 {
@@ -149,9 +149,9 @@ Phase 1 optional fields:
 }
 ```
 
-#### Chat Receipt: `0x52`
+#### 聊天消息回执：`0x52`
 
-Current field:
+当前字段：
 
 ```json
 {
@@ -160,7 +160,7 @@ Current field:
 }
 ```
 
-Phase 1 adds:
+第一阶段新增：
 
 ```json
 {
@@ -169,11 +169,11 @@ Phase 1 adds:
 }
 ```
 
-The client matches receipt by `clientMsgId` first, then by `messageId` as fallback.
+客户端优先通过 `clientMsgId` 匹配回执；如果没有 `clientMsgId`，再回退使用 `messageId`。
 
-#### Chat History Response: `0x54`
+#### 聊天历史响应：`0x54`
 
-Each history item must accept optional quote and deletion-state fields:
+历史消息单条记录必须支持可选引用字段和删除状态字段：
 
 ```json
 {
@@ -185,19 +185,21 @@ Each history item must accept optional quote and deletion-state fields:
 }
 ```
 
-The client treats absent fields as default false or nil.
+客户端对缺失字段按默认值处理：布尔字段默认为 `false`，引用字段默认为 `nil`。
 
-### New Chat Action Frames
+### 新增聊天动作帧
 
-Do not use `0x57` or `0x58`.
+不能使用 `0x57` 或 `0x58`。
 
-| Frame | Meaning |
+| 帧号 | 含义 |
 | --- | --- |
 | `0x59` | `chatMessageActionReq` |
 | `0x5A` | `chatMessageActionResp` |
 | `0x5B` | `chatMessageActionPush` |
 
-#### Action Request: `0x59`
+#### 动作请求：`0x59`
+
+本地删除：
 
 ```json
 {
@@ -207,6 +209,8 @@ Do not use `0x57` or `0x58`.
 }
 ```
 
+双向撤回：
+
 ```json
 {
   "action": "retract",
@@ -215,13 +219,13 @@ Do not use `0x57` or `0x58`.
 }
 ```
 
-Rules:
+规则：
 
-- `delete_local` hides the message for the current user only.
-- `retract` marks the message retracted for both sides.
-- The server must validate ownership and the retract time window.
+- `delete_local` 仅对当前用户隐藏消息。
+- `retract` 将消息标记为双方可见的撤回状态。
+- 服务端必须校验操作者身份、消息归属和撤回时间窗口。
 
-#### Action Response: `0x5A`
+#### 动作响应：`0x5A`
 
 ```json
 {
@@ -233,7 +237,7 @@ Rules:
 }
 ```
 
-#### Action Push: `0x5B`
+#### 动作推送：`0x5B`
 
 ```json
 {
@@ -244,154 +248,154 @@ Rules:
 }
 ```
 
-The receiver updates the visible message into a retracted placeholder.
+接收方收到后，将当前可见消息更新为撤回占位提示。
 
-## Client Architecture
+## 客户端架构
 
-Phase 1 must introduce focused chat files under `chat-storage/Views/Chat/` and `chat-storage/Services/Chat/` while preserving the current `SocketManager` entry points.
+第一阶段必须在 `chat-storage/Views/Chat/` 和 `chat-storage/Services/Chat/` 下引入聚焦的聊天文件，同时保留当前 `SocketManager` 作为网络入口。
 
-Suggested components:
+建议组件：
 
-| Component | Responsibility |
+| 组件 | 职责 |
 | --- | --- |
-| `ChatDetailView` | Conversation shell and state orchestration. |
-| `ChatMessageListView` | Scrollable message list, pagination, scroll-to-bottom behavior. |
-| `ChatMessageRow` | One message row, including avatar, bubble, status, context menu. |
-| `ChatBubbleView` | Text, emoji, quote block, image placeholder rendering. |
-| `ChatInputBar` | Text input, emoji button, paste handling, send button. |
-| `MacChatTextView` | AppKit-backed text view for Enter behavior, caret insertion, paste interception. |
-| `EmojiPickerPanel` | Emoji categories, recent emoji, insertion callback. |
-| `ImageSendPreview` | Preview captured image before upload/send. |
-| `ChatMessageStore` | Local in-memory message mutation helpers. |
-| `ChatSendCoordinator` | Outgoing message lifecycle: sending, receipt, timeout, retry. |
+| `ChatDetailView` | 会话壳层和状态编排。 |
+| `ChatMessageListView` | 消息列表、历史分页、滚动到底部。 |
+| `ChatMessageRow` | 单条消息行，包括头像、气泡、状态、右键菜单。 |
+| `ChatBubbleView` | 文本、emoji、引用块、图片占位展示。 |
+| `ChatInputBar` | 文本输入、emoji 按钮、粘贴处理、发送按钮。 |
+| `MacChatTextView` | AppKit 封装文本框，用于 Enter 行为、光标插入、粘贴拦截。 |
+| `EmojiPickerPanel` | Emoji 分类、最近使用、插入回调。 |
+| `ImageSendPreview` | 发送前展示剪贴板图片预览。 |
+| `ChatMessageStore` | 本地内存消息变更辅助。 |
+| `ChatSendCoordinator` | 发送生命周期：发送中、回执、超时、重试。 |
 
-`MainChatStorage.swift` must keep only high-level composition and must not own message-row or input internals after this phase.
+第一阶段完成后，`MainChatStorage.swift` 必须只保留高层组合逻辑，不能继续拥有消息行或输入框内部实现。
 
-## Client Data Model
+## 客户端数据模型
 
-`ChatMessage` must support:
+`ChatMessage` 必须支持：
 
-- `localId`: UUID string for messages not yet confirmed.
-- `messageId`: server ID when available.
-- `clientMsgId`: sent with `0x50`, echoed by `0x52`.
-- `content`.
-- `type`: `TEXT`, `IMAGE`, `FILE`, `SYSTEM`.
-- `sendStatus`: `sending`, `success`, `failed`, `retracted`.
-- `quote`: optional quote summary.
-- `createdAt`.
-- `errorMessage`: optional.
+- `localId`：未确认消息的本地 UUID 字符串。
+- `messageId`：服务端消息 ID，可为空。
+- `clientMsgId`：随 `0x50` 发送，并由 `0x52` 回执带回。
+- `content`：消息内容。
+- `type`：`TEXT`、`IMAGE`、`FILE`、`SYSTEM`。
+- `sendStatus`：`sending`、`success`、`failed`、`retracted`。
+- `quote`：可选引用摘要。
+- `createdAt`：创建时间。
+- `errorMessage`：可选错误信息。
 
-DTOs in `TransferModels.swift` must be extended with optional fields only. Decoding must stay tolerant because current backend fields have mixed integer/string behavior.
+`TransferModels.swift` 中的 DTO 必须只通过可选字段扩展。解码必须继续保持容错，因为当前后端字段存在整数和字符串混用情况。
 
-## Data Flow
+## 数据流
 
-### Send Text Or Emoji
+### 发送文本或 Emoji
 
-1. User enters text or inserts emoji.
-2. Client creates `clientMsgId`.
-3. Client appends local message with `sending`.
-4. Client sends `0x50`.
-5. Client starts a receipt timeout.
-6. On `0x52 success`, update matching local message to `success` and store `messageId`.
-7. On timeout or error, mark local message `failed`.
-8. Retry reuses message content but sends a new attempt with a new timeout; it may reuse the same `clientMsgId` only if the server supports idempotency. Otherwise use a new `clientMsgId` and replace local tracking.
+1. 用户输入文本或插入 emoji。
+2. 客户端创建 `clientMsgId`。
+3. 客户端追加一条 `sending` 状态的本地消息。
+4. 客户端发送 `0x50`。
+5. 客户端启动回执超时计时。
+6. 收到 `0x52 success` 后，通过 `clientMsgId` 匹配本地消息，更新为 `success` 并保存 `messageId`。
+7. 超时或错误时，将本地消息更新为 `failed`。
+8. 重试时复用消息内容并启动新的发送尝试；只有服务端支持幂等时才复用同一个 `clientMsgId`，否则生成新的 `clientMsgId` 并替换本地追踪关系。
 
-### Quote Reply
+### 引用回复
 
-1. User chooses quote from a message context menu.
-2. Input bar shows quote preview.
-3. Send request includes quote fields.
-4. Push/history render quote block if fields exist.
-5. If the quoted message later retracts, the quote block can stay as a historical summary.
+1. 用户从消息右键菜单选择引用。
+2. 输入区展示引用预览。
+3. 发送请求携带引用字段。
+4. 推送消息和历史消息中如存在引用字段，则渲染引用块。
+5. 如果被引用消息后续被撤回，引用块可以保留为历史摘要。
 
-### Delete Local
+### 本地删除
 
-1. User chooses delete locally.
-2. Client hides the message optimistically.
-3. Client sends `0x59 action=delete_local`.
-4. If server fails, client restores message and shows error.
+1. 用户选择本地删除。
+2. 客户端乐观隐藏消息。
+3. 客户端发送 `0x59 action=delete_local`。
+4. 如果服务端失败，客户端恢复消息并展示错误。
 
-### Retract
+### 双向撤回
 
-1. User chooses retract.
-2. Client replaces message with a retracted placeholder optimistically.
-3. Client sends `0x59 action=retract`.
-4. Server validates ownership and time window.
-5. Server replies `0x5A`.
-6. Server pushes `0x5B` to the peer if online.
-7. History returns the message as retracted or excludes content.
+1. 用户选择撤回。
+2. 客户端乐观地将消息替换为撤回占位提示。
+3. 客户端发送 `0x59 action=retract`。
+4. 服务端校验归属和时间窗口。
+5. 服务端返回 `0x5A`。
+6. 如果对方在线，服务端向对方推送 `0x5B`。
+7. 后续历史消息返回时，该消息必须表现为已撤回，或不再返回原始内容。
 
-### Paste Image
+### 粘贴图片
 
-1. User presses Cmd+V in `MacChatTextView`.
-2. Text view detects an image on the pasteboard and prevents normal text paste.
-3. Client shows `ImageSendPreview`.
-4. On confirm, upload image through existing file transfer service.
-5. After upload returns `fileId`, send `0x50` with `msgType=IMAGE` and content containing the image reference.
-6. If upload fails, no chat message is sent.
+1. 用户在 `MacChatTextView` 中按 Cmd+V。
+2. 文本框检测剪贴板中存在图片，并阻止默认文本粘贴行为。
+3. 客户端展示 `ImageSendPreview`。
+4. 用户确认后，通过现有文件传输服务上传图片。
+5. 上传返回 `fileId` 后，发送 `0x50`，`msgType=IMAGE`，`content` 中携带图片引用。
+6. 如果上传失败，不发送聊天消息。
 
-## Error Handling
+## 错误处理
 
-- Socket disconnected: new outgoing messages are blocked or marked failed with a clear retry option.
-- Receipt timeout: mark outgoing message failed without removing it.
-- Duplicate receipt: ignore if already success.
-- Unknown action push: log and ignore.
-- Unsupported image backend: show a user-facing failure and keep the image preview available for retry.
-- Retract denied: restore original content if it was optimistically hidden.
-- Local delete denied: restore original message.
-- Emoji insertion failures must not affect text input; fall back to appending at the end.
+- Socket 断开：阻止新消息发送，或将消息标记为失败并提供明确重试入口。
+- 回执超时：消息标记为失败，但不移除。
+- 重复回执：如果消息已经成功，则忽略。
+- 未知动作推送：记录日志并忽略。
+- 图片消息后端未支持：展示明确失败信息，保留图片预览供用户重试。
+- 撤回被拒绝：如果客户端已乐观隐藏原消息，需要恢复原内容。
+- 本地删除被拒绝：恢复原消息。
+- Emoji 插入失败不能影响文本输入；失败时回退为追加到文本末尾。
 
-## Testing And Verification
+## 测试与验证
 
-### Client Unit/Debug Checks
+### 客户端单元或调试检查
 
-- `FrameTypeEnum` contains `0x59`, `0x5A`, `0x5B` and keeps existing `0x57`, `0x58`.
-- Optional DTO fields decode when present and absent.
-- `ChatSendCoordinator` transitions:
-  - sending -> success
-  - sending -> failed on timeout
-  - failed -> sending on retry
-- Emoji insertion updates text at caret.
-- Shift/Option+Enter inserts newline; Enter sends.
-- Paste image path does not paste binary noise into the text field.
+- `FrameTypeEnum` 包含 `0x59`、`0x5A`、`0x5B`，并保留既有 `0x57`、`0x58`。
+- DTO 新增可选字段在存在和缺失时都能正常解码。
+- `ChatSendCoordinator` 状态流转：
+  - `sending -> success`
+  - `sending -> failed`，超时时触发
+  - `failed -> sending`，重试时触发
+- Emoji 能插入到当前光标位置。
+- Shift/Option+Enter 换行；Enter 发送。
+- 粘贴图片时不会把二进制内容或无意义文本塞进输入框。
 
-### Backend Verification
+### 后端验证
 
-- JDK 8 only for `net-server`.
-- `mvn test` or focused compile must pass with Zulu JDK 8.
-- Existing login, friend list, alias update, file list, upload, thumbnail, and video playback must remain unaffected.
-- New frames must not collide with `0x57/0x58`.
+- `net-server` 只能使用 Zulu JDK 8。
+- 必须使用 Zulu JDK 8 完成 `mvn test` 或聚焦编译验证。
+- 现有登录、好友列表、好友备注、文件列表、上传、缩略图、视频播放不能受影响。
+- 新增聊天帧不能与 `0x57/0x58` 冲突。
 
-### Manual End-To-End
+### 手工端到端验证
 
-1. Login as `18806504525`.
-2. Open one friend chat.
-3. Send text with emoji.
-4. Verify sending -> success.
-5. Simulate server timeout or disconnect and verify failed + retry.
-6. Quote reply and reload history.
-7. Copy message text.
-8. Delete locally and reload history.
-9. Retract a sent message and verify peer push if a second client is available.
-10. Paste an image, confirm preview, upload, and send as `IMAGE` after backend support is verified. If backend support is not ready, keep the preview and return a clear failure without sending an invalid chat message.
+1. 使用 `18806504525` 登录。
+2. 打开一个好友聊天。
+3. 发送带 emoji 的文本。
+4. 验证消息从 `sending` 变为 `success`。
+5. 模拟服务端超时或断连，验证消息变为 `failed` 且可重试。
+6. 发送引用回复并重新加载历史记录。
+7. 复制消息文本。
+8. 本地删除消息并重新加载历史记录。
+9. 撤回一条已发送消息；如果有第二客户端，验证对方收到推送。
+10. 粘贴图片、确认预览、上传，并在后端图片消息能力验证通过后发送为 `IMAGE`。如果后端暂未支持，保留预览并返回明确失败，不发送非法聊天消息。
 
-## Rollout Plan
+## 发布步骤
 
-1. Implement protocol constants and DTO optional fields.
-2. Extract chat UI components without changing behavior.
-3. Add reliable send coordinator and receipt matching.
-4. Add emoji/input improvements.
-5. Add message context menu with copy and quote.
-6. Add delete/retract protocol handlers.
-7. Add paste image flow behind a readiness check.
-8. Run regression tests for login, friends, cloud files, thumbnails, upload, and video playback.
+1. 实现协议常量和 DTO 可选字段。
+2. 抽取聊天 UI 组件，保持原行为不变。
+3. 增加可靠发送协调器和回执匹配。
+4. 增加 emoji 和输入体验优化。
+5. 增加消息右键菜单，先支持复制和引用。
+6. 增加删除和撤回协议处理。
+7. 在后端能力检查通过后启用粘贴图片发送流程。
+8. 回归验证登录、好友、云盘文件、缩略图、上传和视频在线播放。
 
-## Compatibility Constraints
+## 兼容性约束
 
-- Do not reuse `0x57` or `0x58`.
-- Do not remove existing friend alias behavior.
-- Do not change file upload/download frame values.
-- Do not change video streaming HTTP Range behavior.
-- Do not require DB schema changes for pure client features.
-- Any DB schema additions for quote, client message ID, or deletion state must be additive and nullable.
-- Old chat records without new fields must still display.
+- 不能复用 `0x57` 或 `0x58`。
+- 不能移除现有好友备注行为。
+- 不能修改文件上传和下载帧值。
+- 不能修改视频在线播放 HTTP Range 行为。
+- 纯客户端功能不能要求数据库结构变更。
+- 如需为引用、`clientMsgId` 或删除状态增加数据库字段，必须是增量且允许为空。
+- 没有新字段的旧聊天记录必须继续正常展示。
