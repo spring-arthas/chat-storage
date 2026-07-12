@@ -173,6 +173,28 @@ public struct ChatSendRequestDto: Codable {
     public let receiverId: Int32
     public let content: String
     public let msgType: String // TEXT, IMAGE, FILE
+    public let clientMsgId: String?
+    public let quoteMsgId: Int64?
+    public let quoteMsgContent: String?
+    public let quoteMsgSenderName: String?
+
+    public init(
+        receiverId: Int32,
+        content: String,
+        msgType: String,
+        clientMsgId: String? = nil,
+        quoteMsgId: Int64? = nil,
+        quoteMsgContent: String? = nil,
+        quoteMsgSenderName: String? = nil
+    ) {
+        self.receiverId = receiverId
+        self.content = content
+        self.msgType = msgType
+        self.clientMsgId = clientMsgId
+        self.quoteMsgId = quoteMsgId
+        self.quoteMsgContent = quoteMsgContent
+        self.quoteMsgSenderName = quoteMsgSenderName
+    }
 }
 
 /// 接收聊天消息推送 (0x51)
@@ -183,6 +205,10 @@ public struct ChatPushDto: Codable, Identifiable {
     public let msgType: String
     public let avatar: String?
     public let gmtCreated: Int64
+    public let clientMsgId: String?
+    public let quoteMsgId: Int64?
+    public let quoteMsgContent: String?
+    public let quoteMsgSenderName: String?
     
     public var id: Int32 { messageId }
 }
@@ -191,6 +217,8 @@ public struct ChatPushDto: Codable, Identifiable {
 public struct ChatReceiptDto: Codable {
     public let messageId: Int32
     public let status: String // "success" or "false"
+    public let clientMsgId: String?
+    public let message: String?
 }
 
 /// 历史聊天记录请求 (0x53)
@@ -217,6 +245,12 @@ public struct ChatHistoryItemDto: Codable {
     public var avatar: String?
     public var groupTime: String = ""
     public var msgTimeStr: String = ""
+    public var clientMsgId: String?
+    public var quoteMsgId: Int64?
+    public var quoteMsgContent: String?
+    public var quoteMsgSenderName: String?
+    public var deleted: Bool = false
+    public var retracted: Bool = false
     
     // 自定义解码器增加容错性，防止某个字段类型不匹配导致整个 0x54 接包失败
     public init(from decoder: Decoder) throws {
@@ -250,6 +284,49 @@ public struct ChatHistoryItemDto: Codable {
         self.avatar = try? container.decodeIfPresent(String.self, forKey: .avatar)
         self.groupTime = (try? container.decodeIfPresent(String.self, forKey: .groupTime)) ?? ""
         self.msgTimeStr = (try? container.decodeIfPresent(String.self, forKey: .msgTimeStr)) ?? ""
+        self.clientMsgId = try? container.decodeIfPresent(String.self, forKey: .clientMsgId)
+        self.quoteMsgId = container.decodeLossyInt64IfPresent(forKey: .quoteMsgId)
+        self.quoteMsgContent = try? container.decodeIfPresent(String.self, forKey: .quoteMsgContent)
+        self.quoteMsgSenderName = try? container.decodeIfPresent(String.self, forKey: .quoteMsgSenderName)
+        self.deleted = container.decodeLossyBoolIfPresent(forKey: .deleted) ?? false
+        self.retracted = container.decodeLossyBoolIfPresent(forKey: .retracted) ?? false
+    }
+}
+
+private extension KeyedDecodingContainer {
+    func decodeLossyInt64IfPresent(forKey key: Key) -> Int64? {
+        if let value = try? decodeIfPresent(Int64.self, forKey: key) {
+            return value
+        }
+        if let value = try? decodeIfPresent(Int.self, forKey: key) {
+            return Int64(value)
+        }
+        if let value = try? decodeIfPresent(Int32.self, forKey: key) {
+            return Int64(value)
+        }
+        if let value = try? decodeIfPresent(String.self, forKey: key) {
+            return Int64(value)
+        }
+        return nil
+    }
+
+    func decodeLossyBoolIfPresent(forKey key: Key) -> Bool? {
+        if let value = try? decodeIfPresent(Bool.self, forKey: key) {
+            return value
+        }
+        if let value = try? decodeIfPresent(Int.self, forKey: key) {
+            return value != 0
+        }
+        if let value = try? decodeIfPresent(String.self, forKey: key) {
+            let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if ["true", "yes", "y", "1"].contains(normalized) {
+                return true
+            }
+            if ["false", "no", "n", "0"].contains(normalized) {
+                return false
+            }
+        }
+        return nil
     }
 }
 
@@ -271,4 +348,34 @@ public struct ChatClearUnreadRequestDto: Codable {
     public init(friendId: Int32) {
         self.friendId = friendId
     }
+}
+
+/// 聊天消息动作请求 (0x59)
+public struct ChatMessageActionRequestDto: Codable {
+    public let action: String
+    public let messageId: Int32
+    public let friendId: Int32
+
+    public init(action: String, messageId: Int32, friendId: Int32) {
+        self.action = action
+        self.messageId = messageId
+        self.friendId = friendId
+    }
+}
+
+/// 聊天消息动作响应 (0x5A)
+public struct ChatMessageActionResponseDto: Codable {
+    public let code: Int?
+    public let message: String?
+    public let action: String
+    public let messageId: Int32
+    public let friendId: Int32
+}
+
+/// 聊天消息动作推送 (0x5B)
+public struct ChatMessageActionPushDto: Codable {
+    public let action: String
+    public let messageId: Int32
+    public let friendId: Int32
+    public let notifyText: String?
 }

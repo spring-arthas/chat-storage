@@ -41,12 +41,12 @@ struct StreamingVideoPlayer: View {
                 AVPlayerViewRepresentable(player: player)
             }
 
-            // 缓冲中提示
+            // 缓冲中提示（seek 缓冲与起播缓冲文案区分）
             if viewModel.isLoading {
                 VStack(spacing: 8) {
                     ProgressView()
                         .scaleEffect(1.5)
-                    Text("缓冲中...")
+                    Text(viewModel.isSeekBuffering ? "跳转中..." : "缓冲中...")
                         .foregroundColor(.white)
                         .font(.caption)
                 }
@@ -277,6 +277,7 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
     @Published var currentTime: Double = 0
     @Published var duration: Double = 0
     @Published var sliderPosition: Double = 0  // 0...1，用于 Slider 绑定
+    @Published var isSeekBuffering: Bool = false
 
     private var playerStatusObservation: NSKeyValueObservation?
     private var itemStatusObservation: NSKeyValueObservation?
@@ -284,18 +285,23 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
     private var playbackFinishedObserver: NSObjectProtocol?
     private var timeObserver: Any?
     private var currentFileId: Int64?
+    private var fileSize: Int64 = 0
+    private var setupTask: Task<Void, Never>?
     var onPlaybackSessionTerminated: (() -> Void)?
 
-    // 记录是否正在 seek，防止 seek 期间时间观察者覆盖 slider 位置
+    // seek 状态机：保证同一时间只有一个活跃 player.seek，Chase Time 防抖
     private var isSeeking = false
+    private var chaseTime: CMTime = .zero
+    private var isSeekInProgress: Bool = false
 
     // MARK: - Setup
 
     func setupPlayer(fileId: Int64, fileName: String, expectedSize: Int64) {
+        print("🎬 [StreamingVideoPlayer] 组件启动 fileId=\(fileId) fileName=\(fileName) fileSize=\(expectedSize)")
         stopPlaying()
 
         currentFileId = fileId
-        VideoStreamCacheManager.shared.start(fileId: fileId, fileSize: expectedSize, fileName: fileName)
+        fileSize = expectedSize
 
         isLoading = true
         errorMessage = nil
@@ -304,11 +310,30 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
         duration = 0
         sliderPosition = 0
 
-        guard let url = LocalMediaServer.shared.getStreamURL(for: fileId, fileSize: expectedSize, fileName: fileName) else {
-            errorMessage = "无法启动本地视频代理"
-            isLoading = false
-            return
+        setupTask = Task { [weak self] in
+            do {
+                let playInfo = try await VideoPlaybackService.shared.requestPlayUrl(fileId: fileId)
+                try Task.checkCancellation()
+                await MainActor.run {
+                    guard let self, self.currentFileId == fileId else { return }
+                    self.fileSize = playInfo.fileSize
+                    self.startPlayer(url: playInfo.playUrl)
+                }
+            } catch is CancellationError {
+                // 新文件打开或窗口关闭时会取消旧请求，这是正常生命周期。
+            } catch {
+                await MainActor.run {
+                    guard let self, self.currentFileId == fileId else { return }
+                    self.errorMessage = error.localizedDescription
+                    self.isLoading = false
+                    print("❌ [StreamingVideoPlayer] 获取播放地址失败 fileId=\(fileId) error=\(error.localizedDescription)")
+                }
+            }
         }
+    }
+
+    private func startPlayer(url: URL) {
+        print("🔗 [StreamingVideoPlayer] 资源调配完成 fileId=\(currentFileId ?? -1) playURL=\(url)")
 
         let item = AVPlayerItem(url: url)
         let player = AVPlayer(playerItem: item)
@@ -336,9 +361,12 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
                     if dur.isValid && !dur.isIndefinite {
                         self.duration = dur.seconds
                     }
+                    print("✅ [StreamingVideoPlayer] 播放器就绪 fileId=\(self.currentFileId ?? -1) duration=\(String(format: "%.1f", self.duration))s")
                 case .failed:
                     self.isLoading = false
-                    self.errorMessage = observedItem.error?.localizedDescription ?? "播放器加载失败"
+                    let errMsg = observedItem.error?.localizedDescription ?? "播放器加载失败"
+                    self.errorMessage = errMsg
+                    print("❌ [StreamingVideoPlayer] 播放器加载失败 fileId=\(self.currentFileId ?? -1) error=\(errMsg)")
                 default:
                     break
                 }
@@ -354,8 +382,10 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
             self?.isLoading = false
             if let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? NSError {
                 self?.errorMessage = error.localizedDescription
+                print("❌ [StreamingVideoPlayer] 播放中断 fileId=\(self?.currentFileId ?? -1) error=\(error.localizedDescription)")
             } else {
                 self?.errorMessage = "视频播放中断"
+                print("❌ [StreamingVideoPlayer] 播放中断 fileId=\(self?.currentFileId ?? -1)")
             }
             self?.stopAndClearResources()
         }
@@ -367,6 +397,7 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
             queue: .main
         ) { [weak self] _ in
             guard let self else { return }
+            print("✅ [StreamingVideoPlayer] 播放完成 fileId=\(self.currentFileId ?? -1)")
             self.stopAndClearResources()
             self.onPlaybackSessionTerminated?()
         }
@@ -392,40 +423,60 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
     // MARK: - 播放控制
 
     func pause() {
+        print("⏸️ [StreamingVideoPlayer] 用户暂停 fileId=\(currentFileId ?? -1) currentTime=\(String(format: "%.1f", currentTime))s")
         player?.rate = 0
         player?.pause()
         playState = .paused
     }
 
     func resume() {
+        print("▶️ [StreamingVideoPlayer] 用户恢复播放 fileId=\(currentFileId ?? -1)")
         player?.playImmediately(atRate: 1.0)
         playState = .playing
     }
 
-    /// Seek 到进度比例 fraction（0...1），Seek 完成后若在播放状态则恢复播放。
+    /// Seek 到进度比例 fraction（0...1）。
+    /// 使用 Chase Time 模式：快速多次调用只会追最新目标，不产生并发 seek。
     func seekToFraction(_ fraction: Double) {
         guard let player, duration > 0 else { return }
-        if let currentFileId {
-            VideoStreamCacheManager.shared.disableSequentialCompletionLog(fileId: currentFileId)
-        }
-        let targetSeconds = fraction * duration
-        let targetTime = CMTime(seconds: targetSeconds, preferredTimescale: 600)
 
-        isSeeking = true
+        let targetSeconds = fraction * duration
+        let targetOffset = fileSize > 0 ? Int64(fraction * Double(fileSize)) : 0
+        let targetTime = CMTime(seconds: targetSeconds, preferredTimescale: 600)
+        print("⏩ [StreamingVideoPlayer] 进度跳转 fileId=\(currentFileId ?? -1) fraction=\(String(format: "%.3f", fraction)) targetTime=\(String(format: "%.1f", targetSeconds))s targetOffset=\(targetOffset)")
+
+        chaseTime = targetTime
         sliderPosition = fraction
 
-        // 使用宽容度为零的精确 seek，完成后恢复播放状态
+        guard !isSeekInProgress else { return }
+        performChaseSeek(player: player)
+    }
+
+    /// 递归执行 seek，直到 chaseTime 不再变化（Chase Time 模式）。
+    private func performChaseSeek(player: AVPlayer) {
+        isSeekInProgress = true
+        isSeeking = true
+        isSeekBuffering = true
+        let target = chaseTime
+
         player.seek(
-            to: targetTime,
+            to: target,
             toleranceBefore: .zero,
             toleranceAfter: CMTime(seconds: 0.5, preferredTimescale: 600)
         ) { [weak self] finished in
             guard let self else { return }
             DispatchQueue.main.async {
-                self.isSeeking = false
-                if finished && self.playState == .playing {
-                    // seek 完成后保持播放状态，并立即恢复播放
-                    self.player?.playImmediately(atRate: 1.0)
+                if CMTimeCompare(self.chaseTime, target) != 0 {
+                    // 目标时间在 seek 过程中已更新，继续追最新目标
+                    self.performChaseSeek(player: player)
+                } else {
+                    self.isSeekInProgress = false
+                    self.isSeeking = false
+                    self.isSeekBuffering = false
+                    print("✅ [StreamingVideoPlayer] seek完成 fileId=\(self.currentFileId ?? -1) time=\(String(format: "%.1f", target.seconds))s")
+                    if finished && self.playState == .playing {
+                        player.playImmediately(atRate: 1.0)
+                    }
                 }
             }
         }
@@ -433,6 +484,7 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
 
     /// 停止播放并释放所有资源（Issue 1 & 4）。
     func stopAndClearResources() {
+        print("⏹️ [StreamingVideoPlayer] 用户停止播放 fileId=\(currentFileId ?? -1)")
         stopPlaying()
         playState = .stopped
     }
@@ -441,6 +493,9 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
 
     /// 释放播放器所有资源：AVPlayer、KVO、通知、缓存、socket。
     func stopPlaying() {
+        setupTask?.cancel()
+        setupTask = nil
+
         // 移除时间观察者（必须在 player 释放前）
         if let observer = timeObserver, let player {
             player.removeTimeObserver(observer)
@@ -467,23 +522,23 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
         }
 
         if let fid = currentFileId {
-            LocalMediaServer.shared.stopStreaming(fileId: fid)
-            VideoStreamCacheManager.shared.stop(fileId: fid)
+            print("🧹 [StreamingVideoPlayer] 释放播放资源 fileId=\(fid)")
             currentFileId = nil
         }
 
+        isSeekInProgress = false
+        isSeeking = false
+        isSeekBuffering = false
+        chaseTime = .zero
+        fileSize = 0
         isLoading = false
     }
 
     deinit {
+        setupTask?.cancel()
         // 确保 deinit 时 timeObserver 已移除（若 player 仍存在）
         if let observer = timeObserver, let player {
             player.removeTimeObserver(observer)
-        }
-        // stopPlaying 中其他清理也在此兜底
-        if let fid = currentFileId {
-            LocalMediaServer.shared.stopStreaming(fileId: fid)
-            VideoStreamCacheManager.shared.stop(fileId: fid)
         }
     }
 }

@@ -37,6 +37,9 @@ struct UserDO: Codable, Identifiable {
     
     /// 状态 (0:正常, 1:禁用) - 可选
     let status: Int?
+
+    /// 登录后由服务端签发，用于文件上传、下载和图片流请求认证。
+    let transferToken: String?
     
     // Identifiable 协议要求
     var identifiableId: String { String(id) }
@@ -52,6 +55,7 @@ struct UserDO: Codable, Identifiable {
         case createTime
         case updateTime
         case status
+        case transferToken
     }
 }
 

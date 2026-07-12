@@ -24,6 +24,15 @@ struct Frame {
     
     /// 帧头长度：8字节
     static let HEADER_LENGTH = 8
+
+    /// bit0: 标识最后一帧
+    static let FLAG_LAST_FRAME: UInt8 = 0x01
+
+    /// bit1: 请求接收端处理完该帧后返回 ACK
+    static let FLAG_NEED_ACK: UInt8 = 0x02
+
+    /// bit2: DATA_FRAME 的 Data 前 8 字节为文件偏移量
+    static let FLAG_HAS_OFFSET: UInt8 = 0x04
     
     // MARK: - Properties
     

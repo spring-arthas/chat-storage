@@ -10,6 +10,7 @@ import Combine
 import AVKit
 import Foundation
 import AppKit
+import UniformTypeIdentifiers
 
 enum TelegramTheme {
     static let appBackgroundHex = "#17212B"
@@ -611,6 +612,9 @@ struct MainChatStorage: View {
                         },
                         onUpload: { item in
                             handleSelectFiles(targetDirectory: item)
+                        },
+                        onExpand: { item in
+                            Task { await loadDirectoryChildrenIfNeeded(item) }
                         }
                     )
                     .listRowBackground(Color.clear)
@@ -658,7 +662,7 @@ struct MainChatStorage: View {
                                     onFileDoubleTapped: { file in
                                         if !file.isFile {
                                             handleEnterDirectory(file)
-                                        } else if file.iconName == "film" {
+                                        } else if file.isPlayableVideoFile {
                                             VideoWindowManager.shared.show(fileId: file.id, fileName: file.fileName, fileSize: file.fileSize ?? 0)
                                         }
                                     },
@@ -839,6 +843,7 @@ struct MainChatStorage: View {
                 .overlay(
                     Rectangle()
                         .fill(TelegramTheme.panelBackground.opacity(0.18))
+                        .allowsHitTesting(false)
                 )
 
                 // 文件列表内容区域
@@ -1173,9 +1178,29 @@ struct MainChatStorage: View {
             
             // Add to transfer list (UI update)
             self.transferList.append(contentsOf: newItems)
+
+            let currentUserId = Int64(authService.currentUser?.id ?? 0)
+            let currentUserName = String(authService.currentUser?.username ?? "default")
+            for item in newItems {
+                guard let fileUrl = item.fileUrl else { continue }
+                let task = StorageTransferTask(
+                    id: item.id,
+                    taskType: .upload,
+                    name: item.name,
+                    fileUrl: fileUrl,
+                    targetDirId: item.targetDirId,
+                    userId: currentUserId,
+                    userName: currentUserName,
+                    fileSize: item.size,
+                    directoryName: item.directoryName,
+                    progress: 0.0
+                )
+                print("🛠️ [UI] Auto submitting upload task: \(task.name) - ID: \(task.id)")
+                transferManager.submit(task: task)
+            }
             
             let dirInfo = targetDirectory != nil ? " -> [\(targetDirectory!.fileName)]" : ""
-            addLog("用户选择了 \(urls.count) 个文件\(dirInfo)，已添加到传输列表")
+            addLog("用户选择了 \(urls.count) 个文件\(dirInfo)，已提交到传输队列")
         }
     }
     
@@ -1195,6 +1220,13 @@ struct MainChatStorage: View {
                     
                     await MainActor.run {
                         addLog("✅ 文件删除成功: \(file.fileName)")
+                        selectedFiles.remove(file.id)
+                        if selectedFileId == file.id {
+                            selectedFileId = nil
+                            fileDetail = nil
+                        }
+                        fileList.removeAll { $0.id == file.id }
+                        totalCount = max(0, totalCount - 1)
                         loadCurrentFiles() // 刷新列表
                     }
                 } catch {
@@ -1308,6 +1340,13 @@ struct MainChatStorage: View {
                 addLog("✅ 批量删除结束: 成功 \(successCount), 失败 \(failCount)")
                 
                 // 清空选中状态
+                let deletedIds = Set(filesToDelete.map { $0.id })
+                fileList.removeAll { deletedIds.contains($0.id) }
+                if let selectedId = selectedFileId, deletedIds.contains(selectedId) {
+                    selectedFileId = nil
+                    fileDetail = nil
+                }
+                totalCount = max(0, totalCount - Int64(successCount))
                 selectedFiles.removeAll()
                 
                 // 刷新列表
@@ -1464,6 +1503,59 @@ struct MainChatStorage: View {
                 addLog("目录树加载失败: \(error.localizedDescription)")
                 print("❌ 加载目录失败: \(error)")
             }
+        }
+    }
+
+    @MainActor
+    private func loadDirectoryChildrenIfNeeded(_ item: DirectoryItem) async {
+        guard item.hasChild, item.childFileList?.isEmpty ?? true else { return }
+        guard let service = directoryService else {
+            print("⚠️ DirectoryService 未初始化")
+            return
+        }
+
+        do {
+            let children = try await service.loadDirectoryChildren(dirId: item.id)
+            self.directoryTree = updateDirectoryChildren(nodes: self.directoryTree, id: item.id, children: children)
+            self.expandedDirectoryIds.insert(item.id)
+            addLog("子目录加载成功: \(item.fileName)，共 \(children.count) 项")
+        } catch {
+            addLog("子目录加载失败: \(item.fileName) - \(error.localizedDescription)")
+            print("❌ 加载子目录失败: id=\(item.id), name=\(item.fileName), error=\(error)")
+        }
+    }
+
+    private func updateDirectoryChildren(nodes: [DirectoryItem], id: Int64, children: [DirectoryItem]) -> [DirectoryItem] {
+        nodes.map { node in
+            if node.id == id {
+                return DirectoryItem(
+                    id: node.id,
+                    pId: node.pId,
+                    fileName: node.fileName,
+                    childFileList: children,
+                    hasChild: !children.isEmpty || node.hasChild,
+                    fileSize: node.fileSize,
+                    isFile: node.isFile,
+                    uploadTime: node.uploadTime,
+                    directoryName: node.directoryName
+                )
+            }
+
+            guard let nodeChildren = node.childFileList else {
+                return node
+            }
+
+            return DirectoryItem(
+                id: node.id,
+                pId: node.pId,
+                fileName: node.fileName,
+                childFileList: updateDirectoryChildren(nodes: nodeChildren, id: id, children: children),
+                hasChild: node.hasChild,
+                fileSize: node.fileSize,
+                isFile: node.isFile,
+                uploadTime: node.uploadTime,
+                directoryName: node.directoryName
+            )
         }
     }
     
@@ -1658,7 +1750,7 @@ struct MainChatStorage: View {
                         // Actions
                         VStack(spacing: 12) {
                             // 在线播放大按钮 (如果是视频)
-                            if detail.iconName == "film" {
+                            if detail.isPlayableVideoFile {
                                 Button(action: {
                                     if let item = directoryTree.first(where: { $0.id == detail.id }) ?? findDirectoryItem(id: detail.id, nodes: directoryTree) {
                                          VideoWindowManager.shared.show(fileId: item.id, fileName: item.fileName, fileSize: item.fileSize ?? 0)
@@ -2626,33 +2718,6 @@ struct Friend: Identifiable, Hashable {
     let serverLatestMsg: String?
 }
 
-struct ChatMessage: Identifiable, Equatable {
-    var id: String {
-        if let mid = messageId {
-            return "msg-\(mid)"
-        }
-        return localId.uuidString
-    }
-    let localId = UUID()
-    var messageId: Int32? // 服务端分配的实际ID
-    let content: String
-    let isMe: Bool // true = 我发的, false = 对方发的
-    let timestamp: Date
-    let type: String // "TEXT", "IMAGE", "FILE"
-    var sendStatus: SendStatus
-    
-    var groupTime: String?
-    var msgTimeStr: String?
-    var avatar: String?
-    
-    enum SendStatus: Equatable {
-        case sending
-        case success
-        case failed
-    }
-}
-
-
 // 2. Chat Detail View (右侧聊天窗口)
 private struct ChatDetailView: View {
     let friend: Friend
@@ -2671,6 +2736,13 @@ private struct ChatDetailView: View {
     
     // Emoji Picker State
     @State private var showEmojiPicker: Bool = false
+    @State private var pendingInsertToken: String? = nil
+    @State private var quotedMessage: ChatMessage? = nil
+    @State private var pendingImages: [PendingChatImage] = []
+    @State private var pendingImageError: String? = nil
+    @State private var isUploadingImage: Bool = false
+    @State private var pendingMediaMessages: [String: [PendingChatImage]] = [:]
+    @State private var imagePreviewContext: ChatImagePreviewContext?
     
     // Alias Update State
     @State private var showingAliasPopover: Bool = false
@@ -2700,9 +2772,10 @@ private struct ChatDetailView: View {
     }
     
     var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack {
+        ZStack {
+            VStack(spacing: 0) {
+                // Header
+                HStack {
                 Text(friend.name)
                     .font(.system(size: 16, weight: .bold))
                 
@@ -2810,7 +2883,19 @@ private struct ChatDetailView: View {
                                 }
                                 
                                 ForEach(msgs) { msg in
-                                    messageBubble(msg)
+                                    ChatMessageRow(
+                                        message: msg,
+                                        friendName: friend.name,
+                                        friendAvatarBase64: friend.avatarBase64,
+                                        friendAvatarColor: friend.avatarColor,
+                                        onCopy: copyMessage,
+                                        onQuote: { quotedMessage = $0 },
+                                        onDeleteLocal: deleteLocalMessage,
+                                        onRetract: retractMessage,
+                                        onRetry: retryMessage,
+                                        onDoubleTap: triggerReaction,
+                                        onPreviewImage: openImagePreview
+                                    )
                                 }
                             }
                             
@@ -2859,46 +2944,23 @@ private struct ChatDetailView: View {
             
             Divider()
             
-            // Input Area
-            VStack(spacing: 0) {
-                Divider()
-                HStack(spacing: 16) {
-                    Button(action: {
-                        withAnimation(.easeInOut(duration: 0.2)) { showEmojiPicker.toggle() }
-                    }) {
-                        Image(systemName: "face.smiling")
-                            .font(.system(size: 18))
-                            .foregroundColor(showEmojiPicker ? .accentColor : .secondary)
-                    }
-                    Button(action: {}) { Image(systemName: "folder").font(.system(size: 18)) }
-                    Button(action: {}) { Image(systemName: "scissors").font(.system(size: 18)) }
-                    Button(action: {}) { Image(systemName: "mic").font(.system(size: 18)) }
-                    Spacer()
-                    Button(action: { sendNudge() }) { Image(systemName: "hand.tap").font(.system(size: 18)).help("抖一抖") }
-                    Button(action: {}) { Image(systemName: "phone").font(.system(size: 18)) }
-                    Button(action: {}) { Image(systemName: "video").font(.system(size: 18)) }
+            ChatInputBar(
+                friendName: friend.name,
+                messageText: $messageText,
+                showEmojiPicker: $showEmojiPicker,
+                pendingInsertToken: $pendingInsertToken,
+                quotedMessage: $quotedMessage,
+                pendingImages: $pendingImages,
+                pendingImageError: $pendingImageError,
+                isSending: $isUploadingImage,
+                onSendNudge: sendNudge,
+                onPickImages: pickImages,
+                onPasteImage: handlePastedImage,
+                onRemovePendingImage: removePendingImage,
+                onSendMessage: {
+                    Task { await sendMessage() }
                 }
-                .foregroundColor(.secondary).buttonStyle(.borderless).padding(.horizontal, 16).padding(.vertical, 10)
-                
-                if showEmojiPicker {
-                    EmojiPickerPanel { emoji in
-                        showEmojiPicker = false
-                        shouldScrollToBottom = true
-                        socketManager.sendChatMessage(receiverId: friend.id, content: emoji, msgType: "TEXT", avatar: authService.currentUser?.avatar)
-                    }
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
-                }
-                
-                ZStack(alignment: .topLeading) {
-                    if messageText.isEmpty {
-                        Text("请输入消息...").foregroundColor(.secondary).padding(.leading, 8).padding(.top, 4).font(.system(size: 14)).allowsHitTesting(false)
-                    }
-                    MacResponsiveTextView(text: $messageText) { Task { await sendMessage() } }
-                    .frame(minHeight: 36, maxHeight: 150)
-                }
-                .background(Color.clear).padding(.horizontal, 12).padding(.bottom, 16)
-            }
-            .background(Color(NSColor.textBackgroundColor)).frame(minHeight: 150)
+            )
         }
         .onAppear {
             isInitialProcessing = true
@@ -2908,6 +2970,20 @@ private struct ChatDetailView: View {
                 isInitialProcessing = false
             }
         }
+
+            if let imagePreviewContext {
+                ChatImagePreviewOverlay(
+                    context: imagePreviewContext,
+                    onClose: {
+                        withAnimation(.easeInOut(duration: 0.16)) {
+                            self.imagePreviewContext = nil
+                        }
+                    }
+                )
+                .zIndex(50)
+            }
+        }
+        .animation(.easeInOut(duration: 0.16), value: imagePreviewContext?.id)
     }
     
     private func sendNudge() {
@@ -2935,34 +3011,6 @@ private struct ChatDetailView: View {
         }
     }
     
-    private func messageBubble(_ msg: ChatMessage) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            if msg.isMe {
-                Spacer(minLength: 60)
-                HStack(alignment: .bottom, spacing: 4) {
-                    Text(msg.content)
-                        .font(.system(size: 14)).padding(10)
-                        .background(LinearGradient(colors: [Color.accentColor, Color.accentColor.opacity(0.8)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .foregroundColor(.white).clipShape(TailChatBubbleShape(isMe: true)).textSelection(.enabled).shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1)
-                }
-                renderAvatar(base64String: msg.avatar, fallbacName: "我", fallbackColor: .gray)
-            } else {
-                renderAvatar(base64String: msg.avatar ?? friend.avatarBase64, fallbacName: String(friend.name.prefix(1)), fallbackColor: friend.avatarColor)
-                HStack(alignment: .bottom, spacing: 4) {
-                    Text(msg.content)
-                        .font(.system(size: 14)).padding(10).background(Color(NSColor.controlBackgroundColor)).foregroundColor(.primary)
-                        .clipShape(TailChatBubbleShape(isMe: false)).textSelection(.enabled).overlay(TailChatBubbleShape(isMe: false).stroke(Color.secondary.opacity(0.1), lineWidth: 1))
-                }
-                Spacer(minLength: 60)
-            }
-        }
-        .transition(.asymmetric(
-            insertion: .move(edge: .bottom).combined(with: .opacity).combined(with: .scale(scale: 0.9, anchor: msg.isMe ? .trailing : .leading)),
-            removal: .opacity
-        ))
-        .padding(.vertical, 2).id(msg.id).onTapGesture(count: 2) { triggerReaction() }
-    }
-    
     private func triggerReaction() {
         withAnimation(.spring(response: 0.3, dampingFraction: 0.5)) { reactionScale = 1.2; reactionOpacity = 1.0 }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
@@ -2975,32 +3023,325 @@ private struct ChatDetailView: View {
             }
         }
     }
-    
-    // 全局头像缓存，避免滚动时主线程频繁且重复解析长 Base64 字符串导致的掉帧卡顿
-    fileprivate static let globalAvatarCache = NSCache<NSString, NSImage>()
-    
-    // Abstracted avatar renderer to support URL/Base64 strings flexibly
-    @ViewBuilder
-    private func renderAvatar(base64String: String?, fallbacName: String, fallbackColor: Color) -> some View {
-        InteractiveAvatarView(
-            base64String: base64String,
-            fallbacName: fallbacName,
-            fallbackColor: fallbackColor,
-            cache: Self.globalAvatarCache
+
+    private func openImagePreview(_ attachment: ChatImageAttachment, _ attachments: [ChatImageAttachment]) {
+        withAnimation(.easeInOut(duration: 0.16)) {
+            imagePreviewContext = ChatImagePreviewContext(
+                selectedAttachment: attachment,
+                attachments: attachments
+            )
+        }
+    }
+
+    private func copyMessage(_ msg: ChatMessage) {
+        guard !msg.content.isEmpty else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(msg.displayText, forType: .string)
+    }
+
+    private func deleteLocalMessage(_ msg: ChatMessage) {
+        guard let index = socketManager.chatHistory[friend.id]?.firstIndex(where: { $0.id == msg.id }) else { return }
+        let snapshot = socketManager.chatHistory[friend.id] ?? []
+        socketManager.chatHistory[friend.id]?.remove(at: index)
+
+        guard let messageId = msg.messageId else { return }
+        Task {
+            do {
+                _ = try await socketManager.sendChatMessageAction(action: "delete_local", messageId: messageId, friendId: friend.id)
+            } catch {
+                await MainActor.run {
+                    socketManager.chatHistory[friend.id] = snapshot
+                    print("❌ 本地删除消息失败: \(error)")
+                }
+            }
+        }
+    }
+
+    private func retractMessage(_ msg: ChatMessage) {
+        guard let messageId = msg.messageId else { return }
+        let snapshot = socketManager.chatHistory[friend.id] ?? []
+        updateMessage(msg) { message in
+            message.retracted = true
+            message.sendStatus = .retracted
+        }
+
+        Task {
+            do {
+                _ = try await socketManager.sendChatMessageAction(action: "retract", messageId: messageId, friendId: friend.id)
+            } catch {
+                await MainActor.run {
+                    socketManager.chatHistory[friend.id] = snapshot
+                    print("❌ 撤回消息失败: \(error)")
+                }
+            }
+        }
+    }
+
+    private func retryMessage(_ msg: ChatMessage) {
+        guard msg.isMe else { return }
+        if let clientMsgId = msg.clientMsgId,
+           let pendingImages = pendingMediaMessages[clientMsgId] {
+            Task {
+                await retryPendingMediaMessage(msg, imagesToSend: pendingImages)
+            }
+            return
+        }
+
+        socketManager.chatHistory[friend.id]?.removeAll(where: { $0.id == msg.id })
+        socketManager.sendChatMessage(
+            receiverId: friend.id,
+            content: msg.content,
+            msgType: msg.type,
+            avatar: authService.currentUser?.avatar,
+            quoteMsgId: msg.quoteMsgId,
+            quoteMsgContent: msg.quoteMsgContent,
+            quoteMsgSenderName: msg.quoteMsgSenderName,
+            clientMsgId: msg.clientMsgId
+        )
+        shouldScrollToBottom = true
+    }
+
+    private func updateMessage(_ msg: ChatMessage, transform: (inout ChatMessage) -> Void) {
+        guard var history = socketManager.chatHistory[friend.id],
+              let index = history.firstIndex(where: { $0.id == msg.id }) else {
+            return
+        }
+        transform(&history[index])
+        socketManager.chatHistory[friend.id] = history
+    }
+
+    private func handlePastedImage(_ image: NSImage) {
+        guard pendingImages.count < ChatMixedMessageContent.maxImageCount else {
+            pendingImageError = "单条消息最多发送\(ChatMixedMessageContent.maxImageCount)张图片"
+            return
+        }
+        pendingImages.append(PendingChatImage.pasted(image))
+        pendingImageError = nil
+    }
+
+    private func pickImages() {
+        guard !isUploadingImage else { return }
+        let remaining = ChatMixedMessageContent.maxImageCount - pendingImages.count
+        guard remaining > 0 else {
+            pendingImageError = "单条消息最多发送\(ChatMixedMessageContent.maxImageCount)张图片"
+            return
+        }
+
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.image]
+        panel.prompt = "选择"
+
+        guard panel.runModal() == .OK else { return }
+
+        var newItems: [PendingChatImage] = []
+        for url in panel.urls.prefix(remaining) {
+            do {
+                newItems.append(try PendingChatImage.file(url: url))
+            } catch {
+                pendingImageError = error.localizedDescription
+            }
+        }
+        if panel.urls.count > remaining {
+            pendingImageError = "已达到\(ChatMixedMessageContent.maxImageCount)张上限，超出的图片未加入"
+        } else if !newItems.isEmpty {
+            pendingImageError = nil
+        }
+        pendingImages.append(contentsOf: newItems)
+    }
+
+    private func removePendingImage(_ id: UUID) {
+        pendingImages.removeAll { $0.id == id }
+        if pendingImages.isEmpty {
+            pendingImageError = nil
+        }
+    }
+
+    private func sendMessage() async {
+        let trimmedText = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let imagesToSend = pendingImages
+        guard !trimmedText.isEmpty || !imagesToSend.isEmpty else { return }
+
+        let contentToSend = messageText
+        let quote = quotedMessage
+        let avatar = authService.currentUser?.avatar
+
+        if imagesToSend.isEmpty {
+            messageText = ""
+            quotedMessage = nil
+            shouldScrollToBottom = true
+
+            socketManager.sendChatMessage(
+                receiverId: friend.id,
+                content: contentToSend,
+                msgType: "TEXT",
+                avatar: avatar,
+                quoteMsgId: quote?.messageId.map { Int64($0) },
+                quoteMsgContent: quote.map { ChatMessagePayload.parse(content: $0.content, msgType: $0.type).displayText },
+                quoteMsgSenderName: quote.map { $0.isMe ? "我" : friend.name }
+            )
+            return
+        }
+
+        pendingImageError = nil
+
+        do {
+            guard let currentUser = authService.currentUser else {
+                pendingImageError = "请先登录"
+                return
+            }
+            guard currentUser.id >= Int64(Int32.min), currentUser.id <= Int64(Int32.max) else {
+                pendingImageError = "当前用户ID超出上传协议范围"
+                return
+            }
+
+            let clientMsgId = UUID().uuidString
+            let localAttachments = imagesToSend.map { $0.localAttachment() }
+            let localPayload = try ChatMixedMessageContent(text: contentToSend, attachments: localAttachments)
+            let localContent = try localPayload.contentString()
+
+            messageText = ""
+            pendingImages.removeAll()
+            pendingImageError = nil
+            quotedMessage = nil
+            shouldScrollToBottom = true
+
+            ChatPendingImageStore.shared.store(imagesToSend)
+            pendingMediaMessages[clientMsgId] = imagesToSend
+            socketManager.appendLocalChatMessage(
+                receiverId: friend.id,
+                content: localContent,
+                msgType: "MIXED",
+                avatar: avatar,
+                quoteMsgId: quote?.messageId.map { Int64($0) },
+                quoteMsgContent: quote.map { ChatMessagePayload.parse(content: $0.content, msgType: $0.type).displayText },
+                quoteMsgSenderName: quote.map { $0.isMe ? "我" : friend.name },
+                clientMsgId: clientMsgId,
+                sendStatus: .uploadingMedia
+            )
+
+            await uploadAndSendPendingMediaMessage(
+                clientMsgId: clientMsgId,
+                contentToSend: contentToSend,
+                imagesToSend: imagesToSend,
+                quoteMsgId: quote?.messageId.map { Int64($0) },
+                quoteMsgContent: quote.map { ChatMessagePayload.parse(content: $0.content, msgType: $0.type).displayText },
+                quoteMsgSenderName: quote.map { $0.isMe ? "我" : friend.name },
+                avatar: avatar,
+                currentUser: currentUser,
+                localAttachmentIds: localAttachments.map { $0.fileId }
+            )
+        } catch {
+            pendingImageError = error.localizedDescription
+        }
+    }
+
+    private func retryPendingMediaMessage(_ msg: ChatMessage, imagesToSend: [PendingChatImage]) async {
+        guard let clientMsgId = msg.clientMsgId else { return }
+        guard let currentUser = authService.currentUser else {
+            socketManager.updateLocalChatMessage(
+                receiverId: friend.id,
+                clientMsgId: clientMsgId,
+                status: .failed,
+                errorMessage: "请先登录"
+            )
+            return
+        }
+        guard currentUser.id >= Int64(Int32.min), currentUser.id <= Int64(Int32.max) else {
+            socketManager.updateLocalChatMessage(
+                receiverId: friend.id,
+                clientMsgId: clientMsgId,
+                status: .failed,
+                errorMessage: "当前用户ID超出上传协议范围"
+            )
+            return
+        }
+
+        let payload = ChatMessagePayload.parse(content: msg.content, msgType: msg.type)
+        let localAttachmentIds = payload.images
+            .filter { $0.isLocalPending }
+            .map { $0.fileId }
+
+        socketManager.updateLocalChatMessage(
+            receiverId: friend.id,
+            clientMsgId: clientMsgId,
+            status: .uploadingMedia,
+            errorMessage: nil
+        )
+        shouldScrollToBottom = true
+
+        await uploadAndSendPendingMediaMessage(
+            clientMsgId: clientMsgId,
+            contentToSend: payload.text,
+            imagesToSend: imagesToSend,
+            quoteMsgId: msg.quoteMsgId,
+            quoteMsgContent: msg.quoteMsgContent,
+            quoteMsgSenderName: msg.quoteMsgSenderName,
+            avatar: authService.currentUser?.avatar,
+            currentUser: currentUser,
+            localAttachmentIds: localAttachmentIds
         )
     }
-    
-    private func sendMessage() async {
-        guard !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        
-        let contentToSend = messageText
-        messageText = ""
-        
-        // 发送前预声明滚动到最底
-        shouldScrollToBottom = true
-        
-        let avatar = authService.currentUser?.avatar
-        socketManager.sendChatMessage(receiverId: friend.id, content: contentToSend, msgType: "TEXT", avatar: avatar)
+
+    private func uploadAndSendPendingMediaMessage(
+        clientMsgId: String,
+        contentToSend: String,
+        imagesToSend: [PendingChatImage],
+        quoteMsgId: Int64?,
+        quoteMsgContent: String?,
+        quoteMsgSenderName: String?,
+        avatar: String?,
+        currentUser: UserDO,
+        localAttachmentIds: [Int64]
+    ) async {
+        do {
+            let uploadService = ChatAttachmentUploadService()
+            var attachments: [ChatImageAttachment] = []
+            for item in imagesToSend {
+                attachments.append(
+                    try await uploadService.uploadPendingImage(
+                        item,
+                        userId: Int32(currentUser.id),
+                        userName: currentUser.username
+                    )
+                )
+            }
+
+            let payload = try ChatMixedMessageContent(text: contentToSend, attachments: attachments)
+            let content = try payload.contentString()
+
+            pendingMediaMessages.removeValue(forKey: clientMsgId)
+            ChatPendingImageStore.shared.remove(localAttachmentIds: localAttachmentIds)
+            socketManager.updateLocalChatMessage(
+                receiverId: friend.id,
+                clientMsgId: clientMsgId,
+                content: content,
+                msgType: "MIXED",
+                status: .sending,
+                errorMessage: nil
+            )
+            socketManager.sendChatMessage(
+                receiverId: friend.id,
+                content: content,
+                msgType: "MIXED",
+                avatar: avatar,
+                quoteMsgId: quoteMsgId,
+                quoteMsgContent: quoteMsgContent,
+                quoteMsgSenderName: quoteMsgSenderName,
+                clientMsgId: clientMsgId,
+                appendLocalMessage: false
+            )
+        } catch {
+            socketManager.updateLocalChatMessage(
+                receiverId: friend.id,
+                clientMsgId: clientMsgId,
+                status: .failed,
+                errorMessage: error.localizedDescription
+            )
+        }
     }
     
     private func loadInitialHistory() async {
@@ -3074,14 +3415,20 @@ private struct ChatDetailView: View {
                 
                 let newMessages = historyDtos.map { dto in
                     let amIMe = (dto.senderId != Int32(friend.id))
+                    let status: ChatMessage.SendStatus = dto.retracted ? .retracted : .success
                     
                     return ChatMessage(
                         messageId: Int32(dto.id),
+                        clientMsgId: dto.clientMsgId,
                         content: dto.content,
                         isMe: amIMe,
                         timestamp: Date(),
-                        type: "TEXT",
-                        sendStatus: .success,
+                        type: dto.msgType.isEmpty ? "TEXT" : dto.msgType,
+                        sendStatus: status,
+                        quoteMsgId: dto.quoteMsgId,
+                        quoteMsgContent: dto.quoteMsgContent,
+                        quoteMsgSenderName: dto.quoteMsgSenderName,
+                        retracted: dto.retracted,
                         groupTime: dto.groupTime,
                         msgTimeStr: dto.msgTimeStr,
                         avatar: dto.avatar
@@ -3129,282 +3476,6 @@ private struct ChatDetailView: View {
             // To prevent infinite loop of onAppear trying to reload indefinitely if the server crashes
             await MainActor.run {
                 hasMore = false
-            }
-        }
-    }
-}
-
-// MARK: - Emoji Picker Panel
-
-/// 表情选择面板 - 分类展示常用 emoji，点击后触发回调
-private struct EmojiPickerPanel: View {
-    let onEmojiSelected: (String) -> Void
-
-    private let categories: [(String, String, [String])] = [
-        ("笑脸", "face.smiling", [
-            "😀","😁","😂","🤣","😃","😄","😅","😆","😉","😊",
-            "😋","😎","😍","🥰","😘","😗","😙","😚","🙂","🤗",
-            "🤩","🤔","🤨","😐","😑","😶","🙄","😏","😣","😥",
-            "😮","🤐","😯","😪","😫","🥱","😴","😌","😛","😜",
-            "😝","🤤","😒","😓","😔","😕","🙃","🤑","😲","☹️",
-            "🙁","😖","😞","😟","😤","😢","😭","😦","😧","😨",
-            "😩","🤯","😬","😰","😱","🥵","🥶","😳","🤪","😠"
-        ]),
-        ("手势", "hand.raised", [
-            "👋","🤚","🖐","✋","🖖","👌","🤏","✌️","🤞","🤟",
-            "🤘","🤙","👈","👉","👆","🖕","👇","☝️","👍","👎",
-            "✊","👊","🤛","🤜","👏","🙌","👐","🤲","🤝","🙏",
-            "✍️","💪","🦾","🦿","🦵","🦶","👂","🦻"
-        ]),
-        ("人物", "person", [
-            "👶","🧒","👦","👧","🧑","👱","👨","🧔","👩","🧓",
-            "👴","👵","🙍","🙎","🙅","🙆","💁","🙋","🧏","🙇",
-            "🤦","🤷","👮","💂","👷","🤴","👸","🦸","🦹"
-        ]),
-        ("动物", "pawprint", [
-            "🐶","🐱","🐭","🐹","🐰","🦊","🐻","🐼","🐨","🐯",
-            "🦁","🐮","🐷","🐸","🐵","🙈","🙉","🙊","🐔","🐧",
-            "🐦","🐤","🦆","🦅","🦉","🦇","🐺","🐴","🦄","🐢",
-            "🐍","🦎","🐊","🦕","🦖","🦈","🐋","🐬","🦭","🐘"
-        ]),
-        ("食物", "fork.knife", [
-            "🍎","🍊","🍋","🍇","🍓","🍈","🍒","🍑","🥭","🍍",
-            "🥥","🥝","🍅","🍆","🥑","🥦","🌽","🥕","🧄","🧅",
-            "🍔","🍟","🍕","🌮","🌯","🥪","🥙","🧆","🥚","🍳",
-            "🍿","🧂","🥞","🧇","🧈","🍱","🍜","🍣","🍦","☕️"
-        ]),
-        ("活动", "sportscourt", [
-            "⚽️","🏀","🏈","⚾️","🎾","🏐","🏉","🎱","🏓","🏸",
-            "🥊","🥋","🎽","🛹","🛷","⛸","🏂","🏋️","🤸","🤺",
-            "🏊","🚴","🧘","🎯","🎳","🎲","🎮","🎸","🎺","🎻"
-        ]),
-        ("旅行", "car", [
-            "🚗","🚕","🚙","🚌","🏎","🚓","🚒","🚐","🚚","✈️",
-            "🚀","🛸","🚁","🛶","⛵️","🚢","🚂","🏠","🏢","🗼",
-            "🗽","⛩","🎡","🎢","🎠","🌍","🌏","🌙","☀️","🌈"
-        ]),
-        ("符号", "heart", [
-            "❤️","🧡","💛","💚","💙","💜","🖤","🤍","🤎","💔",
-            "❣️","💕","💞","💓","💗","💖","💘","💝","💯","✅",
-            "❎","🔴","🟠","🟡","🟢","🔵","🟣","⚫️","⚪️","🟤",
-            "🔶","🔷","🔸","🔹","🔺","🔻","💠","🔘","🔲","🔳"
-        ]),
-        ("物品", "star", [
-            "🎁","🎈","🎉","🎊","🎀","🏆","🥇","🥈","🥉","🎖",
-            "🔑","🗝","🔒","🔓","🔔","🔕","🎵","🎶","💡","🔦",
-            "📱","💻","⌨️","🖥","🖨","📷","📸","📹","🎥","📺",
-            "📚","📖","✏️","🖊","📝","💼","🎒","🌂","☂️","🧲"
-        ])
-    ]
-
-    @State private var selectedCategoryIndex: Int = 0
-
-    var body: some View {
-        VStack(spacing: 0) {
-            // 分类标签栏 —— 均匀分布，无需滚动
-            HStack(spacing: 0) {
-                ForEach(Array(categories.enumerated()), id: \.offset) { index, cat in
-                    Button(action: {
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            selectedCategoryIndex = index
-                        }
-                    }) {
-                        VStack(spacing: 2) {
-                            Image(systemName: cat.1)
-                                .font(.system(size: 13))
-                            Text(cat.0)
-                                .font(.system(size: 9, weight: .medium))
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 5)
-                        .background(
-                            selectedCategoryIndex == index
-                                ? Color.accentColor.opacity(0.15)
-                                : Color.clear
-                        )
-                        .foregroundColor(selectedCategoryIndex == index ? .accentColor : .secondary)
-                    }
-                    .buttonStyle(.borderless)
-                }
-            }
-            .background(Color(NSColor.controlBackgroundColor))
-
-            Divider()
-
-            // Emoji 网格 —— adaptive 列宽，自动铺满
-            ScrollView(.vertical, showsIndicators: false) {
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 38, maximum: 46), spacing: 0)],
-                    spacing: 0
-                ) {
-                    ForEach(categories[selectedCategoryIndex].2, id: \.self) { emoji in
-                        EmojiCell(emoji: emoji, onTap: onEmojiSelected)
-                    }
-                }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 4)
-            }
-            .frame(height: 160)
-            .background(Color(NSColor.windowBackgroundColor))
-        }
-        .background(Color(NSColor.controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.15), radius: 8, y: -3)
-        .padding(.horizontal, 8)
-        .padding(.bottom, 2)
-    }
-}
-
-/// 单个 Emoji 格子，带 hover 高亮
-private struct EmojiCell: View {
-    let emoji: String
-    let onTap: (String) -> Void
-    @State private var isHovering = false
-
-    var body: some View {
-        Button(action: { onTap(emoji) }) {
-            Text(emoji)
-                .font(.system(size: 24))
-                .frame(width: 40, height: 40)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(isHovering ? Color.secondary.opacity(0.15) : Color.clear)
-                )
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.borderless)
-        .onHover { isHovering = $0 }
-    }
-}
-
-
-private struct InteractiveAvatarView: View {
-    let base64String: String?
-    let fallbacName: String
-    let fallbackColor: Color
-    let cache: NSCache<NSString, NSImage>
-    
-    @State private var showingPopover = false
-    
-    private var cachedImage: NSImage? {
-        guard let base64 = base64String, !base64.isEmpty else { return nil }
-        return cache.object(forKey: base64 as NSString)
-    }
-    
-    var body: some View {
-        Group {
-            if let image = cachedImage {
-                Image(nsImage: image)
-                    .resizable()
-                    .interpolation(.high)
-                    .antialiased(true)
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: 32, height: 32)
-                    .clipShape(Circle())
-            } else if let base64 = base64String, !base64.isEmpty {
-                AvatarDecodeView(base64: base64, fallbacName: fallbacName, fallbackColor: fallbackColor, cache: cache)
-            } else {
-                Circle()
-                    .fill(fallbackColor)
-                    .frame(width: 32, height: 32)
-                    .overlay(Text(fallbacName).font(.caption).foregroundColor(.white))
-            }
-        }
-        .contentShape(Circle())
-        .onTapGesture {
-            showingPopover = true
-        }
-        .popover(isPresented: $showingPopover, arrowEdge: .trailing) {
-            VStack {
-                if let image = cachedImage {
-                    Image(nsImage: image)
-                        .resizable()
-                        .interpolation(.high)
-                        .antialiased(true)
-                        .aspectRatio(contentMode: .fit)
-                        .frame(width: 256, height: 256)
-                        .cornerRadius(8)
-                        .shadow(color: .black.opacity(0.2), radius: 10, x: 0, y: 5)
-                } else if let base64 = base64String, !base64.isEmpty {
-                    // 如果缓存没命中（可能还没解码完），回退到基础解码显示
-                    AvatarDecodeView(base64: base64, fallbacName: fallbacName, fallbackColor: fallbackColor, cache: cache, customSize: 256)
-                } else {
-                    Circle()
-                        .fill(fallbackColor)
-                        .frame(width: 256, height: 256)
-                        .overlay(
-                            Text(fallbacName)
-                                .font(.system(size: 80, weight: .bold))
-                                .foregroundColor(.white)
-                        )
-                        .shadow(color: .black.opacity(0.2), radius: 10, x: 0, y: 5)
-                }
-            }
-            .padding(12)
-        }
-    }
-}
-
-private struct AvatarDecodeView: View {
-    let base64: String
-    let fallbacName: String
-    let fallbackColor: Color
-    let cache: NSCache<NSString, NSImage>
-    var customSize: CGFloat = 32
-    
-    @State private var decodedImage: NSImage?
-    
-    var body: some View {
-        Group {
-            if let nsImage = decodedImage {
-                Image(nsImage: nsImage)
-                    .resizable()
-                    .interpolation(.high)
-                    .antialiased(true)
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: customSize, height: customSize)
-                    .clipShape(RoundedRectangle(cornerRadius: customSize > 32 ? 8 : customSize / 2))
-            } else {
-                Circle()
-                    .fill(fallbackColor)
-                    .frame(width: customSize, height: customSize)
-                    .overlay(Text(fallbacName).font(customSize > 32 ? .system(size: 80) : .caption).foregroundColor(.white))
-            }
-        }
-        .task {
-            // Asynchronous decoding off the main thread
-            await decodeImageAsync()
-        }
-    }
-    
-    private func decodeImageAsync() async {
-        // 先检查是否已经被其他 Cell 缓存
-        if let cached = cache.object(forKey: base64 as NSString) {
-            await MainActor.run { self.decodedImage = cached }
-            return
-        }
-        
-        // 提取并去除头
-        let pureBase64 = base64.components(separatedBy: ",").last?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !pureBase64.isEmpty else { return }
-        
-        // 在后台线程执行沉重的 base64 和图片解码工作
-        let image = await Task.detached(priority: .userInitiated) { () -> NSImage? in
-            if let avatarData = Data(base64Encoded: pureBase64, options: .ignoreUnknownCharacters),
-               let nsImage = NSImage(data: avatarData) {
-                return nsImage
-            }
-            return nil
-        }.value
-        
-        if let validImage = image {
-            cache.setObject(validImage, forKey: base64 as NSString)
-            await MainActor.run {
-                self.decodedImage = validImage
             }
         }
     }
@@ -3889,9 +3960,9 @@ private struct FriendRow: View {
     var lastMessageText: String {
         // 优先使用实时的最新一条记录文本，如果没有再降级到服务端下发的 lastUnreadMsg
         if let msg = socketManager.chatHistory[friend.id]?.last {
-            return msg.content
+            return msg.displayText
         } else if let serverMsg = friend.serverLatestMsg, !serverMsg.isEmpty {
-            return serverMsg
+            return ChatMessagePayload.parse(content: serverMsg, msgType: "").displayText
         }
         return "点击开始聊天"
     }
@@ -3903,7 +3974,7 @@ private struct FriendRow: View {
                 Group {
                     let cleanAvatar = friend.avatarBase64?.components(separatedBy: ",").last?.trimmingCharacters(in: .whitespacesAndNewlines)
                     if let avatarStr = cleanAvatar, !avatarStr.isEmpty {
-                        if let cachedImage = ChatDetailView.globalAvatarCache.object(forKey: avatarStr as NSString) {
+                        if let cachedImage = ChatAvatarCache.shared.object(forKey: avatarStr as NSString) {
                             Image(nsImage: cachedImage)
                                 .resizable()
                                 .aspectRatio(contentMode: .fill)
@@ -3914,7 +3985,7 @@ private struct FriendRow: View {
                                 base64: avatarStr,
                                 fallbacName: String(friend.name.prefix(1)),
                                 fallbackColor: friend.avatarColor,
-                                cache: ChatDetailView.globalAvatarCache
+                                cache: ChatAvatarCache.shared
                             )
                             .frame(width: 40, height: 40)
                         }
@@ -4115,120 +4186,6 @@ private struct FriendChatSplitView: View {
     }
 }
 
-// MARK: - Mac Responsive Text View (Custom NSTextView Integration)
-/// 封装 AppKit 的 NSTextView，以支持：1. 真正的换行拦截与回车发送；2. 内容自适应高度。
-struct MacResponsiveTextView: NSViewRepresentable {
-    @Binding var text: String
-    var onSendTriggered: () -> Void
-    
-    func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSTextView.scrollableTextView()
-        scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = true
-        
-        // 替换为自定义的 CustomNSTextView
-        let customTextView = CustomNSTextView()
-        customTextView.delegate = context.coordinator
-        customTextView.drawsBackground = false
-        customTextView.isRichText = false
-        customTextView.font = NSFont.systemFont(ofSize: 14)
-        customTextView.autoresizingMask = [.width]
-        customTextView.isHorizontallyResizable = false
-        customTextView.isVerticallyResizable = true
-        customTextView.textContainerInset = NSSize(width: 8, height: 8)
-        
-        scrollView.documentView = customTextView
-        return scrollView
-    }
-    
-    func updateNSView(_ nsView: NSScrollView, context: Context) {
-        guard let textView = nsView.documentView as? CustomNSTextView else { return }
-        if textView.string != text {
-            textView.string = text
-        }
-    }
-    
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
-    
-    class Coordinator: NSObject, NSTextViewDelegate {
-        var parent: MacResponsiveTextView
-        
-        init(_ parent: MacResponsiveTextView) {
-            self.parent = parent
-        }
-        
-        func textDidChange(_ notification: Notification) {
-            guard let textView = notification.object as? NSTextView else { return }
-            self.parent.text = textView.string
-        }
-        
-        func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-                let event = NSApp.currentEvent
-                let flags = event?.modifierFlags ?? []
-                if flags.contains(.shift) || flags.contains(.option) || flags.contains(.control) {
-                    // 修饰键+Enter，允许换行
-                    textView.insertNewlineIgnoringFieldEditor(nil)
-                    return true
-                } else {
-                    // 单击回车，触发发送逻辑
-                    self.parent.onSendTriggered()
-                    return true
-                }
-            }
-            return false
-        }
-    }
-}
-
-class CustomNSTextView: NSTextView {
-    // 留出扩展接口供日后处理剪贴板图片等
-}
-
-// MARK: - Chat Bubble Tail Shape
-struct TailChatBubbleShape: Shape {
-    var isMe: Bool
-    var cornerRadius: CGFloat = 8
-    
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        
-        let w = rect.width
-        let h = rect.height
-        let r = cornerRadius
-        
-        if isMe {
-            // Tail at bottom right
-            path.move(to: CGPoint(x: 0, y: r))
-            path.addArc(center: CGPoint(x: r, y: r), radius: r, startAngle: .degrees(180), endAngle: .degrees(270), clockwise: false)
-            path.addLine(to: CGPoint(x: w - r, y: 0))
-            path.addArc(center: CGPoint(x: w - r, y: r), radius: r, startAngle: .degrees(270), endAngle: .degrees(360), clockwise: false)
-            
-            // Draw tail
-            path.addLine(to: CGPoint(x: w, y: h)) // Sharp bottom right corner
-            path.addLine(to: CGPoint(x: w - r, y: h)) // Go left
-            
-            path.addArc(center: CGPoint(x: r, y: h - r), radius: r, startAngle: .degrees(90), endAngle: .degrees(180), clockwise: false)
-            path.closeSubpath()
-        } else {
-            // Tail at bottom left
-            path.move(to: CGPoint(x: w, y: h - r))
-            path.addArc(center: CGPoint(x: w - r, y: h - r), radius: r, startAngle: .degrees(0), endAngle: .degrees(90), clockwise: false)
-            path.addLine(to: CGPoint(x: r, y: h)) // Go left
-            path.addLine(to: CGPoint(x: 0, y: h)) // Sharp bottom left corner
-            path.addLine(to: CGPoint(x: 0, y: r)) // Go up
-            path.addArc(center: CGPoint(x: r, y: r), radius: r, startAngle: .degrees(180), endAngle: .degrees(270), clockwise: false)
-            path.addLine(to: CGPoint(x: w - r, y: 0))
-            path.addArc(center: CGPoint(x: w - r, y: r), radius: r, startAngle: .degrees(270), endAngle: .degrees(360), clockwise: false)
-            path.closeSubpath()
-        }
-        
-        return path
-    }
-}
-
 // MARK: - Cloud Storage Components
 
 /// 动态背景：磨砂渐变效果
@@ -4334,7 +4291,7 @@ private struct FileCard: View {
                         .offset(x: 6, y: -6)
                 }
                 
-                if item.iconName == "film" && isHovering {
+                if item.isPlayableVideoFile && isHovering {
                     ZStack {
                         Color.black.opacity(0.3).cornerRadius(16)
                         Image(systemName: "play.circle.fill")
@@ -4374,7 +4331,7 @@ private struct FileCard: View {
             await MainActor.run { self.thumbnail = img }
         }
         .contextMenu {
-            if item.iconName == "film" {
+            if item.isPlayableVideoFile {
                 Button { onPlay() } label: { Label("播放", systemImage: "play.circle") }
             }
             Button { onAction(3) } label: { Label("重命名", systemImage: "pencil") }
@@ -4492,7 +4449,7 @@ private struct FileListRowView: View {
 
             // 操作按钮（悬停时渐显）
             HStack(spacing: 0) {
-                if file.iconName == "film" {
+                if file.isPlayableVideoFile {
                     Button(action: onPlay) {
                         Image(systemName: "play.circle.fill")
                             .font(.system(size: 16))

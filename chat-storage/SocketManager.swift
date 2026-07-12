@@ -114,7 +114,8 @@ public class SocketManager: NSObject, ObservableObject {
     private var port: UInt32 = 0
     
     /// 响应等待映射 (帧类型 -> 请求ID)
-    internal var continuationTypeMap: [FrameTypeEnum: UUID] = [:]
+    internal var continuationTypeMap: [FrameTypeEnum: [UUID]] = [:]
+    internal var continuationMatchers: [UUID: (Frame) -> Bool] = [:]
     /// 活动的 Continuation (请求ID -> Continuation)
     internal var activeContinuations: [UUID: CheckedContinuation<Frame, Error>] = [:]
     /// 流式处理回调 (帧类型 -> [token: 处理闭包])
@@ -124,12 +125,20 @@ public class SocketManager: NSObject, ObservableObject {
     
     /// 响应队列锁
     internal let continuationLock = NSLock()
+
+    private static let sendQueueKey = DispatchSpecificKey<String>()
+    private let sendQueue = DispatchQueue(label: "duyao.chat-storage.socket-send")
     
     /// 接收循环状态
     internal var isReceiving = false
+    internal var isInputPaused = false
     
     /// 接收数据缓冲区
     internal var receiveBuffer = Data()
+
+    /// 聊天发送回执超时任务，Key 为 clientMsgId
+    private var chatSendTimeoutWorkItems: [String: DispatchWorkItem] = [:]
+    private let chatSendReceiptTimeout: TimeInterval = 15.0
 
     
     /// 消息处理锁
@@ -145,6 +154,7 @@ public class SocketManager: NSObject, ObservableObject {
     
     override init() {
         super.init()
+        sendQueue.setSpecific(key: Self.sendQueueKey, value: "socket-send")
         setupChatHandlers()
     }
     
@@ -152,9 +162,8 @@ public class SocketManager: NSObject, ObservableObject {
     
     /// 连接到默认服务器
     func connect() {
-        // 默认连接本地服务器 (端口 10086)
-        connect(host: "localhost", port: 10086);
-        //connect(host: "172.21.32.120", port: 10086);
+        // 默认连接当前 net-server 主控服务 (端口 10086)
+        connect(host: "172.21.33.149", port: 10086);
         //connect(host: "192.168.0.101", port: 10086);
         //connect(host: "192.168.2.106", port: 10086);
         //connect(host: "192.168.1.5", port: 10086);
@@ -237,9 +246,14 @@ public class SocketManager: NSObject, ObservableObject {
         }
         activeContinuations.removeAll()
         continuationTypeMap.removeAll()
+        continuationMatchers.removeAll()
         streamHandlers.removeAll()
         streamHandlerTypeMap.removeAll()
+        isInputPaused = false
         continuationLock.unlock()
+        chatSendTimeoutWorkItems.values.forEach { $0.cancel() }
+        chatSendTimeoutWorkItems.removeAll()
+        setupChatHandlers()
         
         if notifyUI {
             updateState(.disconnected)
@@ -263,45 +277,34 @@ public class SocketManager: NSObject, ObservableObject {
     /// - Parameter frame: 要发送的帧
     /// - Throws: 发送失败时抛出错误
     func sendFrame(_ frame: Frame) throws {
-        // 允许连接中状态发送 (用于握手)
-        guard connectionState == .connected || connectionState == .connecting else {
-            throw SocketError.notConnected
-        }
-        
-        guard let outputStream = outputStream, 
-              [.open, .writing].contains(outputStream.streamStatus) else {
-            throw SocketError.notConnected
-        }
-        
         let data = frame.toBytes()
-        var totalBytesWritten = 0
-        
-        while totalBytesWritten < data.count {
-            if outputStream.hasSpaceAvailable {
-                let bytesWritten = data.withUnsafeBytes { buffer -> Int in
-                    guard let baseAddress = buffer.baseAddress else { return 0 }
-                    let advancedAddress = baseAddress.assumingMemoryBound(to: UInt8.self).advanced(by: totalBytesWritten)
-                    return outputStream.write(advancedAddress, maxLength: data.count - totalBytesWritten)
-                }
-                
-                if bytesWritten < 0 {
-                    print("❌ Socket 写入失败: \(outputStream.streamError?.localizedDescription ?? "未知错误")")
-                    throw SocketError.sendFailed
-                }
-                
-                totalBytesWritten += bytesWritten
-            } else {
-                // 发送缓冲区已满，挂起当前线程极短时间，避免 CPU 空转
-                // 这里使用的是非常短的同步 sleep，因为 sendFrame 可能在普通队列中调用
-                Thread.sleep(forTimeInterval: 0.005) // 5 毫秒
-            }
+        if DispatchQueue.getSpecific(key: Self.sendQueueKey) != nil {
+            try writeFrameData(data)
+            return
         }
-        
+
+        try sendQueue.sync {
+            try writeFrameData(data)
+        }
         // print("📤 发送帧: \(frame.type.description), 长度: \(data.count) 字节")
     }
 
     /// 异步发送帧，避免同步 sleep 造成线程阻塞。
     func sendFrameAsync(_ frame: Frame) async throws {
+        let data = frame.toBytes()
+        try await withCheckedThrowingContinuation { continuation in
+            sendQueue.async {
+                do {
+                    try self.writeFrameData(data)
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    private func writeFrameData(_ data: Data) throws {
         guard connectionState == .connected || connectionState == .connecting else {
             throw SocketError.notConnected
         }
@@ -311,12 +314,19 @@ public class SocketManager: NSObject, ObservableObject {
             throw SocketError.notConnected
         }
 
-        let data = frame.toBytes()
         var totalBytesWritten = 0
+        var zeroWriteCount = 0
+        let writeDeadline = Date().addingTimeInterval(30.0)
 
         while totalBytesWritten < data.count {
-            try Task.checkCancellation()
-
+            if Date() >= writeDeadline {
+                print("❌ Socket 写入超时")
+                throw SocketError.timeout
+            }
+            if let streamError = outputStream.streamError {
+                print("❌ Socket 写入流错误: \(streamError.localizedDescription)")
+                throw SocketError.sendFailed
+            }
             if outputStream.hasSpaceAvailable {
                 let bytesWritten = data.withUnsafeBytes { buffer -> Int in
                     guard let baseAddress = buffer.baseAddress else { return 0 }
@@ -329,9 +339,20 @@ public class SocketManager: NSObject, ObservableObject {
                     throw SocketError.sendFailed
                 }
 
+                if bytesWritten == 0 {
+                    zeroWriteCount += 1
+                    if zeroWriteCount > 5_000 {
+                        print("❌ Socket 写入持续返回 0 字节，终止发送")
+                        throw SocketError.sendFailed
+                    }
+                    Thread.sleep(forTimeInterval: 0.002)
+                    continue
+                }
+
+                zeroWriteCount = 0
                 totalBytesWritten += bytesWritten
             } else {
-                try await Task.sleep(nanoseconds: 2_000_000) // 2ms
+                Thread.sleep(forTimeInterval: 0.002)
             }
         }
     }
@@ -340,11 +361,12 @@ public class SocketManager: NSObject, ObservableObject {
     func sendFrameAndWait(
         _ frame: Frame,
         expectingOneOf responseTypes: Set<FrameTypeEnum>,
-        timeout: TimeInterval = 10.0
+        timeout: TimeInterval = 10.0,
+        matching responseMatcher: @escaping (Frame) -> Bool = { _ in true }
     ) async throws -> Frame {
         return try await withCheckedThrowingContinuation { continuation in
             // 1. 先注册监听
-            let id = registerContinuation(continuation, for: responseTypes)
+            let id = registerContinuation(continuation, for: responseTypes, matching: responseMatcher)
             
             // 2. 异步发送帧 (延迟确保监听注册)
             Task {
@@ -369,21 +391,34 @@ public class SocketManager: NSObject, ObservableObject {
     func sendFrameAndWait(
         _ frame: Frame,
         expecting responseType: FrameTypeEnum,
-        timeout: TimeInterval = 10.0
+        timeout: TimeInterval = 10.0,
+        matching responseMatcher: @escaping (Frame) -> Bool = { _ in true }
     ) async throws -> Frame {
-        return try await sendFrameAndWait(frame, expectingOneOf: [responseType], timeout: timeout)
+        return try await sendFrameAndWait(
+            frame,
+            expectingOneOf: [responseType],
+            timeout: timeout,
+            matching: responseMatcher
+        )
     }
     
     // MARK: - Frame Handling Helpers
     
-    private func registerContinuation(_ continuation: CheckedContinuation<Frame, Error>, for types: Set<FrameTypeEnum>) -> UUID {
+    private func registerContinuation(
+        _ continuation: CheckedContinuation<Frame, Error>,
+        for types: Set<FrameTypeEnum>,
+        matching responseMatcher: @escaping (Frame) -> Bool
+    ) -> UUID {
         continuationLock.lock()
         defer { continuationLock.unlock() }
         
         let id = UUID()
         activeContinuations[id] = continuation
+        continuationMatchers[id] = responseMatcher
         for type in types {
-            continuationTypeMap[type] = id
+            var ids = continuationTypeMap[type] ?? []
+            ids.append(id)
+            continuationTypeMap[type] = ids
         }
         return id
     }
@@ -393,9 +428,12 @@ public class SocketManager: NSObject, ObservableObject {
         defer { continuationLock.unlock() }
         
         if let continuation = activeContinuations.removeValue(forKey: id) {
-            let keysToRemove = continuationTypeMap.filter { $0.value == id }.map { $0.key }
-            for key in keysToRemove {
-                continuationTypeMap.removeValue(forKey: key)
+            continuationMatchers.removeValue(forKey: id)
+            for key in Array(continuationTypeMap.keys) {
+                continuationTypeMap[key]?.removeAll { $0 == id }
+                if continuationTypeMap[key]?.isEmpty == true {
+                    continuationTypeMap.removeValue(forKey: key)
+                }
             }
             continuation.resume(throwing: error)
         }
@@ -559,13 +597,40 @@ extension SocketManager {
     /// 停止接收循环
     func stopReceiveLoop() {
         isReceiving = false
+        isInputPaused = false
         receiveBuffer.removeAll()
+    }
+
+    func pauseInputEvents() {
+        let pause = {
+            guard !self.isInputPaused, let inputStream = self.inputStream else { return }
+            self.isInputPaused = true
+            inputStream.remove(from: .main, forMode: .common)
+        }
+        if Thread.isMainThread {
+            pause()
+        } else {
+            DispatchQueue.main.async(execute: pause)
+        }
+    }
+
+    func resumeInputEvents() {
+        let resume = {
+            guard self.isInputPaused, let inputStream = self.inputStream else { return }
+            inputStream.schedule(in: .main, forMode: .common)
+            self.isInputPaused = false
+        }
+        if Thread.isMainThread {
+            resume()
+        } else {
+            DispatchQueue.main.async(execute: resume)
+        }
     }
     
     /// 接收并处理帧（由 StreamDelegate 的 hasBytesAvailable 事件触发）
     /// 这个方法会在主线程的 RunLoop 中被调用
     func receiveAndProcessFrames() {
-        guard isReceiving else { return }
+        guard isReceiving, !isInputPaused else { return }
         
         guard let inputStream = inputStream, 
               [.open, .reading].contains(inputStream.streamStatus) else {
@@ -622,13 +687,19 @@ extension SocketManager {
         self.continuationLock.lock()
         
         // 1. 优先检查一次性等待 (Request-Response)
-        if let id = self.continuationTypeMap[frame.type],
+        let matchedId = self.continuationTypeMap[frame.type]?.first(where: { id in
+            self.continuationMatchers[id]?(frame) ?? true
+        })
+        if let id = matchedId,
            let continuation = self.activeContinuations.removeValue(forKey: id) {
             
             // 清理该 ID 对应的所有类型映射
-            let keysToRemove = self.continuationTypeMap.filter { $0.value == id }.map { $0.key }
-            for key in keysToRemove {
-                self.continuationTypeMap.removeValue(forKey: key)
+            self.continuationMatchers.removeValue(forKey: id)
+            for key in Array(self.continuationTypeMap.keys) {
+                self.continuationTypeMap[key]?.removeAll { $0 == id }
+                if self.continuationTypeMap[key]?.isEmpty == true {
+                    self.continuationTypeMap.removeValue(forKey: key)
+                }
             }
             
             self.continuationLock.unlock()
@@ -1080,7 +1151,19 @@ extension SocketManager {
             do {
                 let pushDto: ChatPushDto = try self.parseDataResponse(frame)
                 let date = Date(timeIntervalSince1970: TimeInterval(pushDto.gmtCreated) / 1000.0)
-                let message = ChatMessage(messageId: pushDto.messageId, content: pushDto.content, isMe: false, timestamp: date, type: pushDto.msgType, sendStatus: .success, avatar: pushDto.avatar)
+                let message = ChatMessage(
+                    messageId: pushDto.messageId,
+                    clientMsgId: pushDto.clientMsgId,
+                    content: pushDto.content,
+                    isMe: false,
+                    timestamp: date,
+                    type: pushDto.msgType,
+                    sendStatus: .success,
+                    quoteMsgId: pushDto.quoteMsgId,
+                    quoteMsgContent: pushDto.quoteMsgContent,
+                    quoteMsgSenderName: pushDto.quoteMsgSenderName,
+                    avatar: pushDto.avatar
+                )
                 let senderId64 = Int64(pushDto.senderId)
                 
                 // 放回主线程同步 UI 状态
@@ -1098,7 +1181,9 @@ extension SocketManager {
                     if !isAppActive || self.activeChatFriendId != senderId64 {
                         // 寻找发件人名称
                         let senderName = self.friendList.first(where: { $0.id == senderId64 })?.alias ?? "好友"
-                        let msgPreview = pushDto.msgType == "FILE" ? "[文件]" : pushDto.content
+                        let msgPreview = pushDto.msgType == "FILE"
+                            ? "[文件]"
+                            : ChatMessagePayload.parse(content: pushDto.content, msgType: pushDto.msgType).displayText
                         NotificationManager.shared.showChatMessageNotification(
                             senderId: senderId64,
                             senderName: senderName,
@@ -1122,16 +1207,14 @@ extension SocketManager {
                 let receiptDto: ChatReceiptDto = try self.parseDataResponse(frame)
                 
                 DispatchQueue.main.async {
-                    // 遍历所有会话的历史记录，找到并更新状态
+                    if let clientMsgId = receiptDto.clientMsgId {
+                        self.cancelChatSendTimeout(clientMsgId: clientMsgId)
+                    }
+
                     for (friendId, history) in self.chatHistory {
-                        if let index = history.firstIndex(where: { $0.messageId == receiptDto.messageId || $0.messageId == nil /* 如果可以匹配到临时ID更好，目前先模糊匹配 */ }) {
-                            var mutableHistory = history
-                            var msg = mutableHistory[index]
-                            msg.sendStatus = (receiptDto.status.uppercased() == "SUCCESS") ? .success : .failed
-                            // 赋值服务端返回的正式 messageId 替换临时 nil
-                            msg.messageId = receiptDto.messageId
-                            mutableHistory[index] = msg
-                            self.chatHistory[friendId] = mutableHistory
+                        let updatedHistory = ChatReceiptMatcher.apply(receipt: receiptDto, to: history)
+                        if updatedHistory != history {
+                            self.chatHistory[friendId] = updatedHistory
                             break
                         }
                     }
@@ -1141,24 +1224,128 @@ extension SocketManager {
             }
             return true // 保留 handler
         }
+
+        self.registerStreamHandler(for: [.chatMessageActionPush]) { [weak self] frame in
+            guard let self = self else { return false }
+
+            do {
+                let pushDto: ChatMessageActionPushDto = try self.parseDataResponse(frame)
+                DispatchQueue.main.async {
+                    self.applyChatMessageAction(
+                        action: pushDto.action,
+                        messageId: pushDto.messageId,
+                        friendId: Int64(pushDto.friendId)
+                    )
+                }
+            } catch {
+                print("❌ 解析聊天动作推送 0x5B 失败: \(error)")
+            }
+            return true
+        }
     }
     
     /// 主动发送聊天消息 (0x50)
-    func sendChatMessage(receiverId: Int64, content: String, msgType: String = "TEXT", avatar: String? = nil) {
-        // 优先使用服务端注入的 myAvatar，其次才用调用方传入的 avatar
+    func appendLocalChatMessage(
+        receiverId: Int64,
+        content: String,
+        msgType: String,
+        avatar: String? = nil,
+        quoteMsgId: Int64? = nil,
+        quoteMsgContent: String? = nil,
+        quoteMsgSenderName: String? = nil,
+        clientMsgId: String,
+        sendStatus: ChatMessage.SendStatus = .sending
+    ) {
         let effectiveAvatar = myAvatar ?? avatar
-        print("📤 [sendChatMessage] myAvatar=\(myAvatar != nil ? "有值(\(myAvatar!.prefix(20))...)" : "nil"), avatar参数=\(avatar != nil ? "有值" : "nil"), 最终effectiveAvatar=\(effectiveAvatar != nil ? "有值" : "nil")")
-        // 1. 本地乐观更新UI气泡
-        let localMessage = ChatMessage(messageId: nil, content: content, isMe: true, timestamp: Date(), type: msgType, sendStatus: .sending, avatar: effectiveAvatar)
+        let localMessage = ChatMessage(
+            messageId: nil,
+            clientMsgId: clientMsgId,
+            content: content,
+            isMe: true,
+            timestamp: Date(),
+            type: msgType,
+            sendStatus: sendStatus,
+            quoteMsgId: quoteMsgId,
+            quoteMsgContent: quoteMsgContent,
+            quoteMsgSenderName: quoteMsgSenderName,
+            avatar: effectiveAvatar
+        )
 
         var history = self.chatHistory[receiverId] ?? []
         history.append(localMessage)
         self.chatHistory[receiverId] = history
+    }
+
+    func updateLocalChatMessage(
+        receiverId: Int64,
+        clientMsgId: String,
+        content: String? = nil,
+        msgType: String? = nil,
+        status: ChatMessage.SendStatus? = nil,
+        errorMessage: String? = nil
+    ) {
+        guard var history = chatHistory[receiverId],
+              let index = history.firstIndex(where: { $0.clientMsgId == clientMsgId }) else {
+            return
+        }
+
+        if let content {
+            history[index].content = content
+        }
+        if let msgType {
+            history[index].type = msgType
+        }
+        if let status {
+            history[index].sendStatus = status
+        }
+        history[index].errorMessage = errorMessage
+        chatHistory[receiverId] = history
+    }
+
+    func sendChatMessage(
+        receiverId: Int64,
+        content: String,
+        msgType: String = "TEXT",
+        avatar: String? = nil,
+        quoteMsgId: Int64? = nil,
+        quoteMsgContent: String? = nil,
+        quoteMsgSenderName: String? = nil,
+        clientMsgId providedClientMsgId: String? = nil,
+        appendLocalMessage: Bool = true
+    ) {
+        // 优先使用服务端注入的 myAvatar，其次才用调用方传入的 avatar
+        let effectiveAvatar = myAvatar ?? avatar
+        let clientMsgId = providedClientMsgId ?? UUID().uuidString
+        print("📤 [sendChatMessage] myAvatar=\(myAvatar != nil ? "有值(\(myAvatar!.prefix(20))...)" : "nil"), avatar参数=\(avatar != nil ? "有值" : "nil"), 最终effectiveAvatar=\(effectiveAvatar != nil ? "有值" : "nil")")
+        // 1. 本地乐观更新UI气泡
+        if appendLocalMessage {
+            appendLocalChatMessage(
+                receiverId: receiverId,
+                content: content,
+                msgType: msgType,
+                avatar: effectiveAvatar,
+                quoteMsgId: quoteMsgId,
+                quoteMsgContent: quoteMsgContent,
+                quoteMsgSenderName: quoteMsgSenderName,
+                clientMsgId: clientMsgId
+            )
+        }
+        scheduleChatSendTimeout(clientMsgId: clientMsgId, receiverId: receiverId)
         
         // 2. 构造 DTO 并发送网络请求
-        let dto = ChatSendRequestDto(receiverId: Int32(receiverId), content: content, msgType: msgType)
+        let dto = ChatSendRequestDto(
+            receiverId: Int32(receiverId),
+            content: content,
+            msgType: msgType,
+            clientMsgId: clientMsgId,
+            quoteMsgId: quoteMsgId,
+            quoteMsgContent: quoteMsgContent,
+            quoteMsgSenderName: quoteMsgSenderName
+        )
         guard let jsonData = try? JSONEncoder().encode(dto) else {
             print("❌ 构造 0x50 消息 JSON 失败")
+            cancelChatSendTimeout(clientMsgId: clientMsgId)
+            markChatMessage(clientMsgId: clientMsgId, receiverId: receiverId, status: .failed, errorMessage: "消息编码失败")
             return
         }
         
@@ -1172,11 +1359,95 @@ extension SocketManager {
                 print("❌ 发送 0x50 失败: \(error)")
                 // 发送失败直接标记
                 await MainActor.run {
-                    if let index = self.chatHistory[receiverId]?.firstIndex(of: localMessage) {
-                        self.chatHistory[receiverId]?[index].sendStatus = .failed
-                    }
+                    self.cancelChatSendTimeout(clientMsgId: clientMsgId)
+                    self.markChatMessage(clientMsgId: clientMsgId, receiverId: receiverId, status: .failed, errorMessage: error.localizedDescription)
                 }
             }
         }
+    }
+
+    func sendChatMessageAction(action: String, messageId: Int32, friendId: Int64) async throws -> ChatMessageActionResponseDto {
+        let dto = ChatMessageActionRequestDto(action: action, messageId: messageId, friendId: Int32(friendId))
+        guard let jsonData = try? JSONEncoder().encode(dto) else {
+            throw SocketError.invalidResponse
+        }
+
+        let frame = Frame(type: .chatMessageActionReq, data: jsonData)
+        let responseFrame = try await sendFrameAndWait(frame, expecting: .chatMessageActionResp, timeout: 8.0)
+        let response: ChatMessageActionResponseDto = try parseDataResponse(responseFrame)
+        return response
+    }
+
+    func applyChatMessageAction(action: String, messageId: Int32, friendId: Int64) {
+        var matchedFriendId: Int64?
+        var matchedIndex: Int?
+
+        if let history = chatHistory[friendId],
+           let index = history.firstIndex(where: { $0.messageId == messageId }) {
+            matchedFriendId = friendId
+            matchedIndex = index
+        } else {
+            for (key, history) in chatHistory {
+                if let index = history.firstIndex(where: { $0.messageId == messageId }) {
+                    matchedFriendId = key
+                    matchedIndex = index
+                    break
+                }
+            }
+        }
+
+        guard let targetFriendId = matchedFriendId,
+              let index = matchedIndex,
+              var history = chatHistory[targetFriendId] else {
+            return
+        }
+
+        switch action {
+        case "delete_local":
+            history.remove(at: index)
+        case "retract":
+            history[index].retracted = true
+            history[index].sendStatus = .retracted
+        default:
+            print("⚠️ 未知聊天消息动作: \(action)")
+            return
+        }
+        chatHistory[targetFriendId] = history
+    }
+
+    private func scheduleChatSendTimeout(clientMsgId: String, receiverId: Int64) {
+        cancelChatSendTimeout(clientMsgId: clientMsgId)
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.markChatMessage(
+                clientMsgId: clientMsgId,
+                receiverId: receiverId,
+                status: .failed,
+                errorMessage: "发送超时"
+            )
+            self?.chatSendTimeoutWorkItems.removeValue(forKey: clientMsgId)
+        }
+        chatSendTimeoutWorkItems[clientMsgId] = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + chatSendReceiptTimeout, execute: workItem)
+    }
+
+    private func cancelChatSendTimeout(clientMsgId: String) {
+        chatSendTimeoutWorkItems[clientMsgId]?.cancel()
+        chatSendTimeoutWorkItems.removeValue(forKey: clientMsgId)
+    }
+
+    private func markChatMessage(
+        clientMsgId: String,
+        receiverId: Int64,
+        status: ChatMessage.SendStatus,
+        errorMessage: String?
+    ) {
+        guard var history = chatHistory[receiverId],
+              let index = history.firstIndex(where: { $0.clientMsgId == clientMsgId }) else {
+            return
+        }
+
+        history[index].sendStatus = status
+        history[index].errorMessage = errorMessage
+        chatHistory[receiverId] = history
     }
 }

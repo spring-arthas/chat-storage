@@ -13,6 +13,7 @@ final class VideoStreamingService {
     private let socketManager: SocketManager
     private let targetHost: String
     private let targetPort: UInt32
+    private let streamTimeoutSeconds: TimeInterval
 
     private let stateLock = NSLock()
     private var continuation: CheckedContinuation<Void, Error>?
@@ -22,9 +23,10 @@ final class VideoStreamingService {
     private var activeStreamHandlerToken: UUID?
     private var requestGeneration: UInt64 = 0
 
-    init(host: String, port: UInt32 = 10088) {
+    init(host: String, port: UInt32 = 10088, streamTimeoutSeconds: TimeInterval = 45.0) {
         self.targetHost = host
         self.targetPort = port
+        self.streamTimeoutSeconds = streamTimeoutSeconds
         self.socketManager = SocketManager()
     }
 
@@ -46,6 +48,12 @@ final class VideoStreamingService {
         let generation = prepareForNewRequest()
         try await connectIfNeeded()
 
+        guard let currentUser = AuthenticationService.shared.currentUser,
+              let transferToken = currentUser.transferToken,
+              !transferToken.isEmpty else {
+            throw FileTransferError.serverError("文件传输凭证无效，请重新登录")
+        }
+
         let taskId = UUID().uuidString
         let requestId = UUID().uuidString
         let windowLength = max(1, length)
@@ -57,6 +65,9 @@ final class VideoStreamingService {
             "requestId": requestId,
             "startOffset": startOffset,
             "length": windowLength,
+            "userId": currentUser.id,
+            "userName": currentUser.username,
+            "transferToken": transferToken,
         ]
 
         guard let requestData = try? JSONSerialization.data(withJSONObject: request) else {
@@ -183,6 +194,7 @@ final class VideoStreamingService {
                     }
                 }
                 self.replaceStreamHandlerToken(token, for: generation)
+                self.startStreamTimeout(for: generation, seconds: self.streamTimeoutSeconds)
                 
                 // 已经注册好 handler 后，再发送请求帧，防止竞态条件导致第一包响应被丢弃
                 do {
@@ -323,6 +335,16 @@ final class VideoStreamingService {
             continuation.resume()
         case .failure(let error):
             continuation.resume(throwing: error)
+        }
+    }
+
+    private func startStreamTimeout(for generation: UInt64, seconds: TimeInterval) {
+        guard seconds > 0 else { return }
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard let self else { return }
+            guard self.isGenerationCurrent(generation) else { return }
+            self.complete(.failure(SocketError.timeout))
         }
     }
 

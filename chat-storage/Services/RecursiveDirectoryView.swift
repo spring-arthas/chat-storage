@@ -11,6 +11,7 @@ struct RecursiveDirectoryView: View {
     var onRename: (DirectoryItem) -> Void
     var onDelete: (DirectoryItem) -> Void
     var onUpload: (DirectoryItem) -> Void
+    var onExpand: (DirectoryItem) -> Void = { _ in }
 
     var body: some View {
         ForEach(nodes) { item in
@@ -22,7 +23,8 @@ struct RecursiveDirectoryView: View {
                 onMove: onMove,
                 onRename: onRename,
                 onDelete: onDelete,
-                onUpload: onUpload
+                onUpload: onUpload,
+                onExpand: onExpand
             )
         }
     }
@@ -38,6 +40,7 @@ struct DirectoryNodeView: View {
     var onRename: (DirectoryItem) -> Void
     var onDelete: (DirectoryItem) -> Void
     var onUpload: (DirectoryItem) -> Void
+    var onExpand: (DirectoryItem) -> Void
 
     @State private var isHovering = false
 
@@ -45,6 +48,9 @@ struct DirectoryNodeView: View {
         Binding(
             get: { expandedIds.contains(item.id) },
             set: { isExp in
+                if isExp {
+                    onExpand(item)
+                }
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                     if isExp { expandedIds.insert(item.id) }
                     else { expandedIds.remove(item.id) }
@@ -55,18 +61,21 @@ struct DirectoryNodeView: View {
 
     var body: some View {
         Group {
-            if let children = item.childFileList, !children.isEmpty {
+            if item.hasChild {
                 DisclosureGroup(isExpanded: isExpanded) {
-                    RecursiveDirectoryView(
-                        nodes: children,
-                        selectedId: $selectedId,
-                        expandedIds: $expandedIds,
-                        onCreate: onCreate,
-                        onMove: onMove,
-                        onRename: onRename,
-                        onDelete: onDelete,
-                        onUpload: onUpload
-                    )
+                    if let children = item.childFileList, !children.isEmpty {
+                        RecursiveDirectoryView(
+                            nodes: children,
+                            selectedId: $selectedId,
+                            expandedIds: $expandedIds,
+                            onCreate: onCreate,
+                            onMove: onMove,
+                            onRename: onRename,
+                            onDelete: onDelete,
+                            onUpload: onUpload,
+                            onExpand: onExpand
+                        )
+                    }
                 } label: {
                     nodeContent(hasChildren: true)
                 }

@@ -101,6 +101,12 @@ enum FrameTypeEnum: UInt8, CaseIterable {
     case chatClearUnreadReq = 0x55
     /// 清除未读消息红点响应
     case chatClearUnreadRes = 0x56
+    /// 聊天消息动作请求：本地删除/撤回等
+    case chatMessageActionReq = 0x59
+    /// 聊天消息动作响应
+    case chatMessageActionResp = 0x5A
+    /// 聊天消息动作推送
+    case chatMessageActionPush = 0x5B
     
     /// 帧类型描述
     var description: String {
@@ -150,6 +156,9 @@ enum FrameTypeEnum: UInt8, CaseIterable {
         case .chatHistoryRes: return "响应聊天历史记录"
         case .chatClearUnreadReq: return "清除未读消息请求"
         case .chatClearUnreadRes: return "清除未读消息响应"
+        case .chatMessageActionReq: return "聊天消息动作请求"
+        case .chatMessageActionResp: return "聊天消息动作响应"
+        case .chatMessageActionPush: return "聊天消息动作推送"
         }
     }
     

@@ -51,6 +51,7 @@ struct LocalVideoThumbnailProfile: Equatable {
 actor FileThumbnailService {
     static let shared = FileThumbnailService()
     private static let fullHDSize = CGSize(width: 1920, height: 1080)
+    private static let fallbackRemoteImageFetchLength: Int64 = 10 * 1024 * 1024
     private static let supportedLocalVideoExtensions: Set<String> = [
         "mp4", "m4v", "mov", "avi", "mkv", "webm", "wmv", "flv", "mpg", "mpeg", "ts", "m2ts", "3gp"
     ]
@@ -58,8 +59,10 @@ actor FileThumbnailService {
     // MARK: - 缓存
 
     private let memCache = NSCache<NSNumber, NSImage>()
+    private let previewMemCache = NSCache<NSNumber, NSImage>()
     private let taskMemCache = NSCache<NSString, NSImage>()
     private let diskCacheDir: URL
+    private let previewDiskCacheDir: URL
     private let ledgerFilePath: URL
 
     // MARK: - 并发控制
@@ -81,13 +84,17 @@ actor FileThumbnailService {
     init(testDiskCacheDir: URL? = nil) {
         if let testDiskCacheDir {
             diskCacheDir = testDiskCacheDir
+            previewDiskCacheDir = testDiskCacheDir.appendingPathComponent("image-previews", isDirectory: true)
         } else {
             let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
             diskCacheDir = caches.appendingPathComponent("chat-storage/thumbnails", isDirectory: true)
+            previewDiskCacheDir = caches.appendingPathComponent("chat-storage/image-previews", isDirectory: true)
         }
         ledgerFilePath = diskCacheDir.appendingPathComponent("thumbnail_reconcile_ledger.json")
         try? FileManager.default.createDirectory(at: diskCacheDir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: previewDiskCacheDir, withIntermediateDirectories: true)
         memCache.countLimit = 200
+        previewMemCache.countLimit = 80
         taskMemCache.countLimit = 300
         remapLedger = Self.loadLedgerFromDisk(at: ledgerFilePath)
 
@@ -102,6 +109,10 @@ actor FileThumbnailService {
 
     private func diskPath(for fileId: Int64) -> URL {
         diskCacheDir.appendingPathComponent("\(fileId).jpg")
+    }
+
+    private func previewDiskPath(for fileId: Int64) -> URL {
+        previewDiskCacheDir.appendingPathComponent("\(fileId).img")
     }
 
     /// 上传任务进行中时，以 taskId 为 key 的临时磁盘路径
@@ -185,10 +196,25 @@ actor FileThumbnailService {
         let key = NSNumber(value: item.id)
 
         // 1. 内存命中
-        if let img = memCache.object(forKey: key) { return img }
+        if let img = memCache.object(forKey: key) {
+            if item.isImageFile && !isUsableImageThumbnail(img) {
+                memCache.removeObject(forKey: key)
+            } else {
+                return img
+            }
+        }
 
         // 2. 磁盘命中
         let path = diskPath(for: item.id)
+        if let img = NSImage(contentsOf: path) {
+            if item.isImageFile && !isUsableImageThumbnail(img) {
+                try? FileManager.default.removeItem(at: path)
+            } else {
+                memCache.setObject(img, forKey: key)
+                return img
+            }
+        }
+
         if let img = NSImage(contentsOf: path) {
             memCache.setObject(img, forKey: key)
             return img
@@ -215,6 +241,68 @@ actor FileThumbnailService {
         return result
     }
 
+    /// 点击聊天图片时加载更清晰的预览图。预览图只在用户主动查看时拉取，避免聊天列表自动下载大图。
+    func previewImage(for item: DirectoryItem, forceReload: Bool = false) async -> NSImage? {
+        if item.isImageFile {
+            return await previewImageFromCacheOrServer(item, forceReload: forceReload)
+        }
+        return await thumbnail(for: item)
+    }
+
+    private func previewImageFromCacheOrServer(_ item: DirectoryItem, forceReload: Bool) async -> NSImage? {
+        if forceReload {
+            deletePreviewCache(fileId: item.id)
+        } else if let cached = cachedPreviewImage(for: item.id) {
+            return cached
+        }
+
+        let maxAttempts = 2
+        for attempt in 1...maxAttempts {
+            if let data = await loadImageDataFromServer(item),
+               let image = NSImage(data: data) {
+                let scaledImage = scaled(image, maxDimension: 2048)
+                previewMemCache.setObject(scaledImage, forKey: NSNumber(value: item.id))
+                savePreviewImageData(data, for: item.id)
+                return scaledImage
+            }
+
+            if attempt < maxAttempts {
+                try? await Task.sleep(nanoseconds: 400_000_000)
+            }
+        }
+
+        return nil
+    }
+
+    private func cachedPreviewImage(for fileId: Int64) -> NSImage? {
+        let key = NSNumber(value: fileId)
+        if let image = previewMemCache.object(forKey: key) {
+            return image
+        }
+
+        let path = previewDiskPath(for: fileId)
+        guard let data = try? Data(contentsOf: path),
+              let image = NSImage(data: data) else {
+            try? FileManager.default.removeItem(at: path)
+            return nil
+        }
+
+        let scaledImage = scaled(image, maxDimension: 2048)
+        previewMemCache.setObject(scaledImage, forKey: key)
+        return scaledImage
+    }
+
+    private func savePreviewImageData(_ data: Data, for fileId: Int64) {
+        guard !data.isEmpty else { return }
+        let path = previewDiskPath(for: fileId)
+        try? data.write(to: path, options: .atomic)
+    }
+
+    private func deletePreviewCache(fileId: Int64) {
+        previewMemCache.removeObject(forKey: NSNumber(value: fileId))
+        try? FileManager.default.removeItem(at: previewDiskPath(for: fileId))
+    }
+
     private func finishLoad(fileId: Int64, img: NSImage?, path: URL, key: NSNumber) {
         activeCount -= 1
         inFlight.removeValue(forKey: fileId)
@@ -222,6 +310,10 @@ actor FileThumbnailService {
         guard let img else { return }
         memCache.setObject(img, forKey: key)
         saveJPEG(img, to: path)
+    }
+
+    private func isUsableImageThumbnail(_ image: NSImage) -> Bool {
+        max(image.size.width, image.size.height) >= 240
     }
 
     // MARK: - 预加载（文件列表刷新后批量触发）
@@ -433,24 +525,32 @@ actor FileThumbnailService {
         return nil
     }
 
-    // MARK: - 图片：拉取前 256KB 字节后解码
+    // MARK: - 图片：按文件大小拉取完整图片后解码
 
-    private func loadImageFromServer(_ item: DirectoryItem) async -> NSImage? {
+    private func loadImageFromServer(_ item: DirectoryItem, maxDimension: CGFloat = 480) async -> NSImage? {
+        guard let data = await loadImageDataFromServer(item),
+              let img = NSImage(data: data) else {
+            return nil
+        }
+        return scaled(img, maxDimension: maxDimension)
+    }
+
+    private func loadImageDataFromServer(_ item: DirectoryItem) async -> Data? {
         let service = VideoStreamingService()
         let collector = ImageDataCollector()
+        let fetchLength = Self.remoteImageFetchLength(fileSize: item.fileSize)
         do {
-            try await service.startCustomVideoStreaming(
+            _ = try await service.startCustomVideoStreaming(
                 fileId: item.id,
                 startOffset: 0,
-                length: 262144,  // 256 KB，足以覆盖大多数图片完整数据
+                length: fetchLength,
                 delegate: collector
             )
         } catch {
             return nil
         }
         let data = collector.collectedData()
-        guard let img = NSImage(data: data) else { return nil }
-        return scaled(img)
+        return data.isEmpty ? nil : data
     }
 
     // MARK: - 视频：AVAssetResourceLoader 按需拉取字节
@@ -840,14 +940,21 @@ actor FileThumbnailService {
         let key = NSNumber(value: fileId)
         memCache.removeObject(forKey: key)
         try? FileManager.default.removeItem(at: diskPath(for: fileId))
+        deletePreviewCache(fileId: fileId)
     }
 
     func clearAllCache() {
         memCache.removeAllObjects()
+        previewMemCache.removeAllObjects()
         taskMemCache.removeAllObjects()
         let files = (try? FileManager.default.contentsOfDirectory(
             at: diskCacheDir, includingPropertiesForKeys: nil)) ?? []
         for file in files where file.pathExtension == "jpg" {
+            try? FileManager.default.removeItem(at: file)
+        }
+        let previewFiles = (try? FileManager.default.contentsOfDirectory(
+            at: previewDiskCacheDir, includingPropertiesForKeys: nil)) ?? []
+        for file in previewFiles {
             try? FileManager.default.removeItem(at: file)
         }
         print("[Thumbnail] 缓存已清空，共删除 \(files.count) 个文件")
@@ -875,6 +982,17 @@ actor FileThumbnailService {
 
     static func debugLocalVideoThumbnailProfile(fileSize: Int64?, fileExtension: String) -> LocalVideoThumbnailProfile {
         localVideoThumbnailProfile(fileSize: fileSize, fileExtension: fileExtension)
+    }
+
+    static func debugRemoteImageFetchLength(fileSize: Int64?) -> Int64 {
+        remoteImageFetchLength(fileSize: fileSize)
+    }
+
+    private static func remoteImageFetchLength(fileSize: Int64?) -> Int64 {
+        guard let fileSize, fileSize > 0 else {
+            return fallbackRemoteImageFetchLength
+        }
+        return fileSize
     }
 
     static func debugIsFullHD(width: CGFloat, height: CGFloat) -> Bool {
@@ -957,7 +1075,11 @@ private func brightnessScore(_ image: CGImage) -> Double {
 
 // MARK: - 缩放辅助（独立函数，可在 actor 外调用）
 
-private func scaled(_ image: NSImage, to size: CGSize = CGSize(width: 40, height: 40)) -> NSImage {
+private func scaled(_ image: NSImage, maxDimension: CGFloat = 480) -> NSImage {
+    let srcWidth = max(1, image.size.width)
+    let srcHeight = max(1, image.size.height)
+    let scale = min(maxDimension / srcWidth, maxDimension / srcHeight, 1)
+    let size = CGSize(width: srcWidth * scale, height: srcHeight * scale)
     let target = NSImage(size: size)
     target.lockFocus()
     image.draw(in: CGRect(origin: .zero, size: size),

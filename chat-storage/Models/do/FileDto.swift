@@ -183,6 +183,12 @@ struct FileDto: Codable {
     var isDeleted: Bool {
         return del?.uppercased() == "Y"
     }
+
+    var isPlayableVideoFile: Bool {
+        guard isFileBoolean else { return false }
+        let ext = (fileName as NSString).pathExtension.lowercased()
+        return ["mp4", "m4v", "mov"].contains(ext)
+    }
     
     /// 转换为 DirectoryItem (用于 UI 显示)
     func toDirectoryItem() -> DirectoryItem {
@@ -193,6 +199,7 @@ struct FileDto: Codable {
             pId: pId,
             fileName: fileName,
             childFileList: children,
+            hasChild: hasChildBoolean,
             fileSize: fileSize,
             isFile: isFileBoolean,
             uploadTime: gmtCreated,
@@ -208,6 +215,7 @@ struct DirectoryItem: Identifiable, CustomDebugStringConvertible, Codable, Hasha
     let pId: Int64
     let fileName: String
     let childFileList: [DirectoryItem]?
+    let hasChild: Bool
     
     // New fields for file metadata
     let fileSize: Int64?
@@ -269,16 +277,23 @@ struct DirectoryItem: Identifiable, CustomDebugStringConvertible, Codable, Hasha
         return ["mp4", "m4v", "mov", "avi", "mkv"].contains(ext)
     }
 
+    var isPlayableVideoFile: Bool {
+        guard isFile else { return false }
+        let ext = (fileName as NSString).pathExtension.lowercased()
+        return ["mp4", "m4v", "mov"].contains(ext)
+    }
+
     var debugDescription: String {
-        return "DirectoryItem(id: \(id), fileName: '\(fileName)', isFile: \(isFile), children: \(childFileList?.count ?? 0))"
+        return "DirectoryItem(id: \(id), fileName: '\(fileName)', isFile: \(isFile), hasChild: \(hasChild), children: \(childFileList?.count ?? 0))"
     }
 
     // Default Init
-    init(id: Int64, pId: Int64, fileName: String, childFileList: [DirectoryItem]?, fileSize: Int64? = nil, isFile: Bool = false, uploadTime: Int64? = nil, directoryName: String? = nil) {
+    init(id: Int64, pId: Int64, fileName: String, childFileList: [DirectoryItem]?, hasChild: Bool? = nil, fileSize: Int64? = nil, isFile: Bool = false, uploadTime: Int64? = nil, directoryName: String? = nil) {
         self.id = id
         self.pId = pId
         self.fileName = fileName
         self.childFileList = childFileList
+        self.hasChild = hasChild ?? !(childFileList?.isEmpty ?? true)
         self.fileSize = fileSize
         self.isFile = isFile
         self.uploadTime = uploadTime

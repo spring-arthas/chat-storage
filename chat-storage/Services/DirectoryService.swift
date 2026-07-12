@@ -57,6 +57,25 @@ class DirectoryService: ObservableObject {
         
         return directoryItems
     }
+
+    /// 按目录 ID 懒加载下一层目录节点。
+    func loadDirectoryChildren(dirId: Int64) async throws -> [DirectoryItem] {
+        print("📂 请求加载子目录: dirId=\(dirId)")
+
+        let request: [String: Any] = ["dirId": dirId]
+        let frame = try FrameBuilder.build(type: .dirListReq, dictionary: request)
+
+        let responseFrame = try await socketManager.sendFrameAndWait(
+            frame,
+            expecting: .dirResponse,
+            timeout: 15.0
+        )
+
+        let items = try parseDirectoryResponse(responseFrame)
+        let children = (items.first?.childFileList ?? items).filter { !$0.isFile }
+        print("✅ 子目录加载完成: dirId=\(dirId), directoryCount=\(children.count)")
+        return children
+    }
     
     /// 创建目录
     /// - Parameters:
@@ -699,6 +718,7 @@ class FileTransferService: ObservableObject {
     private let socketManager: SocketManager
     private let chunkSize: Int = 8 * 1024 // 8KB 分块
     private static let md5ChunkSize = 4 * 1024 * 1024 // 4MB
+    private static let uploadAckWindowBytes: Int64 = 4 * 1024 * 1024
     private static let hashCacheLock = NSLock()
     private static var hashCacheLoaded = false
     private static var hashCache: [String: FileHashCacheEntry] = [:]
@@ -708,6 +728,29 @@ class FileTransferService: ObservableObject {
     
     init(socketManager: SocketManager) {
         self.socketManager = socketManager
+    }
+
+    static func debugShouldRequestUploadAck(nextOffset: Int64, fileSize: Int64, lastAckOffset: Int64) -> Bool {
+        shouldRequestUploadAck(nextOffset: nextOffset, fileSize: fileSize, lastAckOffset: lastAckOffset)
+    }
+
+    static func debugBuildUploadDataPayload(offset: Int64, data: Data) -> Data {
+        buildUploadDataPayload(offset: offset, data: data)
+    }
+
+    private static func shouldRequestUploadAck(nextOffset: Int64, fileSize: Int64, lastAckOffset: Int64) -> Bool {
+        if nextOffset >= fileSize {
+            return true
+        }
+        return nextOffset - lastAckOffset >= uploadAckWindowBytes
+    }
+
+    private static func buildUploadDataPayload(offset: Int64, data: Data) -> Data {
+        var payload = Data()
+        var offsetBigEndian = UInt64(offset).bigEndian
+        payload.append(Data(bytes: &offsetBigEndian, count: MemoryLayout<UInt64>.size))
+        payload.append(data)
+        return payload
     }
     
     // MARK: - Upload Methods
@@ -726,6 +769,7 @@ class FileTransferService: ObservableObject {
         userName: String,
         taskId: String,
         startOffset: Int64 = 0,
+        persistTransferTask: Bool = true,
         progressHandler: ((Double, String) -> Void)? = nil
     ) async throws -> Int64? {
         print("🚀 开始上传文件: \(fileUrl.lastPathComponent) (TaskID: \(taskId))")
@@ -757,32 +801,42 @@ class FileTransferService: ObservableObject {
         let fileSize = try fileUrl.resourceValues(forKeys: [.fileSizeKey]).fileSize.map { Int64($0) } ?? 0
         let fileName = fileUrl.lastPathComponent
         let fileType = fileUrl.pathExtension
+        guard let transferToken = AuthenticationService.shared.currentUser?.transferToken,
+              !transferToken.isEmpty else {
+            throw FileTransferError.serverError("文件传输凭证无效，请重新登录")
+        }
         
         // --- Persistence Integration Start ---
         // 初始化/更新本地数据库任务
-        PersistenceManager.shared.saveTask(
-            taskId: taskId,
-            fileUrl: fileUrl,
-            fileName: fileName,
-            fileSize: fileSize,
-            targetDirId: targetDirId,
-            userId: userId,
-            userName: userName,
-            status: "Waiting",
-            progress: 0.0,
-            uploadedBytes: startOffset, // [修改] 保留已上传字节数，断点续传时不归零
-            md5: nil // MD5 计算后再更新
-        )
+        if persistTransferTask {
+            PersistenceManager.shared.saveTask(
+                taskId: taskId,
+                fileUrl: fileUrl,
+                fileName: fileName,
+                fileSize: fileSize,
+                targetDirId: targetDirId,
+                userId: userId,
+                userName: userName,
+                status: "Waiting",
+                progress: 0.0,
+                uploadedBytes: startOffset, // [修改] 保留已上传字节数，断点续传时不归零
+                md5: nil // MD5 计算后再更新
+            )
+        }
         // --- Persistence Integration End ---
         
         // 2. 计算 MD5
-        PersistenceManager.shared.updateStatus(taskId: taskId, status: "Hashing")
+        if persistTransferTask {
+            PersistenceManager.shared.updateStatus(taskId: taskId, status: "Hashing")
+        }
         print("⏳ 正在计算 MD5...")
         let md5 = try await resolveOrComputeMD5(for: fileUrl, fileSize: fileSize)
         print("✅ MD5 计算完成: \(md5)")
         
         // --- Persistence Update MD5 ---
-        PersistenceManager.shared.saveTask(taskId: taskId, md5: md5)
+        if persistTransferTask {
+            PersistenceManager.shared.saveTask(taskId: taskId, md5: md5)
+        }
         // --- Persistence Update End ---
         
         // 3. 构建元数据请求体
@@ -795,7 +849,8 @@ class FileTransferService: ObservableObject {
             dirId: targetDirId,
             userId: userId,
             userName: userName,
-            taskId: taskId
+            taskId: taskId,
+            transferToken: transferToken
         )
         
         // 4. 发送断点检查帧 (0x05)
@@ -811,7 +866,8 @@ class FileTransferService: ObservableObject {
             "userName": userName,
             "taskId": taskId,
             "md5": md5,
-            "startOffset": startOffset
+            "startOffset": startOffset,
+            "transferToken": transferToken
         ]
         
         // --- DEBUG LOG START ---
@@ -822,26 +878,39 @@ class FileTransferService: ObservableObject {
             let checkFrame = Frame(type: .resumeCheck, data: jsonData, flags: 0x00)
 
             var offset: Int64 = 0
-            // 本地变量用于跟踪最终使用的 TaskID (初始化为传入的 ID)
-            var finalTaskId: String = taskId
             // 标记是否需要走全新上传路径
             var needFreshUpload = false
 
-            let checkResponseFrame = try await socketManager.sendFrameAndWait(checkFrame, expecting: .resumeAck, timeout: 30.0)
+            let checkResponseFrame = try await socketManager.sendFrameAndWait(
+                checkFrame,
+                expecting: .resumeAck,
+                timeout: 30.0,
+                matching: { Self.frame($0, matchesTaskId: taskId) }
+            )
             let resumeInfo = try FrameParser.decodePayload(checkResponseFrame, as: ResumeAckResponse.self)
 
             if resumeInfo.status == "resume" {
                 // === 断点续传 ===
-                let serverTaskId = resumeInfo.taskId ?? ""
-                if !serverTaskId.isEmpty && serverTaskId != taskId {
-                    print("⚠️ 服务端返回了不同的 TaskId: \(serverTaskId) vs \(taskId)。将优先使用服务端的。")
-                    finalTaskId = serverTaskId
+                guard resumeInfo.taskId == taskId else {
+                    throw FileTransferError.serverError("服务端返回的上传任务ID不匹配")
                 }
                 offset = resumeInfo.uploadedSize ?? 0
-                print("🔄 发现断点记录，TaskId: \(finalTaskId), 已上传: \(offset) 字节，继续上传...")
+                guard offset >= 0, offset <= fileSize else {
+                    throw FileTransferError.serverError("服务端返回的上传断点非法: \(offset)")
+                }
+                print("🔄 发现断点记录，TaskId: \(taskId), 已上传: \(offset) 字节，继续上传...")
 
             } else if resumeInfo.status == "new" {
                 needFreshUpload = true
+            } else if resumeInfo.status == "complete" {
+                guard let fileId = resumeInfo.fileId else {
+                    throw FileTransferError.serverError("服务端已完成任务但未返回 fileId")
+                }
+                if persistTransferTask {
+                    PersistenceManager.shared.updateStatus(taskId: taskId, status: "Completed")
+                }
+                progressHandler?(1.0, "完成")
+                return fileId
             } else {
                 throw FileTransferError.serverError(resumeInfo.message ?? "未知状态")
             }
@@ -850,33 +919,48 @@ class FileTransferService: ObservableObject {
                 // === 全新上传 ===
                 print("🆕 无断点记录，开始全新上传...")
                 let metaFrame = try FrameBuilder.build(type: .metaFrame, payload: metaRequest)
-                let metaResponseFrame = try await socketManager.sendFrameAndWait(metaFrame, expecting: .ackFrame, timeout: 30.0)
+                let metaResponseFrame = try await socketManager.sendFrameAndWait(
+                    metaFrame,
+                    expecting: .ackFrame,
+                    timeout: 30.0,
+                    matching: { Self.frame($0, matchesTaskId: taskId) }
+                )
                 let ack = try FrameParser.decodePayload(metaResponseFrame, as: StandardAckResponse.self)
                 guard ack.status == "ready" else {
                     throw FileTransferError.serverError(ack.message ?? "服务端未就绪")
                 }
-                if let newId = ack.taskId, !newId.isEmpty {
-                    finalTaskId = newId
+                guard ack.taskId == taskId else {
+                    throw FileTransferError.serverError("服务端上传任务ID不匹配")
                 }
-                print("✅ 元数据握手成功，获取 TaskId: \(finalTaskId)")
+                offset = ack.uploadedSize ?? 0
+                guard offset >= 0, offset <= fileSize else {
+                    throw FileTransferError.serverError("服务端返回的初始上传位置非法")
+                }
+                print("✅ 元数据握手成功，TaskId: \(taskId), offset: \(offset)")
             }
             
             
             // --- Persistence Update Status ---
             // 关键修复: 使用原始 taskId 更新数据库，确保记录匹配
-            PersistenceManager.shared.updateStatus(taskId: taskId, status: "Uploading")
+            if persistTransferTask {
+                PersistenceManager.shared.updateStatus(taskId: taskId, status: "Uploading")
+            }
             // --- Persistence Update End ---
             
             // 5. 发送文件数据 (0x02)
             if offset < fileSize {
                 // 发送文件数据（从startOffset开始）
-                try await sendFileData(
+                let finalOffset = try await sendFileData(
                     fileUrl: fileUrl,
                     offset: offset,
                     taskId: taskId, // [修改] 用本地 taskId 确保进度存入正确 DB 记录
                     fileSize: fileSize,
+                    persistTransferTask: persistTransferTask,
                     progressHandler: progressHandler
                 )
+                guard finalOffset == fileSize else {
+                    throw FileTransferError.localReadIncomplete(expected: fileSize, actual: finalOffset)
+                }
             } else {
                 print("✅ 文件已完整，跳过数据发送")
                 progressHandler?(1.0, "0 KB/s")
@@ -884,9 +968,14 @@ class FileTransferService: ObservableObject {
             
             // 6. 发送结束帧 (0x03)
             print("🏁 发送结束帧...")
-            let endRequest = EndUploadRequest(taskId: finalTaskId) // 使用 finalTaskId
+            let endRequest = EndUploadRequest(taskId: taskId)
             let endFrame = try FrameBuilder.build(type: .endFrame, payload: endRequest)
-            let endResponseFrame = try await socketManager.sendFrameAndWait(endFrame, expecting: .ackFrame, timeout: 30.0)
+            let endResponseFrame = try await socketManager.sendFrameAndWait(
+                endFrame,
+                expecting: .ackFrame,
+                timeout: 60.0,
+                matching: { Self.frame($0, matchesTaskId: taskId) }
+            )
             let finalAck = try FrameParser.decodePayload(endResponseFrame, as: StandardAckResponse.self)
             if finalAck.status == "success" {
                 print("🎉 文件上传成功!")
@@ -896,7 +985,9 @@ class FileTransferService: ObservableObject {
 
             // --- Persistence Complete ---
             // 任务完成，可以选择删除或标记为完成。 根据需求保留记录。
-            PersistenceManager.shared.updateStatus(taskId: taskId, status: "Completed")
+            if persistTransferTask {
+                PersistenceManager.shared.updateStatus(taskId: taskId, status: "Completed")
+            }
             // PersistenceManager.shared.deleteTask(taskId: taskId) // 暂时保留
             // --- Persistence End ---
 
@@ -913,8 +1004,9 @@ class FileTransferService: ObservableObject {
         offset: Int64,
         taskId: String,
         fileSize: Int64,
+        persistTransferTask: Bool,
         progressHandler: ((Double, String) -> Void)?
-    ) async throws {
+    ) async throws -> Int64 {
         let fileHandle = try FileHandle(forReadingFrom: fileUrl)
         defer { try? fileHandle.close() }
         
@@ -924,13 +1016,16 @@ class FileTransferService: ObservableObject {
         }
         
         var currentOffset = offset
+        var lastAckOffset = offset
         var lastLogTime = Date()
         var lastOffsetForSpeed = offset // 用于计算速率的上一周期 offset
+        var rewindAttempts = 0
+        let maxRewindAttempts = 12
         
         // 循环读取并发送
         // 注意：这里是一个简单的循环，实际生产中可能需要流控，
         // 但根据 Java 代码逻辑，它是直接循环发送的，依赖 TCP 自身的流控。
-        while true {
+        while currentOffset < fileSize {
             // 检查任务是否被取消
             try Task.checkCancellation()
             
@@ -939,34 +1034,59 @@ class FileTransferService: ObservableObject {
                 throw FileTransferError.connectionLost
             }
             
-            // --- 流控逻辑开始 ---
-            // 检查发送缓冲区是否有空间，避免阻塞式写入导致的主线程卡死
-            if let outputStream = socketManager.outputStream {
-                if !outputStream.hasSpaceAvailable {
-                    // 如果缓冲区已满，挂起等待直到可写 (基于事件驱动，不再使用 sleep)
-                    // 同时释放 MainActor，让 UI 和其他事件（如心跳、ACK）能被处理
-                    // await socketManager.waitForWritable()
-                    try? await Task.sleep(nanoseconds: 10_000_000)
-                    
-                    // 唤醒后再次检查，如果还是满的（极少情况），下次循环会再次等待
-                    continue
-                }
-            }
-            // --- 流控逻辑结束 ---
-            
-            let data = fileHandle.readData(ofLength: chunkSize)
+            let remainingBytes = fileSize - currentOffset
+            let readLength = min(chunkSize, Int(remainingBytes))
+            let data = fileHandle.readData(ofLength: readLength)
             if data.isEmpty { break } // 文件读取完毕
+            let nextOffset = currentOffset + Int64(data.count)
+            let dataFrameNeedsAck = Self.shouldRequestUploadAck(
+                nextOffset: nextOffset,
+                fileSize: fileSize,
+                lastAckOffset: lastAckOffset
+            )
             
             // 发送数据帧 (不等待响应)
             // 注意：Data Frame 的 payload 直接是 raw bytes，不是 JSON
-            let dataFrame = Frame(type: .dataFrame, data: data)
-            try await socketManager.sendFrameAsync(dataFrame)
+            let payload = Self.buildUploadDataPayload(offset: currentOffset, data: data)
+            var flags = Frame.FLAG_HAS_OFFSET
+            if dataFrameNeedsAck {
+                flags |= Frame.FLAG_NEED_ACK
+            }
+            let dataFrame = Frame(
+                type: .dataFrame,
+                data: payload,
+                flags: flags
+            )
+            if dataFrameNeedsAck {
+                let confirmedOffset = try await waitForUploadProgressAck(
+                    dataFrame: dataFrame,
+                    taskId: taskId,
+                    expectedOffset: nextOffset
+                )
+                if confirmedOffset < nextOffset {
+                    rewindAttempts += 1
+                    guard rewindAttempts <= maxRewindAttempts else {
+                        throw FileTransferError.serverError("服务端上传进度多次落后，已停止重传: offset=\(confirmedOffset)")
+                    }
+                    print("↩️ 服务端上传进度落后，回退重传: expected=\(nextOffset), confirmed=\(confirmedOffset)")
+                    try fileHandle.seek(toOffset: UInt64(confirmedOffset))
+                    currentOffset = confirmedOffset
+                    lastAckOffset = confirmedOffset
+                    lastOffsetForSpeed = confirmedOffset
+                    await Task.yield()
+                    continue
+                }
+                rewindAttempts = 0
+                lastAckOffset = confirmedOffset
+            } else {
+                try await socketManager.sendFrameAsync(dataFrame)
+            }
             
             // 每次发送后主动交出控制权，确保 RunLoop 能处理 socket 输入事件（如 ACK）和 UI 更新
             // 虽然 waitForWritable 已经提供了挂起机会，但在全速发送时仍需保证 responsiveness
             await Task.yield()
             
-            currentOffset += Int64(data.count)
+            currentOffset = nextOffset
             
             // 更新进度 (每 0.5 秒回调一次，避免 UI 刷新过频)
             let now = Date()
@@ -984,17 +1104,51 @@ class FileTransferService: ObservableObject {
                 progressHandler?(progress, speedStr)
                 
                 // --- Persistence Update Progress ---
-                PersistenceManager.shared.updateProgress(
-                    taskId: taskId,
-                    progress: progress,
-                    uploadedBytes: currentOffset
-                )
+                if persistTransferTask {
+                    PersistenceManager.shared.updateProgress(
+                        taskId: taskId,
+                        progress: progress,
+                        uploadedBytes: currentOffset
+                    )
+                }
                 // --- Persistence End ---
                 
                 lastLogTime = now
                 lastOffsetForSpeed = currentOffset
             }
         }
+
+        guard currentOffset == fileSize else {
+            throw FileTransferError.localReadIncomplete(expected: fileSize, actual: currentOffset)
+        }
+        return currentOffset
+    }
+
+    private func waitForUploadProgressAck(dataFrame: Frame, taskId: String, expectedOffset: Int64) async throws -> Int64 {
+        let ackFrame = try await socketManager.sendFrameAndWait(
+            dataFrame,
+            expecting: .ackFrame,
+            timeout: 30.0,
+            matching: { Self.frame($0, matchesTaskId: taskId) }
+        )
+        let ack = try FrameParser.decodePayload(ackFrame, as: StandardAckResponse.self)
+        guard ack.status == "progress" else {
+            throw FileTransferError.serverError(ack.message ?? "服务端上传进度确认异常")
+        }
+        guard let uploadedSize = ack.uploadedSize else {
+            throw FileTransferError.serverError("服务端未返回上传进度确认")
+        }
+        guard uploadedSize <= expectedOffset else {
+            throw FileTransferError.serverError("服务端上传进度超前: expected=\(expectedOffset), uploaded=\(uploadedSize)")
+        }
+        return uploadedSize
+    }
+
+    private static func frame(_ frame: Frame, matchesTaskId taskId: String) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: frame.data) as? [String: Any] else {
+            return false
+        }
+        return object["taskId"] as? String == taskId
     }
     
     // 格式化速率字符串 helper
@@ -1123,6 +1277,10 @@ class FileTransferService: ObservableObject {
     @available(*, unavailable, message: "Use VideoStreamingService for isolated video streaming sockets.")
     nonisolated public func startVideoStreaming(fileId: Int64, delegate: VideoStreamLoaderDelegate) async throws {
         print("🎥 [Stream] 请求视频流: \(fileId)")
+        guard let currentUser = AuthenticationService.shared.currentUser,
+              let transferToken = currentUser.transferToken else {
+            throw FileTransferError.serverError("文件传输凭证无效，请重新登录")
+        }
         
         let fileIdInt = Int64(fileId)
         let taskId = UUID().uuidString
@@ -1132,7 +1290,10 @@ class FileTransferService: ObservableObject {
         let request: [String: Any] = [
             "fileId": fileIdInt,
             "taskId": taskId,
-            "startOffset": 0
+            "startOffset": 0,
+            "userId": currentUser.id,
+            "userName": currentUser.username,
+            "transferToken": transferToken
         ]
         
         guard let requestData = try? JSONSerialization.data(withJSONObject: request) else {
@@ -1217,6 +1378,10 @@ class FileTransferService: ObservableObject {
     @available(*, unavailable, message: "Use VideoStreamingService for isolated range streaming sockets.")
     nonisolated public func startCustomVideoStreaming(fileId: Int64, startOffset: Int64, delegate: VideoStreamLoaderDelegate) async throws {
         print("🎥 [Stream] 请求视频流: fileId=\(fileId) range-start=\(startOffset)")
+        guard let currentUser = AuthenticationService.shared.currentUser,
+              let transferToken = currentUser.transferToken else {
+            throw FileTransferError.serverError("文件传输凭证无效，请重新登录")
+        }
         
         let fileIdInt = Int64(fileId)
         let taskId = UUID().uuidString
@@ -1225,7 +1390,10 @@ class FileTransferService: ObservableObject {
         let request: [String: Any] = [
             "fileId": fileIdInt,
             "taskId": taskId,
-            "startOffset": startOffset
+            "startOffset": startOffset,
+            "userId": currentUser.id,
+            "userName": currentUser.username,
+            "transferToken": transferToken
         ]
         
         guard let requestData = try? JSONSerialization.data(withJSONObject: request) else {
@@ -1315,6 +1483,7 @@ struct FileMetaRequest: Codable {
     let userId: Int32
     let userName: String
     let taskId: String // 新增: 客户端传递的任务ID
+    let transferToken: String
 }
 
 struct EndUploadRequest: Codable {
@@ -1326,6 +1495,7 @@ struct ResumeAckResponse: Codable {
     let taskId: String?
     let uploadedSize: Int64?
     let message: String?
+    let fileId: Int64?
 }
 
 struct StandardAckResponse: Codable {
@@ -1333,6 +1503,7 @@ struct StandardAckResponse: Codable {
     let taskId: String?
     let message: String?
     let fileId: Int64?
+    let uploadedSize: Int64?
 }
 
 // MARK: - Errors
@@ -1342,6 +1513,7 @@ enum FileTransferError: LocalizedError {
     case connectionLost
     case serverError(String)
     case invalidResponse
+    case localReadIncomplete(expected: Int64, actual: Int64)
     
     var errorDescription: String? {
         switch self {
@@ -1349,6 +1521,8 @@ enum FileTransferError: LocalizedError {
         case .connectionLost: return "网络连接已断开"
         case .serverError(let msg): return "服务端错误: \(msg)"
         case .invalidResponse: return "无效的响应数据"
+        case .localReadIncomplete(let expected, let actual):
+            return "本地文件读取不完整: expected=\(expected), actual=\(actual)"
         }
     }
 }
