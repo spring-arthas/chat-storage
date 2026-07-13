@@ -52,8 +52,8 @@ final class chat_storageTests: XCTestCase {
     func testMainWindowLayoutBoundsAreFixed() throws {
         XCTAssertEqual(AppWindowLayout.mainWidth, 1240)
         XCTAssertEqual(AppWindowLayout.mainHeight, 760)
-        XCTAssertEqual(AppWindowLayout.loginWidth, 500)
-        XCTAssertEqual(AppWindowLayout.loginHeight, 550)
+        XCTAssertEqual(AppWindowLayout.loginWidth, 720)
+        XCTAssertEqual(AppWindowLayout.loginHeight, 456)
     }
 
     func testLocalMediaServerTreatsConnectionResetAsClientAbort() throws {

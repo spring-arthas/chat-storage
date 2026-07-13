@@ -11,8 +11,8 @@ import AppKit
 enum AppWindowLayout {
     static let mainWidth: CGFloat = 1240
     static let mainHeight: CGFloat = 760
-    static let loginWidth: CGFloat = 500
-    static let loginHeight: CGFloat = 550
+    static let loginWidth: CGFloat = 720
+    static let loginHeight: CGFloat = 456
 }
 
 @main
