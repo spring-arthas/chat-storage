@@ -11,6 +11,15 @@ import Combine
 /// 传输任务管理器
 /// 负责管理文件上传/下载任务的并发执行、排队和状态更新
 class TransferTaskManager: ObservableObject {
+
+    struct UploadIdentity: Equatable {
+        let userId: Int32
+        let userName: String
+    }
+
+    static func shouldPostFileListRefresh(for taskType: TransferTaskType) -> Bool {
+        taskType == .upload
+    }
     
     // MARK: - Singleton
     
@@ -260,6 +269,16 @@ class TransferTaskManager: ObservableObject {
     }
     
     // MARK: - Private Methods
+
+    static func resolveUploadIdentity(currentUser: UserDO?) throws -> UploadIdentity {
+        guard let currentUser else {
+            throw FileTransferError.serverError("登录状态已失效，请重新登录")
+        }
+        guard let userId = Int32(exactly: currentUser.id) else {
+            throw FileTransferError.serverError("当前用户ID超出文件传输协议范围")
+        }
+        return UploadIdentity(userId: userId, userName: currentUser.username)
+    }
     
     /// 调度下一个任务
     private func scheduleNext() {
@@ -319,6 +338,7 @@ class TransferTaskManager: ObservableObject {
             }
             
             do {
+                var completedUploadFileId: Int64?
                 
                 // 获取当前主连接的 Host
                 let (currentHost, _) = SocketManager.shared.getCurrentServer()
@@ -327,52 +347,25 @@ class TransferTaskManager: ObservableObject {
                 let transferPort: UInt32 = task.taskType == .upload ? 10087 : 10088
                 print("📡 连接到传输端口: \(transferPort) (\(task.taskType == .upload ? "上传" : "下载"))")
                 
-                // 在主 RunLoop 上建立 Stream，但避免使用含阻塞 sleep 的 switchConnection。
-                await MainActor.run {
-                    socketManager.disconnect(notifyUI: false)
-                    socketManager.connect(host: currentHost, port: transferPort)
-                }
-                
-                // 等待连接建立（带超时）
-                var attempts = 0
-                while socketManager.connectionState != .connected {
-                    if attempts > 50 { 
-                        print("❌ 连接超时: \(transferPort), 状态: \(socketManager.connectionState)")
-                        throw FileTransferError.connectionLost 
-                    }
-                    if case .error(let str) = socketManager.connectionState {
-                        print("❌ 连接错误: \(str) on port \(transferPort)")
-                        throw FileTransferError.connectionLost
-                    }
-                    try await Task.sleep(nanoseconds: 100_000_000) // 0.1s
-                    attempts += 1
-                }
-                
-                isSocketConnected = true
-                print("✅ 传输连接已建立: \(transferPort)")
-                
                 // 执行传输逻辑
                 if task.taskType == .upload {
-                    let service = FileTransferService(socketManager: socketManager)
-                    
-                    // 从数据库读取已上传字节数（用于断点续传）
-                    let startOffset = self.getUploadedBytes(taskId: idStr)
-                    print("🔄 从数据库读取上传断点: \(startOffset) bytes")
-                    
-                    let uploadedFileId = try await service.uploadFile(
-                        fileUrl: task.fileUrl,
-                        targetDirId: task.targetDirId,
-                        userId: Int32(task.userId),
-                        userName: task.userName,
-                        taskId: task.id.uuidString,
-                        startOffset: startOffset,
-                        progressHandler: { progress, speed in
-                            self.updateTaskProgress(id: idStr, progress: progress, speed: speed)
-                        }
+                    // 上传连接的首次建立和传输中重连统一由恢复状态机负责。
+                    isSocketConnected = true
+                    let uploadIdentity = try Self.resolveUploadIdentity(
+                        currentUser: AuthenticationService.shared.currentUser
                     )
+                    let uploadedFileId = try await self.uploadWithRecovery(
+                        task: task,
+                        taskId: idStr,
+                        identity: uploadIdentity,
+                        socketManager: socketManager,
+                        host: currentHost,
+                        port: transferPort
+                    )
+                    completedUploadFileId = uploadedFileId
                     // [修改] 上传完成后将 taskId-key 缩略图迁移到 fileId-key，供文件列表直接命中。
                     // 缩略图已在 submit 时生成（不依赖 fileId），此处仅做磁盘文件重命名。
-                    if let newFileId = uploadedFileId {
+                    if let newFileId = uploadedFileId, newFileId > 0 {
                         let taskId = idStr
                         Task {
                             await FileThumbnailService.shared.remapToFileId(taskId: taskId, fileId: newFileId)
@@ -385,6 +378,14 @@ class TransferTaskManager: ObservableObject {
                         print("[Thumbnail] 服务端未返回 fileId，跳过 remap（缩略图保留在 taskId-key）")
                     }
                 } else {
+                    try await Self.connectTransferSocket(
+                        socketManager,
+                        host: currentHost,
+                        port: transferPort
+                    )
+                    isSocketConnected = true
+                    print("✅ 传输连接已建立: \(transferPort)")
+
                     // 下载功能
                     let downloadService = FileDownloadService(socketManager: socketManager)
                     
@@ -403,6 +404,24 @@ class TransferTaskManager: ObservableObject {
                 
                 // 任务完成
                 self.updateTaskStatus(id: idStr, status: "已完成", progress: 1.0)
+                if Self.shouldPostFileListRefresh(for: task.taskType) {
+                    let notificationFileId = completedUploadFileId
+                    let notificationTargetDirId = task.targetDirId
+                    await MainActor.run {
+                        var userInfo: [String: Any] = [
+                            "taskId": idStr,
+                            "targetDirId": notificationTargetDirId
+                        ]
+                        if let fileId = notificationFileId {
+                            userInfo["fileId"] = fileId
+                        }
+                        NotificationCenter.default.post(
+                            name: .uploadTaskDidComplete,
+                            object: nil,
+                            userInfo: userInfo
+                        )
+                    }
+                }
                 
                 } catch {
                 // 区分取消和真正的失败
@@ -423,6 +442,107 @@ class TransferTaskManager: ObservableObject {
         }
         
         state.withCriticalRegion { $0.activeTasks[idStr] = executionTask }
+    }
+
+    private func uploadWithRecovery(
+        task: StorageTransferTask,
+        taskId: String,
+        identity: UploadIdentity,
+        socketManager: SocketManager,
+        host: String,
+        port: UInt32
+    ) async throws -> Int64? {
+        let maxRecoveryAttempts = 3
+        var recoveryAttempt = 0
+
+        while true {
+            do {
+                if socketManager.connectionState != .connected {
+                    try await Self.connectTransferSocket(socketManager, host: host, port: port)
+                    print("✅ 上传连接已建立: \(port)")
+                }
+                let service = FileTransferService(socketManager: socketManager)
+                let startOffset = getUploadedBytes(taskId: taskId)
+                print("🔄 从数据库读取上传断点: \(startOffset) bytes")
+
+                return try await service.uploadFile(
+                    fileUrl: task.fileUrl,
+                    targetDirId: task.targetDirId,
+                    userId: identity.userId,
+                    userName: identity.userName,
+                    taskId: taskId,
+                    startOffset: startOffset,
+                    progressHandler: { progress, speed in
+                        self.updateTaskProgress(id: taskId, progress: progress, speed: speed)
+                    },
+                    statusHandler: { status in
+                        self.updateTaskStatus(id: taskId, status: status)
+                    }
+                )
+            } catch {
+                guard Self.isRecoverableUploadError(error),
+                      recoveryAttempt < maxRecoveryAttempts else {
+                    throw error
+                }
+
+                recoveryAttempt += 1
+                updateTaskStatus(id: taskId, status: "网络恢复中")
+                print("🔄 上传连接异常，准备断点重连: attempt=\(recoveryAttempt)/\(maxRecoveryAttempts), error=\(error)")
+
+                await MainActor.run {
+                    socketManager.disconnect(notifyUI: false)
+                }
+                let delayMilliseconds = 500 * (1 << (recoveryAttempt - 1))
+                try await Task.sleep(nanoseconds: UInt64(delayMilliseconds) * 1_000_000)
+            }
+        }
+    }
+
+    private static func connectTransferSocket(
+        _ socketManager: SocketManager,
+        host: String,
+        port: UInt32
+    ) async throws {
+        await MainActor.run {
+            socketManager.disconnect(notifyUI: false)
+            socketManager.connect(host: host, port: port)
+        }
+
+        var attempts = 0
+        while socketManager.connectionState != .connected {
+            try Task.checkCancellation()
+            if attempts > 50 {
+                print("❌ 连接超时: \(port), 状态: \(socketManager.connectionState)")
+                throw FileTransferError.connectionLost
+            }
+            if case .error(let message) = socketManager.connectionState {
+                print("❌ 连接错误: \(message) on port \(port)")
+                throw FileTransferError.connectionLost
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+            attempts += 1
+        }
+    }
+
+    static func isRecoverableUploadError(_ error: Error) -> Bool {
+        if let transferError = error as? FileTransferError {
+            if case .connectionLost = transferError {
+                return true
+            }
+            if case .invalidFinalFileId = transferError {
+                return true
+            }
+            return false
+        }
+        guard let socketError = error as? SocketError else {
+            return false
+        }
+        switch socketError {
+        case .connectionFailed, .notConnected, .sendFailed, .timeout, .connectionClosed:
+            return true
+        case .invalidResponse, .unknown:
+            return false
+        }
     }
     
     // MARK: - Database Helpers

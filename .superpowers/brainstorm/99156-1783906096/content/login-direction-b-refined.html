@@ -1,0 +1,65 @@
+<style>
+  .stage { display:flex; justify-content:center; padding:14px 0 6px; }
+  .window { width:min(760px,94vw); aspect-ratio:1.64/1; overflow:hidden; border:1px solid #b9bec8; border-radius:12px; background:#f7f8fa; color:#18202b; box-shadow:0 24px 60px rgba(28,36,48,.22); }
+  .titlebar { height:38px; display:flex; align-items:center; padding:0 14px; gap:8px; background:rgba(249,250,252,.94); border-bottom:1px solid #d9dde3; box-sizing:border-box; }
+  .dot { width:10px; height:10px; border-radius:50%; }.red{background:#ff5f57}.yellow{background:#febc2e}.green{background:#28c840}
+  .title { margin:auto; padding-right:46px; font-size:12px; font-weight:600; color:#6c7480; }
+  .body { height:calc(100% - 38px); display:grid; grid-template-columns:40% 60%; }
+  .brand { position:relative; overflow:hidden; padding:34px 31px; box-sizing:border-box; color:#fff; background:#17283a; }
+  .identity { display:flex; align-items:center; gap:11px; font-weight:700; font-size:17px; }
+  .logo { width:38px; height:38px; display:grid; place-items:center; border-radius:9px; background:#2997e6; box-shadow:0 8px 18px rgba(41,151,230,.28); font-size:20px; }
+  .tagline { margin-top:64px; font-weight:680; font-size:25px; line-height:1.38; }
+  .tagline p { margin:13px 0 0; color:#aebdcb; font-size:12px; line-height:1.6; font-weight:400; }
+  .ring { position:absolute; right:-104px; bottom:-120px; width:240px; height:240px; border:1px solid rgba(255,255,255,.09); border-radius:50%; box-shadow:0 0 0 38px rgba(255,255,255,.025),0 0 0 76px rgba(255,255,255,.016); }
+  .server { position:absolute; bottom:24px; left:31px; display:flex; align-items:center; gap:8px; color:#afbdca; font-size:11px; }
+  .server i { width:7px; height:7px; border-radius:50%; background:#39be73; box-shadow:0 0 0 3px rgba(57,190,115,.12); }
+  .form-side { background:#f9fafb; display:flex; align-items:center; justify-content:center; padding:34px 48px; box-sizing:border-box; }
+  .form { width:100%; max-width:310px; }
+  h3 { margin:0 0 7px; font-size:25px; color:#18202b; letter-spacing:0; }
+  .sub { margin:0 0 27px; color:#7c8591; font-size:12px; }
+  .label { display:block; margin:0 0 7px; color:#4e5865; font-size:11px; font-weight:650; text-transform:none; letter-spacing:0; }
+  .field { height:42px; border:1px solid #cdd3db; border-radius:7px; background:#fff; display:flex; align-items:center; padding:0 12px; box-sizing:border-box; color:#9aa2ad; font-size:12px; box-shadow:0 1px 1px rgba(30,41,54,.025); }
+  .field.focus { border-color:#2994df; box-shadow:0 0 0 3px rgba(41,148,223,.11); }
+  .icon { width:23px; color:#778391; }
+  .eye { margin-left:auto; color:#75818e; }
+  .field-gap { height:16px; }
+  .action-gap { height:22px; }
+  .login { width:100%; height:42px; border:0; border-radius:7px; color:#fff; background:#258fdc; font-size:13px; font-weight:700; box-shadow:0 6px 14px rgba(37,143,220,.19); }
+  .links { margin-top:18px; display:flex; justify-content:space-between; font-size:11px; color:#687482; }
+  .links b { color:#258bd5; }
+  .spacing-note { display:flex; justify-content:center; align-items:center; margin-top:14px; gap:8px; color:#65717f; font-size:12px; }
+  .spacing-note i { width:30px; height:1px; background:#aeb6c0; }
+  .pill { padding:5px 8px; border-radius:5px; color:#276b9d; background:#e7f3fc; font-weight:650; }
+</style>
+
+<h2>B 方案精修稿</h2>
+<p class="subtitle">密码框和登录按钮之间使用 22pt 独立间距，避免控件粘连；输入框之间保持 16pt，形成清晰的表单节奏。</p>
+
+<div class="stage">
+  <div class="window">
+    <div class="titlebar"><i class="dot red"></i><i class="dot yellow"></i><i class="dot green"></i><span class="title">毒药网盘</span></div>
+    <div class="body">
+      <section class="brand">
+        <div class="identity"><span class="logo">D</span>毒药网盘</div>
+        <div class="tagline">让聊天与文件，<br>始终触手可及。<p>连接好友、即时消息和你的私人云盘，<br>所有重要内容都在一处。</p></div>
+        <div class="server"><i></i>服务器连接正常</div>
+        <div class="ring"></div>
+      </section>
+      <section class="form-side">
+        <div class="form">
+          <h3>欢迎回来</h3>
+          <p class="sub">请输入账号信息继续使用</p>
+          <span class="label">账号</span>
+          <div class="field focus"><span class="icon">●</span>手机号或用户名</div>
+          <div class="field-gap"></div>
+          <span class="label">密码</span>
+          <div class="field"><span class="icon">◆</span>输入登录密码<span class="eye">◉</span></div>
+          <div class="action-gap"></div>
+          <button class="login">登录</button>
+          <div class="links"><span>服务器设置</span><span>还没有账号？ <b>创建账号</b></span></div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+<div class="spacing-note"><i></i><span class="pill">密码框 → 登录按钮：22pt</span><i></i></div>

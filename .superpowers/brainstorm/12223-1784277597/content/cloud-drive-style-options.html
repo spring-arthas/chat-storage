@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>云盘页面视觉风格方案</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+      background: #f4f7fb;
+      color: #162033;
+    }
+    .page {
+      padding: 28px;
+      max-width: 1680px;
+      margin: 0 auto;
+    }
+    .intro {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 22px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      letter-spacing: 0;
+    }
+    .intro p {
+      margin: 8px 0 0;
+      color: #65738a;
+      font-size: 14px;
+    }
+    .hint {
+      color: #65738a;
+      font-size: 13px;
+      border: 1px solid #d9e2ee;
+      background: rgba(255,255,255,0.72);
+      border-radius: 8px;
+      padding: 10px 12px;
+      white-space: nowrap;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+    }
+    .option {
+      border: 1px solid #d7e0ec;
+      border-radius: 14px;
+      overflow: hidden;
+      background: white;
+      box-shadow: 0 12px 30px rgba(28, 43, 70, 0.08);
+      cursor: pointer;
+      transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+    }
+    .option:hover {
+      transform: translateY(-2px);
+      border-color: #2da8ff;
+      box-shadow: 0 16px 42px rgba(28, 43, 70, 0.14);
+    }
+    .option.selected {
+      border-color: #24a8ff;
+      box-shadow: 0 0 0 3px rgba(36,168,255,0.18), 0 16px 42px rgba(28,43,70,0.16);
+    }
+    .option-head {
+      padding: 16px 18px 14px;
+      border-bottom: 1px solid #e6edf5;
+      background: #fbfdff;
+    }
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 800;
+      color: white;
+      margin-right: 8px;
+      vertical-align: middle;
+    }
+    .tag-a { background: #249bff; }
+    .tag-b { background: #7c8cff; }
+    .tag-c { background: #16a66a; }
+    .option h2 {
+      display: inline;
+      font-size: 17px;
+      margin: 0;
+      vertical-align: middle;
+    }
+    .option-head p {
+      margin: 10px 0 0;
+      font-size: 13px;
+      line-height: 1.55;
+      color: #68778d;
+    }
+    .mock {
+      height: 650px;
+      padding: 14px;
+      background: #edf3f9;
+    }
+    .window {
+      height: 100%;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid rgba(127, 145, 170, 0.28);
+      box-shadow: 0 12px 28px rgba(19, 31, 49, 0.12);
+    }
+    .row { display: flex; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #c8d1dd; }
+    .file-row {
+      display: grid;
+      align-items: center;
+      min-height: 54px;
+      border-bottom: 1px solid rgba(137,151,170,0.16);
+      font-size: 12px;
+    }
+    .thumb {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+      font-size: 10px;
+    }
+    .muted { color: #7c8a9d; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 24px;
+      padding: 0 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .tools { display: flex; align-items: center; gap: 8px; }
+    .icon-btn {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      font-size: 13px;
+    }
+
+    /* A */
+    .a .window { background: #0f1723; color: #dce7f7; }
+    .a .top { height: 54px; padding: 0 16px; align-items: center; justify-content: space-between; border-bottom: 1px solid #1f2b3d; }
+    .a .brand { font-weight: 800; color: #fff; }
+    .a .tab { background: #152235; color: #7ec7ff; }
+    .a .layout { height: calc(100% - 54px); display: grid; grid-template-columns: 162px 1fr 188px; }
+    .a .side { background: #111c2b; border-right: 1px solid #1f2b3d; padding: 14px 10px; }
+    .a .side-title { font-size: 12px; color: #708198; margin: 8px 8px 14px; font-weight: 700; }
+    .a .folder { height: 34px; display:flex; align-items:center; gap:8px; padding: 0 10px; border-radius: 8px; color:#b7c5d8; font-size:12px; margin-bottom:4px; }
+    .a .folder.active { background: #1a8cff; color: white; }
+    .a .main { background: #101923; }
+    .a .toolbar { height: 54px; padding: 0 14px; align-items:center; justify-content:space-between; border-bottom: 1px solid #1f2b3d; }
+    .a .search { width: 150px; height: 30px; border-radius: 8px; background:#172437; color:#69809b; display:flex; align-items:center; padding-left:10px; font-size:12px; }
+    .a .header { height: 34px; display:grid; grid-template-columns: 1fr 74px 64px 80px; padding: 0 14px; align-items:center; color:#6f8199; font-size:11px; font-weight:700; border-bottom:1px solid #1f2b3d; }
+    .a .file-row { grid-template-columns: 40px 1fr 74px 64px 80px; padding: 0 14px; color: #dce7f7; }
+    .a .thumb { background:#193554; color:#66c2ff; }
+    .a .file-row.active { background:#15283d; }
+    .a .detail { background:#111c2b; border-left:1px solid #1f2b3d; padding:16px; }
+    .a .preview { height:128px; border-radius:10px; background:linear-gradient(135deg,#142742,#0a1018); display:grid; place-items:center; color:#57bfff; font-weight:800; margin: 16px 0; }
+    .a .queue { height: 92px; border-top:1px solid #1f2b3d; padding:12px 14px; background:#0e1620; }
+
+    /* B */
+    .b .mock { background: linear-gradient(135deg, #eaf0fa, #f8fbff); }
+    .b .window { background: rgba(255,255,255,0.58); backdrop-filter: blur(24px); color:#1d2a3d; }
+    .b .top { height: 54px; padding: 0 16px; align-items:center; justify-content:space-between; background:rgba(255,255,255,0.46); border-bottom:1px solid rgba(150,165,188,0.24); }
+    .b .seg { display:flex; gap:4px; background:rgba(219,228,240,0.8); padding:3px; border-radius:9px; font-size:12px; }
+    .b .seg span:first-child { background:white; border-radius:7px; padding:4px 10px; box-shadow:0 1px 5px rgba(0,0,0,0.08); }
+    .b .layout { height: calc(100% - 54px); display:grid; grid-template-columns: 170px 1fr 190px; }
+    .b .side { background: rgba(240,245,251,0.7); border-right:1px solid rgba(150,165,188,0.24); padding:14px 10px; }
+    .b .folder { height:32px; display:flex; align-items:center; gap:8px; padding:0 10px; border-radius:8px; color:#526176; font-size:12px; margin-bottom:4px; }
+    .b .folder.active { background:rgba(255,255,255,0.92); box-shadow:0 2px 10px rgba(49,71,103,0.09); color:#1f78d1; }
+    .b .toolbar { height:54px; padding:0 14px; align-items:center; justify-content:space-between; background:rgba(255,255,255,0.5); border-bottom:1px solid rgba(150,165,188,0.24); }
+    .b .search { width:154px; height:30px; border-radius:8px; background:rgba(230,238,248,0.85); display:flex; align-items:center; padding-left:10px; color:#7a899c; font-size:12px; border:1px solid rgba(150,165,188,0.24); }
+    .b .header { height:34px; display:grid; grid-template-columns: 1fr 72px 62px 76px; padding:0 14px; align-items:center; color:#718093; font-size:11px; font-weight:700; background:rgba(247,250,253,0.62); }
+    .b .file-row { grid-template-columns: 40px 1fr 72px 62px 76px; padding:0 14px; background:rgba(255,255,255,0.42); color:#24364e; }
+    .b .thumb { background:#e2f2ff; color:#188ee5; }
+    .b .file-row.active { background:rgba(228,241,255,0.86); }
+    .b .detail { background:rgba(247,250,253,0.68); border-left:1px solid rgba(150,165,188,0.24); padding:16px; }
+    .b .preview { height:128px; border-radius:12px; background:rgba(255,255,255,0.85); box-shadow:inset 0 0 0 1px rgba(150,165,188,0.2); display:grid; place-items:center; color:#9aa8ba; margin:16px 0; }
+    .b .queue { height:92px; border-top:1px solid rgba(150,165,188,0.24); padding:12px 14px; background:rgba(248,251,255,0.62); }
+
+    /* C */
+    .c .window { background:#ffffff; color:#1f2937; }
+    .c .top { height:58px; padding:0 18px; align-items:center; justify-content:space-between; border-bottom:1px solid #e7edf4; }
+    .c .brand { font-weight:800; }
+    .c .upload { background:#1f9d66; color:white; }
+    .c .layout { height: calc(100% - 58px); display:grid; grid-template-columns: 148px 1fr 182px; }
+    .c .side { background:#fafbfc; border-right:1px solid #e7edf4; padding:14px 10px; }
+    .c .folder { height:32px; display:flex; align-items:center; gap:8px; padding:0 10px; border-radius:7px; color:#667085; font-size:12px; margin-bottom:4px; }
+    .c .folder.active { background:#e9f8f0; color:#16834f; }
+    .c .toolbar { height:58px; padding:0 16px; align-items:center; justify-content:space-between; border-bottom:1px solid #e7edf4; }
+    .c .breadcrumb { font-size:13px; color:#344054; font-weight:700; }
+    .c .search { width:144px; height:30px; border-radius:7px; background:#f4f6f8; display:flex; align-items:center; padding-left:10px; color:#98a2b3; font-size:12px; }
+    .c .cards-grid { padding:14px; display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:10px; }
+    .c .file-card { border:1px solid #e7edf4; border-radius:10px; padding:12px; min-height:102px; background:#fff; box-shadow:0 1px 2px rgba(20,32,48,0.04); }
+    .c .file-card.active { border-color:#8eddb8; background:#fbfffd; }
+    .c .thumb { width:38px; height:38px; background:#ecfdf3; color:#16834f; margin-bottom:10px; }
+    .c .detail { background:#fafbfc; border-left:1px solid #e7edf4; padding:16px; }
+    .c .preview { height:128px; border-radius:10px; background:#fff; border:1px dashed #d0d8e2; display:grid; place-items:center; color:#98a2b3; margin:16px 0; }
+    .c .queue { height:92px; border-top:1px solid #e7edf4; padding:12px 16px; background:#fbfcfd; }
+    .notes {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+      margin-top: 16px;
+    }
+    .note {
+      background: rgba(255,255,255,0.78);
+      border: 1px solid #d7e0ec;
+      border-radius: 12px;
+      padding: 14px 16px;
+      font-size: 13px;
+      line-height: 1.55;
+      color: #5c6b80;
+    }
+    .note strong { color: #172033; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="intro">
+      <div>
+        <h1>云盘页面 UI 风格方向对比</h1>
+        <p>使用你当前页面的数据结构做静态 mockup：目录树、文件列表、文件详情、传输列表都保留。</p>
+      </div>
+      <div class="hint">点击任一方案卡片可标记偏好，然后回到对话告诉我选择和修改意见。</div>
+    </div>
+
+    <div class="grid">
+      <section class="option" data-choice="A" onclick="toggleSelect(this)">
+        <div class="option-head">
+          <span class="tag tag-a">A</span><h2>Telegram / Linear 效率风</h2>
+          <p>深色侧栏 + 高密度表格 + 清晰操作状态。适合聊天和云盘统一成一个专业工具。</p>
+        </div>
+        <div class="mock a">
+          <div class="window">
+            <div class="top row">
+              <div class="row" style="gap:8px;align-items:center"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="brand">毒药网盘</span></div>
+              <span class="pill tab">云盘</span>
+              <div class="tools"><span class="muted">localhost:10086</span><span style="color:#22c55e">●</span><span>⚙</span></div>
+            </div>
+            <div class="layout">
+              <aside class="side">
+                <div class="side-title">目录导航</div>
+                <div class="folder">▾ 📁 188...4525</div>
+                <div class="folder">▾ 📁 果果</div>
+                <div class="folder active">📁 日常</div>
+                <div class="folder">▾ 📁 电影</div>
+                <div class="folder">📁 欧美</div>
+                <div class="folder">📁 技术</div>
+                <div class="folder">📁 工作</div>
+              </aside>
+              <main class="main">
+                <div class="toolbar row">
+                  <div class="tools"><span class="icon-btn" style="background:#172437">🗑</span><span class="icon-btn" style="background:#172437">⬇</span><span class="icon-btn" style="background:#1a8cff;color:white">⬆</span></div>
+                  <div class="tools"><span class="search">搜索文件名称</span><span class="icon-btn" style="background:#172437">☷</span></div>
+                </div>
+                <div class="header"><span>文件名称</span><span>大小</span><span>目录</span><span>操作</span></div>
+                <div class="file-row"><div class="thumb">PPT</div><strong>3.1圆（1）原始.pptx</strong><span>1.1 MB</span><span>日常</span><span>⋯</span></div>
+                <div class="file-row active"><div class="thumb">PPT</div><strong>3.1圆（1）保留错误.pptx</strong><span>889 KB</span><span>日常</span><span>⋯</span></div>
+                <div class="file-row"><div class="thumb" style="background:#0a0f17;color:#9dd3ff">MP4</div><strong>Terminator.2.J...RARBG.mp4</strong><span>2.9 GB</span><span>欧美</span><span>▶ ⬇</span></div>
+                <div class="queue"><strong>传输队列</strong><p class="muted">当前无传输任务。任务状态用进度条和小型状态标签展示。</p></div>
+              </main>
+              <aside class="detail">
+                <strong>文件详情</strong>
+                <div class="preview">PREVIEW</div>
+                <p class="muted">选中文件后展示预览、大小、位置、上传时间和快捷操作。</p>
+              </aside>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="option" data-choice="B" onclick="toggleSelect(this)">
+        <div class="option-head">
+          <span class="tag tag-b">B</span><h2>macOS Liquid Glass 原生高级感</h2>
+          <p>半透明材质、Finder 式侧栏、Quick Look 式详情。强调 macOS 最新系统质感。</p>
+        </div>
+        <div class="mock b">
+          <div class="window">
+            <div class="top row">
+              <div class="row" style="gap:8px;align-items:center"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+              <div class="seg"><span>云盘</span><span style="padding:4px 10px;color:#78889d">会话</span></div>
+              <div class="tools"><span class="muted">0 KB/s</span><span>⚙</span></div>
+            </div>
+            <div class="layout">
+              <aside class="side">
+                <div class="folder">▾ 📁 188...4525</div>
+                <div class="folder">▾ 📁 果果</div>
+                <div class="folder active">📁 日常</div>
+                <div class="folder">▾ 📁 电影</div>
+                <div class="folder">📁 欧美</div>
+                <div class="folder">📁 技术</div>
+                <div class="folder">📁 工作</div>
+              </aside>
+              <main>
+                <div class="toolbar row">
+                  <div class="tools"><span class="pill" style="background:white;color:#55708f">批量删除</span><span class="pill" style="background:white;color:#55708f">批量下载</span></div>
+                  <div class="search">搜索文件名称</div>
+                </div>
+                <div class="header"><span>文件名称</span><span>大小</span><span>目录</span><span>操作</span></div>
+                <div class="file-row"><div class="thumb">PPT</div><strong>3.1圆（1）原始.pptx</strong><span>1.1 MB</span><span>日常</span><span>⌄</span></div>
+                <div class="file-row"><div class="thumb">PPT</div><strong>3.1圆（1）保留错误.pptx</strong><span>889 KB</span><span>日常</span><span>⌄</span></div>
+                <div class="file-row active"><div class="thumb" style="background:#171b24;color:#fff">MP4</div><strong>Terminator.2.J...RARBG.mp4</strong><span>2.9 GB</span><span>欧美</span><span>▶ ⬇</span></div>
+                <div class="queue"><strong>传输列表</strong><p class="muted">玻璃质感任务栏，适合弱化工具痕迹。</p></div>
+              </main>
+              <aside class="detail">
+                <strong>文件详情</strong>
+                <div class="preview">Quick Look</div>
+                <p class="muted">更像系统自带文件预览，视觉更轻。</p>
+              </aside>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="option" data-choice="C" onclick="toggleSelect(this)">
+        <div class="option-head">
+          <span class="tag tag-c">C</span><h2>Dropbox / Notion 工作区风</h2>
+          <p>路径优先、上传入口突出、文件可列表/网格切换。更像现代云盘协作空间。</p>
+        </div>
+        <div class="mock c">
+          <div class="window">
+            <div class="top row">
+              <div class="brand">毒药网盘</div>
+              <div class="tools"><span class="pill upload">上传</span><span class="pill" style="background:#f1f5f9;color:#667085">新建目录</span><span>⚙</span></div>
+            </div>
+            <div class="layout">
+              <aside class="side">
+                <div class="folder">📁 188...4525</div>
+                <div class="folder">📁 果果</div>
+                <div class="folder active">📁 日常</div>
+                <div class="folder">📁 电影</div>
+                <div class="folder">📁 欧美</div>
+                <div class="folder">📁 技术</div>
+                <div class="folder">📁 工作</div>
+              </aside>
+              <main>
+                <div class="toolbar row">
+                  <div class="breadcrumb">188...4525 / 果果 / 日常</div>
+                  <div class="search">搜索</div>
+                </div>
+                <div class="cards-grid">
+                  <div class="file-card"><div class="thumb">PPT</div><strong>3.1圆（1）原始.pptx</strong><p class="muted">1.1 MB · 日常</p></div>
+                  <div class="file-card"><div class="thumb">PPT</div><strong>3.1圆（1）保留错误.pptx</strong><p class="muted">889 KB · 日常</p></div>
+                  <div class="file-card active"><div class="thumb" style="background:#111827;color:#fff">MP4</div><strong>Terminator.2.J...</strong><p class="muted">2.9 GB · 欧美</p></div>
+                  <div class="file-card"><div class="thumb">IMG</div><strong>2025 转入.jpg</strong><p class="muted">3.0 MB · 日常</p></div>
+                </div>
+                <div class="queue"><strong>传输中心</strong><p class="muted">更适合卡片式任务和大文件上传状态展示。</p></div>
+              </main>
+              <aside class="detail">
+                <strong>文件详情</strong>
+                <div class="preview">INFO</div>
+                <p class="muted">详情更像信息面板，适合弱化表格。</p>
+              </aside>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="notes">
+      <div class="note"><strong>A 推荐理由：</strong>和聊天模块最容易统一，信息密度高，适合长期使用。适合把当前页面从“原生控件感”改成专业工具。</div>
+      <div class="note"><strong>B 推荐理由：</strong>最像新版 macOS，窗口质感最好。需要控制透明度，否则文件列表可读性会受影响。</div>
+      <div class="note"><strong>C 推荐理由：</strong>云盘产品感最强，上传入口和路径导航清楚。缺点是和聊天页风格关联较弱。</div>
+    </div>
+  </div>
+</body>
+</html>

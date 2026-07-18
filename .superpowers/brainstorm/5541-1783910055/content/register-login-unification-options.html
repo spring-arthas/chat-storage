@@ -1,0 +1,98 @@
+<style>
+  .design-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; margin-top:20px; }
+  .design-card { border:1px solid #d8e0e8; border-radius:8px; overflow:hidden; background:#fff; cursor:pointer; transition:transform .15s ease,border-color .15s ease,box-shadow .15s ease; }
+  .design-card:hover { transform:translateY(-2px); border-color:#2aabee; box-shadow:0 10px 28px rgba(19,35,56,.10); }
+  .design-card.selected { border:2px solid #2aabee; }
+  .window { height:290px; display:grid; grid-template-columns:40% 60%; background:#f7f9fb; color:#132338; }
+  .brand { background:#17283a; color:#fff; padding:18px; display:flex; flex-direction:column; position:relative; overflow:hidden; }
+  .brand::after { content:""; position:absolute; width:130px; height:130px; border:20px solid rgba(255,255,255,.045); border-radius:50%; right:-58px; bottom:-52px; }
+  .logo { display:flex; align-items:center; gap:8px; font-size:11px; font-weight:700; }
+  .logo-mark { width:25px; height:25px; border-radius:6px; display:grid; place-items:center; background:#2aabee; font-size:12px; }
+  .brand-copy { margin:auto 0; position:relative; z-index:1; }
+  .brand-copy strong { display:block; font-size:17px; line-height:1.38; margin-bottom:8px; }
+  .brand-copy span { display:block; font-size:8px; line-height:1.55; color:rgba(255,255,255,.66); }
+  .status { font-size:7px; color:rgba(255,255,255,.68); position:relative; z-index:1; }
+  .status::before { content:""; display:inline-block; width:5px; height:5px; margin-right:6px; border-radius:50%; background:#4bcb8a; }
+  .form { padding:21px 23px; display:flex; flex-direction:column; min-width:0; }
+  .form-head { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
+  .form h4 { margin:0; font-size:17px; }
+  .form p { margin:4px 0 11px; font-size:8px; color:#6b7c8f; }
+  .avatar { width:34px; height:34px; flex:0 0 34px; border-radius:50%; border:1px dashed #8aa0b7; display:grid; place-items:center; color:#2aabee; font-size:13px; background:#eef6fb; }
+  .field-row { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .field { margin-bottom:7px; }
+  .field label { display:block; font-size:7px; font-weight:700; color:#6b7c8f; margin-bottom:4px; }
+  .input { height:25px; border:1px solid #ced8e2; border-radius:5px; background:#fff; color:#91a0af; display:flex; align-items:center; padding:0 8px; font-size:7px; }
+  .primary { height:29px; margin-top:auto; border-radius:5px; background:#2aabee; color:#fff; display:grid; place-items:center; font-size:8px; font-weight:700; }
+  .footer { margin-top:7px; display:flex; justify-content:flex-end; font-size:7px; color:#2aabee; }
+  .profile-zone { display:flex; flex-direction:column; gap:9px; margin:auto 0; position:relative; z-index:1; }
+  .large-avatar { width:52px; height:52px; border-radius:50%; background:#253f56; border:1px dashed rgba(255,255,255,.42); display:grid; place-items:center; color:#87ccef; font-size:18px; }
+  .step { font-size:7px; color:#2aabee; font-weight:700; margin-bottom:7px; }
+  .steps { display:flex; gap:5px; margin-bottom:10px; }
+  .steps i { height:3px; flex:1; border-radius:2px; background:#dbe3eb; }
+  .steps i:first-child { background:#2aabee; }
+  .card-copy { padding:13px 15px 15px; }
+  .card-copy h3 { margin:0 0 5px; font-size:14px; }
+  .card-copy p { margin:0; font-size:11px; line-height:1.5; color:#64758a; }
+  .recommended { display:inline-block; margin-top:9px; padding:3px 7px; border-radius:4px; color:#0878a9; background:#e7f5fb; font-size:9px; font-weight:700; }
+  @media (max-width:1000px){ .design-grid{grid-template-columns:1fr;} .window{height:330px;} }
+</style>
+
+<h2>注册页如何与登录页统一？</h2>
+<p class="subtitle">三种方案都保留当前注册字段与头像上传，只调整视觉结构。点击一个方案即可选择。</p>
+
+<div class="design-grid">
+  <div class="design-card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="window">
+      <div class="brand">
+        <div class="logo"><span class="logo-mark">D</span>毒药网盘</div>
+        <div class="brand-copy"><strong>让聊天与文件，<br>始终触手可及。</strong><span>连接好友、即时消息和你的私人云盘，<br>所有重要内容都在一处。</span></div>
+        <div class="status">服务器连接正常</div>
+      </div>
+      <div class="form">
+        <div class="form-head"><div><h4>创建账号</h4><p>填写账号信息开始使用</p></div><div class="avatar">＋</div></div>
+        <div class="field-row"><div class="field"><label>账号</label><div class="input">手机号或用户名</div></div><div class="field"><label>邮箱</label><div class="input">邮箱地址</div></div></div>
+        <div class="field"><label>密码</label><div class="input">至少 6 位字符</div></div>
+        <div class="field"><label>确认密码</label><div class="input">再次输入密码</div></div>
+        <div class="primary">创建账号</div><div class="footer">已有账号？返回登录</div>
+      </div>
+    </div>
+    <div class="card-copy"><h3>A. 完全复用登录外壳</h3><p>左侧品牌区与登录页完全一致；头像作为注册表单右上角的小型上传控件。统一程度最高，切换页面时最稳定。</p><span class="recommended">推荐</span></div>
+  </div>
+
+  <div class="design-card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="window">
+      <div class="brand">
+        <div class="logo"><span class="logo-mark">D</span>毒药网盘</div>
+        <div class="profile-zone"><div class="large-avatar">＋</div><div class="brand-copy"><strong>创建你的<br>专属账号</strong><span>设置头像和账号信息，<br>开始连接好友与私人云盘。</span></div></div>
+        <div class="status">返回登录</div>
+      </div>
+      <div class="form">
+        <div><h4>加入毒药网盘</h4><p>填写以下信息完成注册</p></div>
+        <div class="field"><label>账号</label><div class="input">手机号或用户名</div></div>
+        <div class="field"><label>密码</label><div class="input">至少 6 位字符</div></div>
+        <div class="field"><label>确认密码</label><div class="input">再次输入密码</div></div>
+        <div class="field"><label>邮箱</label><div class="input">邮箱地址</div></div>
+        <div class="primary">创建账号</div>
+      </div>
+    </div>
+    <div class="card-copy"><h3>B. 保留当前头像品牌区</h3><p>延续现有未提交设计，只统一右侧输入框、按钮和间距。注册个性更强，但登录与注册切换时左侧内容会明显变化。</p></div>
+  </div>
+
+  <div class="design-card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="window">
+      <div class="brand">
+        <div class="logo"><span class="logo-mark">D</span>毒药网盘</div>
+        <div class="brand-copy"><strong>让聊天与文件，<br>始终触手可及。</strong><span>注册流程保持轻量，<br>两步完成账号创建。</span></div>
+        <div class="status">服务器连接正常</div>
+      </div>
+      <div class="form">
+        <div class="step">步骤 1 / 2</div><div class="steps"><i></i><i></i></div>
+        <div class="form-head"><div><h4>创建账号</h4><p>先设置基础账号信息</p></div><div class="avatar">＋</div></div>
+        <div class="field"><label>账号</label><div class="input">手机号或用户名</div></div>
+        <div class="field"><label>邮箱</label><div class="input">邮箱地址</div></div>
+        <div class="primary">下一步</div><div class="footer">已有账号？返回登录</div>
+      </div>
+    </div>
+    <div class="card-copy"><h3>C. 两步注册流程</h3><p>完全沿用登录外壳，并把四个字段拆成两步。页面更舒展，但增加了步骤状态和交互复杂度。</p></div>
+  </div>
+</div>

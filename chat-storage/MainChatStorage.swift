@@ -12,6 +12,250 @@ import Foundation
 import AppKit
 import UniformTypeIdentifiers
 
+enum AppAppearanceMode: String, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: return "跟随系统"
+        case .light: return "浅色"
+        case .dark: return "深色"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .system: return "circle.lefthalf.filled"
+        case .light: return "sun.max.fill"
+        case .dark: return "moon.fill"
+        }
+    }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+
+    static var migratedDefaultRawValue: String {
+        if UserDefaults.standard.object(forKey: "appearanceMode") != nil {
+            return UserDefaults.standard.string(forKey: "appearanceMode") ?? system.rawValue
+        }
+        return UserDefaults.standard.object(forKey: "isDarkMode") == nil
+            ? system.rawValue
+            : (UserDefaults.standard.bool(forKey: "isDarkMode") ? dark.rawValue : light.rawValue)
+    }
+}
+
+struct AppSettingsView: View {
+    @EnvironmentObject private var socketManager: SocketManager
+    @StateObject private var downloadDirectoryManager = DownloadDirectoryManager.shared
+    @AppStorage("appearanceMode") private var appearanceModeRaw = AppAppearanceMode.migratedDefaultRawValue
+    @State private var selectedCategory: AppSettingsCategory? = .appearance
+    @State private var showingServerConfig = false
+
+    private var appearanceMode: Binding<AppAppearanceMode> {
+        Binding(
+            get: { AppAppearanceMode(rawValue: appearanceModeRaw) ?? .system },
+            set: { appearanceModeRaw = $0.rawValue }
+        )
+    }
+
+    var body: some View {
+        NavigationSplitView {
+            List(AppSettingsCategory.allCases, selection: $selectedCategory) { category in
+                Label(category.title, systemImage: category.icon)
+                    .tag(category)
+            }
+            .navigationTitle("应用设置")
+            .frame(minWidth: 180)
+        } detail: {
+            Group {
+                switch selectedCategory ?? .appearance {
+                case .appearance:
+                    appearanceSettings
+                case .transfer:
+                    transferSettings
+                case .connection:
+                    connectionSettings
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(30)
+        }
+        .frame(width: 720, height: 480)
+        .preferredColorScheme(appearanceMode.wrappedValue.colorScheme)
+        .sheet(isPresented: $showingServerConfig) {
+            ConfigServerView()
+                .environmentObject(socketManager)
+        }
+    }
+
+    private var appearanceSettings: some View {
+        settingsPage(title: "外观", subtitle: "选择应用界面的显示方式") {
+            Picker("主题模式", selection: appearanceMode) {
+                ForEach(AppAppearanceMode.allCases) { mode in
+                    Label(mode.title, systemImage: mode.icon).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 420)
+
+            settingsStatusRow(
+                icon: appearanceMode.wrappedValue.icon,
+                title: "当前模式",
+                detail: appearanceMode.wrappedValue.title
+            )
+            .padding(.top, 22)
+        }
+    }
+
+    private var transferSettings: some View {
+        settingsPage(title: "文件传输", subtitle: "管理文件下载后的默认保存位置") {
+            Text("默认下载位置")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 12) {
+                Image(systemName: "folder")
+                    .foregroundColor(TelegramTheme.warning)
+
+                Text(downloadDirectoryManager.currentDownloadPath)
+                    .font(.system(size: 12))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(downloadDirectoryManager.currentDownloadPath)
+
+                Spacer()
+
+                Button("选择") {
+                    downloadDirectoryManager.selectDirectory()
+                }
+            }
+            .padding(14)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .overlay(Rectangle().stroke(Color(nsColor: .separatorColor).opacity(0.7), lineWidth: 1))
+
+            HStack(spacing: 16) {
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([downloadDirectoryManager.getDownloadDirectory()])
+                } label: {
+                    Label("在 Finder 中显示", systemImage: "finder")
+                }
+
+                Button {
+                    downloadDirectoryManager.resetToDefaultDirectory()
+                } label: {
+                    Label("恢复默认位置", systemImage: "arrow.counterclockwise")
+                }
+            }
+            .buttonStyle(.link)
+            .padding(.top, 12)
+        }
+    }
+
+    private var connectionSettings: some View {
+        settingsPage(title: "网络连接", subtitle: "查看连接状态或切换 net-server 地址") {
+            let server = socketManager.getCurrentServer()
+
+            settingsStatusRow(
+                icon: "server.rack",
+                title: "当前服务器",
+                detail: "\(server.0):\(server.1)"
+            )
+
+            settingsStatusRow(
+                icon: socketManager.connectionState == .connected ? "checkmark.circle.fill" : "exclamationmark.circle.fill",
+                title: "连接状态",
+                detail: socketManager.connectionState.description
+            )
+            .padding(.top, 12)
+
+            Button {
+                showingServerConfig = true
+            } label: {
+                Label("配置服务器", systemImage: "slider.horizontal.3")
+            }
+            .buttonStyle(.borderedProminent)
+            .padding(.top, 22)
+        }
+    }
+
+    private func settingsPage<Content: View>(
+        title: String,
+        subtitle: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title)
+                .font(.system(size: 24, weight: .bold))
+
+            Text(subtitle)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .padding(.top, 5)
+
+            Divider()
+                .padding(.vertical, 22)
+
+            content()
+        }
+        .frame(maxWidth: 460, alignment: .leading)
+    }
+
+    private func settingsStatusRow(icon: String, title: String, detail: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundColor(TelegramTheme.accent)
+                .frame(width: 24)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Text(detail)
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+            }
+
+            Spacer()
+        }
+        .padding(.vertical, 10)
+    }
+}
+
+enum AppSettingsCategory: String, CaseIterable, Identifiable {
+    case appearance
+    case transfer
+    case connection
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .appearance: return "外观"
+        case .transfer: return "文件传输"
+        case .connection: return "网络连接"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .appearance: return "paintbrush"
+        case .transfer: return "arrow.up.arrow.down"
+        case .connection: return "network"
+        }
+    }
+}
+
 enum TelegramTheme {
     static let appBackgroundHex = "#17212B"
     static let panelBackgroundHex = "#1F2936"
@@ -100,6 +344,96 @@ private struct TelegramToolbarButtonStyle: ButtonStyle {
     }
 }
 
+private struct CloudPrimaryButtonStyle: ButtonStyle {
+    let tint: Color
+    var filled: Bool = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 13, weight: .semibold))
+            .imageScale(.small)
+            .lineLimit(1)
+            .padding(.horizontal, 14)
+            .frame(height: 36)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(filled ? tint.opacity(configuration.isPressed ? 0.82 : 1) : TelegramTheme.panelBackground)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(filled ? Color.clear : TelegramTheme.textSecondary.opacity(0.18), lineWidth: 1)
+            )
+            .foregroundColor(filled ? .white : TelegramTheme.textPrimary)
+            .shadow(color: filled ? tint.opacity(0.18) : .clear, radius: 10, x: 0, y: 5)
+            .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
+    }
+}
+
+private struct CloudIconButtonStyle: ButtonStyle {
+    let tint: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 13, weight: .semibold))
+            .frame(width: 36, height: 36)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(TelegramTheme.panelBackground)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(TelegramTheme.textSecondary.opacity(0.18), lineWidth: 1)
+            )
+            .foregroundColor(tint)
+            .scaleEffect(configuration.isPressed ? 0.96 : 1.0)
+    }
+}
+
+private struct CloudDockButton: View {
+    let icon: String
+    let isSelected: Bool
+    let tint: Color
+    let badge: Int?
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: icon)
+                    .font(.system(size: 22, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .frame(width: 42, height: 42)
+                    .background(
+                        RoundedRectangle(cornerRadius: 13)
+                            .fill(isSelected ? tint.opacity(0.14) : Color.clear)
+                    )
+                    .foregroundColor(isSelected ? tint : TelegramTheme.textSecondary.opacity(0.76))
+
+                if let badge, badge > 0 {
+                    Text("\(min(badge, 99))")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.white)
+                        .frame(minWidth: 18, minHeight: 18)
+                        .background(Circle().fill(TelegramTheme.danger))
+                        .offset(x: 4, y: -4)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private enum TransferDisplayFilter: String, CaseIterable, Identifiable {
+    case all = "全部"
+    case upload = "上传"
+    case download = "下载"
+    case active = "进行中"
+    case failed = "失败"
+    case completed = "已完成"
+
+    var id: String { rawValue }
+}
+
 private extension Color {
     init(lightHex: String, darkHex: String) {
         self.init(nsColor: NSColor.dynamicHex(light: lightHex, dark: darkHex))
@@ -130,6 +464,53 @@ private extension NSColor {
     }
 }
 
+struct FileDetailLayoutMetrics {
+    let previewHeight: CGFloat
+    let sectionSpacing: CGFloat
+    let contentPadding: CGFloat
+    let actionButtonHeight: CGFloat
+    let titleFontSize: CGFloat
+
+    init(availableHeight: CGFloat) {
+        let compact = availableHeight < 720
+        previewHeight = compact ? 124 : min(188, availableHeight * 0.24)
+        sectionSpacing = compact ? 10 : 16
+        contentPadding = compact ? 12 : 16
+        actionButtonHeight = 38
+        titleFontSize = compact ? 15 : 17
+    }
+}
+
+private struct FileDetailPresentation {
+    let item: DirectoryItem
+    let fileName: String
+    let size: String
+    let fileType: String
+    let uploadTime: String
+    let directoryName: String
+    let iconName: String
+
+    init(item: DirectoryItem, detail: FileDto?) {
+        let resolvedDetail = detail?.id == item.id ? detail : nil
+        let resolvedItem = resolvedDetail?.toDirectoryItem() ?? item
+        let fileExtension = (resolvedItem.fileName as NSString).pathExtension.uppercased()
+
+        self.item = resolvedItem
+        self.fileName = resolvedDetail?.fileName ?? resolvedItem.fileName
+        self.size = resolvedDetail?.sizeString ?? resolvedItem.sizeString
+        if let detailType = resolvedDetail?.fileType, !detailType.isEmpty {
+            self.fileType = detailType.uppercased()
+        } else {
+            self.fileType = fileExtension.isEmpty ? "-" : fileExtension
+        }
+        self.uploadTime = resolvedDetail?.uploadTime ?? resolvedItem.uploadTimeString
+        self.directoryName = resolvedDetail?.directoryName
+            ?? resolvedItem.directoryName
+            ?? "-"
+        self.iconName = resolvedDetail?.iconName ?? resolvedItem.iconName
+    }
+}
+
 /// 主文件管理界面
 struct MainChatStorage: View {
     
@@ -137,6 +518,7 @@ struct MainChatStorage: View {
     
     @EnvironmentObject var socketManager: SocketManager
     @EnvironmentObject var authService: AuthenticationService
+    @Environment(\.openWindow) private var openWindow
     @StateObject private var transferManager = TransferTaskManager.shared
     @StateObject private var downloadDirectoryManager = DownloadDirectoryManager.shared
     
@@ -157,9 +539,15 @@ struct MainChatStorage: View {
     
     /// 文件列表 (浏览)
     @State private var fileList: [DirectoryItem] = []
+
+    /// 合并短时间内连续上传完成事件的延迟刷新任务
+    @State private var uploadCompletionRefreshTask: Task<Void, Never>?
     
     /// 传输任务列表 (上传/下载)
     @State private var transferList: [TransferItem] = []
+    @State private var isTransferCenterExpanded = false
+    @State private var transferDisplayFilter: TransferDisplayFilter = .all
+    @State private var transferSearchText = ""
     
     /// 选中的文件
     @State private var selectedFiles: Set<Int64> = []
@@ -259,16 +647,22 @@ struct MainChatStorage: View {
     /// 是否开启自动排序
     @State private var isAutoSortEnabled = true
     
-    /// 传输列表面板固定高度（不支持上下拖动）
-    private let transferPanelHeight: CGFloat = 260
+    /// 传输列表面板高度：收起时只显示摘要，展开后显示完整任务中心
+    private let collapsedTransferPanelHeight: CGFloat = 58
+    private let expandedTransferPanelHeight: CGFloat = 360
 
     /// 主题模式状态 (持久化)
-    @AppStorage("isDarkMode") private var isDarkMode = true
+    @AppStorage("appearanceMode") private var appearanceModeRaw = AppAppearanceMode.migratedDefaultRawValue
     
     // MARK: - Detail View State
     @State private var selectedFileId: Int64?
     @State private var fileDetail: FileDto?
     @State private var isLoadingDetail = false
+    @State private var selectedDetailItem: DirectoryItem?
+    @State private var detailPreviewImage: NSImage?
+    @State private var isLoadingDetailPreview = false
+    @State private var detailLoadTask: Task<Void, Never>?
+    @State private var detailPreviewTask: Task<Void, Never>?
     
     // MARK: - Cloud Storage UI Innovation & Theme
     /// 视图模式: 0 = 列表, 1 = 网格 (Cloud Hub Grid)
@@ -287,26 +681,26 @@ struct MainChatStorage: View {
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
-                // 顶部工具栏
                 topToolbar
-                
+
                 Divider()
-                
-                // TabView 内容区域
-                TabView(selection: $selectedTab) {
-                    // 第一个标签页：好友列表与聊天
-                    FriendChatSplitView()
-                        .tabItem {
-                            Label("会话", systemImage: "bubble.left.and.bubble.right.fill")
+                    .overlay(TelegramTheme.textSecondary.opacity(0.12))
+
+                ZStack(alignment: .bottomLeading) {
+                    Group {
+                        if selectedTab == 0 {
+                            FriendChatSplitView()
+                        } else {
+                            storageView
                         }
-                        .tag(0)
-                    
-                    // 第二个标签页：网盘存储
-                    storageView
-                        .tabItem {
-                            Label("云盘", systemImage: "externaldrive.fill")
-                        }
-                        .tag(1)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    if selectedTab == 0 {
+                        bottomNavigationDock
+                            .padding(.leading, 20)
+                            .padding(.bottom, 18)
+                    }
                 }
             }
             .background(TelegramTheme.appBackground)
@@ -429,7 +823,14 @@ struct MainChatStorage: View {
                 self.loadRestoredTasks()
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .uploadTaskDidComplete)) { _ in
+            scheduleFileListRefreshAfterUpload()
+        }
         .onDisappear {
+            uploadCompletionRefreshTask?.cancel()
+            uploadCompletionRefreshTask = nil
+            detailLoadTask?.cancel()
+            detailPreviewTask?.cancel()
             stopTimer()
         }
         .alert("提示", isPresented: $showingAlert) {
@@ -438,7 +839,7 @@ struct MainChatStorage: View {
             Text(alertMessage)
         }
         // 应用主题设置
-        .preferredColorScheme(isDarkMode ? .dark : .light)
+        .preferredColorScheme(AppAppearanceMode(rawValue: appearanceModeRaw)?.colorScheme)
         .transaction { tx in
             tx.animation = nil
         }
@@ -450,75 +851,25 @@ struct MainChatStorage: View {
     
     private var topToolbar: some View {
         HStack(spacing: 16) {
-            // 服务地址 (只读 + 状态灯)
-            HStack(spacing: 6) {
-                Label("服务地址:", systemImage: "server.rack")
-                    .font(.system(size: 12))
-                    .foregroundColor(TelegramTheme.accent)
-                
-                Text(serverAddress)
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(TelegramTheme.elevatedBackground)
-                    .cornerRadius(4)
-                
-                // 连接状态指示灯
-                Circle()
-                    .fill(statusColor(socketManager.connectionState.color))
-                    .frame(width: 8, height: 8)
-                    .help(socketManager.connectionState.description)
+            HStack(spacing: 10) {
+                Text("D")
+                    .font(.system(size: 16, weight: .black))
+                    .foregroundColor(.white)
+                    .frame(width: 34, height: 34)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(TelegramTheme.success.opacity(0.95)))
+
+                Text("毒药网盘")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundColor(TelegramTheme.textPrimary)
             }
-            .padding(4)
-            .background(TelegramTheme.panelBackground.opacity(0.9))
-            .cornerRadius(6)
-            
-            // 主题切换按钮
-            Button(action: {
-                isDarkMode.toggle()
-            }) {
-                Image(systemName: isDarkMode ? "moon.fill" : "sun.max.fill")
-                    .foregroundColor(isDarkMode ? TelegramTheme.warning : TelegramTheme.accent)
-                    .font(.system(size: 16))
-            }
-            .buttonStyle(.borderless)
-            .help(isDarkMode ? "切换到浅色模式" : "切换到深色模式")
-            .padding(.horizontal, 4)
-            
+
             Spacer()
-            
-            // 网速显示
-            HStack(spacing: 12) {
-                HStack(spacing: 4) {
-                    Image(systemName: "arrow.up.circle.fill")
-                    .foregroundColor(TelegramTheme.accent)
-                    .font(.system(size: 10))
-                    Text("上行: \(socketManager.uploadSpeedStr)")
-                        .font(.system(size: 11, design: .monospaced))
-                }
-                
-                HStack(spacing: 4) {
-                    Image(systemName: "arrow.down.circle.fill")
-                    .foregroundColor(TelegramTheme.success)
-                    .font(.system(size: 10))
-                    Text("下行: \(socketManager.downloadSpeedStr)")
-                        .font(.system(size: 11, design: .monospaced))
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(TelegramTheme.panelBackground.opacity(0.9))
-            .cornerRadius(6)
-            
-            // 分隔线
-            Divider()
-                .frame(height: 16)
             
             // 当前时间
             Label(currentTime, systemImage: "clock")
                 .font(.system(size: 12))
                 .foregroundColor(TelegramTheme.textSecondary)
-            
+
             // 退出按钮 (移到最右侧)
             Button(action: {
                 handleLogout()
@@ -530,101 +881,200 @@ struct MainChatStorage: View {
             .buttonStyle(.borderless)
             .help("退出登录")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 22)
+        .frame(height: 54)
         .background(TelegramTheme.panelBackground)
+    }
+
+    private var bottomNavigationDock: some View {
+        HStack(spacing: 14) {
+            CloudDockButton(
+                icon: "bubble.left.and.bubble.right.fill",
+                isSelected: selectedTab == 0,
+                tint: TelegramTheme.accent,
+                badge: nil,
+                action: { selectedTab = 0 }
+            )
+            .help("会话")
+
+            CloudDockButton(
+                icon: "externaldrive.fill",
+                isSelected: selectedTab == 1,
+                tint: TelegramTheme.success,
+                badge: nil,
+                action: { selectedTab = 1 }
+            )
+            .help("云盘")
+
+            CloudDockButton(
+                icon: "gearshape.fill",
+                isSelected: false,
+                tint: TelegramTheme.textSecondary,
+                badge: nil,
+                action: { openWindow(id: "app-settings") }
+            )
+            .help("设置")
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 58)
     }
     
     // MARK: - Sidebar (左侧边栏)
     
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // 标题栏
-            HStack {
-                Text("目录导航")
+            VStack(spacing: 12) {
+                workspaceCard
+
+                HStack {
+                    Text("目录")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundColor(TelegramTheme.textPrimary)
+
+                    Spacer()
+
+                    Button(action: {
+                        self.createDirParentId = selectedDirectoryId ?? directoryTree.first?.id ?? 0
+                        self.newDirName = ""
+                        self.showingCreateDirDialog = true
+                    }) {
+                        Image(systemName: "plus")
+                    }
+                    .buttonStyle(CloudIconButtonStyle(tint: TelegramTheme.success))
+                    .help("新建目录")
+                }
+
+                HStack(spacing: 7) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(TelegramTheme.textSecondary.opacity(0.72))
+                    Text("搜索目录")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(TelegramTheme.textSecondary.opacity(0.72))
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 34)
+                .background(TelegramTheme.panelBackground)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(TelegramTheme.textSecondary.opacity(0.16), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 16)
+            .padding(.bottom, 12)
+
+            directoryTreeContent
+
+            Divider()
+                .overlay(TelegramTheme.textSecondary.opacity(0.12))
+
+            bottomNavigationDock
+        }
+        .background(
+            LinearGradient(
+                colors: [TelegramTheme.panelBackground, TelegramTheme.appBackground.opacity(0.82)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+    }
+
+    private var workspaceCard: some View {
+        HStack(spacing: 11) {
+            Text("D")
+                .font(.system(size: 15, weight: .black))
+                .foregroundColor(TelegramTheme.success)
+                .frame(width: 38, height: 38)
+                .background(RoundedRectangle(cornerRadius: 12).fill(TelegramTheme.success.opacity(0.12)))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(authService.currentUser?.username ?? "我的云盘")
                     .font(.system(size: 14, weight: .bold))
                     .foregroundColor(TelegramTheme.textPrimary)
-                
-                Spacer()
-                
-                Button(action: {
-                    Task { await loadDirectoryFromServer() }
-                }) {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 12, weight: .semibold))
-                }
-                .buttonStyle(.plain)
-                .help("刷新目录")
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Text("我的云盘根目录")
+                    .font(.system(size: 12))
+                    .foregroundColor(TelegramTheme.textSecondary.opacity(0.8))
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
-            
-            // 树形列表
+
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(TelegramTheme.panelBackground)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(TelegramTheme.textSecondary.opacity(0.14), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .shadow(color: .black.opacity(0.04), radius: 12, x: 0, y: 6)
+    }
+
+    private var directoryTreeContent: some View {
+        Group {
             if isLoadingDirectory {
-                VStack {
+                VStack(spacing: 8) {
                     Spacer()
                     ProgressView()
                         .controlSize(.regular)
-                        .tint(TelegramTheme.accent)
+                        .tint(TelegramTheme.success)
                     Text("加载中...")
                         .font(.system(size: 12))
                         .foregroundColor(TelegramTheme.textSecondary)
-                        .padding(.top, 8)
                     Spacer()
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(TelegramTheme.panelBackground)
             } else if directoryTree.isEmpty {
-                VStack {
+                VStack(spacing: 10) {
                     Spacer()
                     Image(systemName: "folder.badge.questionmark")
-                        .font(.system(size: 32))
-                        .foregroundColor(TelegramTheme.textSecondary.opacity(0.5))
+                        .font(.system(size: 30))
+                        .foregroundColor(TelegramTheme.textSecondary.opacity(0.45))
                     Text("暂无目录")
                         .font(.system(size: 12))
                         .foregroundColor(TelegramTheme.textSecondary)
-                        .padding(.top, 8)
                     Spacer()
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(TelegramTheme.panelBackground)
             } else {
-                List {
-                    RecursiveDirectoryView(
-                        nodes: directoryTree,
-                        selectedId: $selectedDirectoryId,
-                        expandedIds: $expandedDirectoryIds,
-                        onCreate: { item in
-                            self.createDirParentId = item.id
-                            self.newDirName = ""
-                            self.showingCreateDirDialog = true
-                        },
-                        onMove: { _ in },
-                        onRename: { item in
-                            self.renameTargetId = item.id
-                            self.renameValue = item.fileName
-                            self.showingRenameDialog = true
-                        },
-                        onDelete: { item in
-                            self.deleteTargetId = item.id
-                            self.deleteTargetName = item.fileName
-                            self.showingDeleteAlert = true
-                        },
-                        onUpload: { item in
-                            handleSelectFiles(targetDirectory: item)
-                        },
-                        onExpand: { item in
-                            Task { await loadDirectoryChildrenIfNeeded(item) }
-                        }
-                    )
-                    .listRowBackground(Color.clear)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        RecursiveDirectoryView(
+                            nodes: directoryTree,
+                            selectedId: $selectedDirectoryId,
+                            expandedIds: $expandedDirectoryIds,
+                            onCreate: { item in
+                                self.createDirParentId = item.id
+                                self.newDirName = ""
+                                self.showingCreateDirDialog = true
+                            },
+                            onMove: { _ in },
+                            onRename: { item in
+                                self.renameTargetId = item.id
+                                self.renameValue = item.fileName
+                                self.showingRenameDialog = true
+                            },
+                            onDelete: { item in
+                                self.deleteTargetId = item.id
+                                self.deleteTargetName = item.fileName
+                                self.showingDeleteAlert = true
+                            },
+                            onUpload: { item in
+                                handleSelectFiles(targetDirectory: item)
+                            },
+                            onExpand: { item in
+                                Task { await loadDirectoryChildrenIfNeeded(item) }
+                            }
+                        )
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 4)
                 }
-                .listStyle(.sidebar)
-                .scrollContentBackground(.hidden)
-                .background(TelegramTheme.panelBackground)
             }
         }
-        .background(TelegramTheme.panelBackground)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     
     // MARK: - Main Content (主内容区域)
@@ -634,15 +1084,12 @@ struct MainChatStorage: View {
     private var mainContent: some View {
         GeometryReader { _ in
             ZStack(alignment: .top) {
-                // 背景仅覆盖中间主内容面板
-                MeshGradientBackground()
-                    .clipped()
-
                 VStack(spacing: 0) {
-                    // 上半部分：文件浏览区 (自动填充剩余空间)
+                    cloudHeaderBar
+
                     VStack(spacing: 0) {
                         uploadControlBar
-                            .background(TelegramTheme.panelBackground)
+                            .background(TelegramTheme.panelBackground.opacity(0.88))
 
                         Divider()
                             .overlay(TelegramTheme.textSecondary.opacity(0.12))
@@ -657,7 +1104,7 @@ struct MainChatStorage: View {
                                     selectedFileId: $selectedFileId,
                                     onFileTapped: { file in
                                         self.selectedFileId = file.id
-                                        loadFileDetail(fileId: file.id)
+                                        loadFileDetail(fileId: file.id, item: file)
                                     },
                                     onFileDoubleTapped: { file in
                                         if !file.isFile {
@@ -683,24 +1130,118 @@ struct MainChatStorage: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    Divider()
-                        .overlay(TelegramTheme.textSecondary.opacity(0.12))
-
                     transferListView
                         .frame(maxWidth: .infinity)
-                        .frame(height: transferPanelHeight)
+                        .frame(height: isTransferCenterExpanded ? expandedTransferPanelHeight : collapsedTransferPanelHeight)
                         .background(TelegramTheme.panelBackground)
                         .transaction { tx in
                             tx.animation = nil
                         }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(TelegramTheme.panelBackground)
                 .transaction { tx in
                     // 云盘区禁用隐式动画，避免登录后状态刷新导致上下抖动
                     tx.animation = nil
                 }
             }
             .clipped()
+        }
+    }
+
+    private var currentDirectoryTitle: String {
+        if let selectedDirectoryId,
+           let item = findDirectoryItem(id: selectedDirectoryId, nodes: directoryTree) {
+            return item.fileName
+        }
+        return directoryTree.first?.fileName ?? "全部文件"
+    }
+
+    private var currentBreadcrumb: String {
+        let rootName = directoryTree.first?.fileName ?? authService.currentUser?.username ?? "个人网盘"
+        if currentDirectoryTitle == rootName {
+            return rootName
+        }
+        return "\(rootName) / \(currentDirectoryTitle)"
+    }
+
+    private var cloudHeaderBar: some View {
+        HStack(alignment: .center, spacing: 18) {
+            VStack(alignment: .leading, spacing: 7) {
+                Text(currentBreadcrumb)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(TelegramTheme.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                HStack(spacing: 10) {
+                    Text(currentDirectoryTitle)
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundColor(TelegramTheme.textPrimary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Text("\(totalCount) 个文件")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(TelegramTheme.textSecondary)
+                        .padding(.horizontal, 10)
+                        .frame(height: 25)
+                        .background(Capsule().fill(TelegramTheme.elevatedBackground.opacity(0.62)))
+                }
+            }
+
+            Spacer(minLength: 16)
+
+            HStack(spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(TelegramTheme.textSecondary.opacity(0.72))
+                    TextField("搜索文件名称", text: $searchKeyword)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 13))
+                        .onSubmit { handleSearch() }
+                }
+                .padding(.horizontal, 12)
+                .frame(width: 260, height: 36)
+                .background(TelegramTheme.appBackground.opacity(0.72))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(TelegramTheme.textSecondary.opacity(0.16), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                Button(action: {
+                    handleSelectFiles(targetDirectory: selectedDirectoryId.flatMap { findDirectoryItem(id: $0, nodes: directoryTree) })
+                }) {
+                    Label("上传", systemImage: "arrow.up")
+                }
+                .buttonStyle(CloudPrimaryButtonStyle(tint: TelegramTheme.success, filled: true))
+
+                Button(action: {
+                    self.createDirParentId = selectedDirectoryId ?? directoryTree.first?.id ?? 0
+                    self.newDirName = ""
+                    self.showingCreateDirDialog = true
+                }) {
+                    Label("新建目录", systemImage: "plus")
+                }
+                .buttonStyle(CloudPrimaryButtonStyle(tint: TelegramTheme.success, filled: false))
+
+                Button(action: {
+                    Task { await loadDirectoryFromServer() }
+                    loadCurrentFiles()
+                }) {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(CloudIconButtonStyle(tint: TelegramTheme.textSecondary))
+                .help("刷新")
+            }
+        }
+        .padding(.horizontal, 18)
+        .frame(height: 78)
+        .background(TelegramTheme.panelBackground)
+        .overlay(alignment: .bottom) {
+            Divider().overlay(TelegramTheme.textSecondary.opacity(0.12))
         }
     }
     
@@ -710,13 +1251,12 @@ struct MainChatStorage: View {
     
     private var uploadControlBar: some View {
         HStack(spacing: 12) {
-            // 左侧：批量操作按钮
             Button(action: {
                 handleBatchDelete()
             }) {
                 Label("批量删除", systemImage: "trash")
             }
-            .buttonStyle(TelegramToolbarButtonStyle(tint: selectedFiles.isEmpty ? TelegramTheme.textSecondary : TelegramTheme.danger))
+            .buttonStyle(CloudPrimaryButtonStyle(tint: selectedFiles.isEmpty ? TelegramTheme.textSecondary : TelegramTheme.danger))
             .disabled(selectedFiles.isEmpty)
 
             Button(action: {
@@ -724,82 +1264,33 @@ struct MainChatStorage: View {
             }) {
                 Label("批量下载", systemImage: "arrow.down.circle")
             }
-            .buttonStyle(TelegramToolbarButtonStyle(tint: selectedFiles.isEmpty ? TelegramTheme.textSecondary : TelegramTheme.accent))
+            .buttonStyle(CloudPrimaryButtonStyle(tint: selectedFiles.isEmpty ? TelegramTheme.textSecondary : TelegramTheme.accent))
             .disabled(selectedFiles.isEmpty)
 
-            // 下载目录配置 (移到工具栏)
-            HStack(spacing: 6) {
-                Text("下载至:")
-                    .font(.system(size: 11))
-                    .foregroundColor(TelegramTheme.textSecondary)
-                    .fixedSize()
-
-                Text(downloadDirectoryManager.currentDownloadPath)
-                    .font(.system(size: 11))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: 150)
-                    .help(downloadDirectoryManager.currentDownloadPath)
-
-                Button("更改") {
-                    downloadDirectoryManager.selectDirectory()
-                }
-                .font(.system(size: 11))
-                .controlSize(.small)
-                .fixedSize()
+            Button(action: {
+                loadCurrentFiles()
+            }) {
+                Label("刷新", systemImage: "arrow.clockwise")
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(TelegramTheme.elevatedBackground.opacity(0.65))
-            .cornerRadius(4)
-            .fixedSize(horizontal: false, vertical: true)
+            .buttonStyle(CloudPrimaryButtonStyle(tint: TelegramTheme.textSecondary))
 
             Spacer()
 
-            // 右侧：搜索区和视图切换
-            HStack(spacing: 8) {
-                // 视图模式切换
-                Picker("视图模式", selection: $storageViewMode) {
-                    Image(systemName: "list.bullet").tag(0)
-                    Image(systemName: "square.grid.2x2").tag(1)
+            HStack(spacing: 4) {
+                Button(action: { storageViewMode = 0 }) {
+                    Image(systemName: "list.bullet")
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 80)
-                .fixedSize(horizontal: true, vertical: true)
+                .buttonStyle(CloudIconButtonStyle(tint: storageViewMode == 0 ? TelegramTheme.success : TelegramTheme.textSecondary))
 
-                // 搜索输入框
-                TextField("搜索文件名称", text: $searchKeyword)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12))
-                    .frame(width: 180)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(TelegramTheme.elevatedBackground)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(TelegramTheme.textSecondary.opacity(0.32), lineWidth: 1)
-                    )
-                    .fixedSize(horizontal: true, vertical: true)
-
-                // 搜索按钮
-                Button(action: {
-                    handleSearch()
-                }) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 12, weight: .semibold))
-                        .imageScale(.small)
+                Button(action: { storageViewMode = 1 }) {
+                    Image(systemName: "square.grid.2x2")
                 }
-                .buttonStyle(TelegramToolbarButtonStyle(tint: TelegramTheme.accent))
+                .buttonStyle(CloudIconButtonStyle(tint: storageViewMode == 1 ? TelegramTheme.success : TelegramTheme.textSecondary))
             }
             .fixedSize(horizontal: true, vertical: true)
         }
-        .padding(.leading, 12)
-        .padding(.trailing, 10)
-        .frame(height: 44)
+        .padding(.horizontal, 18)
+        .frame(height: 50)
         .background(TelegramTheme.panelBackground)
     }
 
@@ -821,29 +1312,46 @@ struct MainChatStorage: View {
                 .padding(40)
                 .background(TelegramTheme.appBackground.opacity(0.55))
             } else {
-                // 表头 (现代优化版)
-                HStack(spacing: 0) {
+                // 表头与数据行共用同一套列宽，保证纵向对齐
+                HStack(spacing: FileListColumnLayout.spacing) {
                     Toggle("", isOn: Binding(
                         get: { isAllSelected },
                         set: { _ in toggleAllSelection() }
                     ))
                     .toggleStyle(.checkbox)
-                    .frame(width: 30, alignment: .center)
-                    .padding(.leading, 14)
+                    .frame(width: FileListColumnLayout.checkboxWidth, alignment: .center)
 
-                    FileTableHeaderView(items: [
-                        HeaderItem(title: "文件名称", icon: "doc", isSpacer: true),
-                        HeaderItem(title: "文件大小", icon: "externaldrive", width: 80),
-                        HeaderItem(title: "所属目录", icon: "folder", width: 100),
-                        HeaderItem(title: "上传时间", icon: "clock", width: 140),
-                        HeaderItem(title: "操作", width: 112, alignment: .center)
-                    ], leadingPadding: 8, titleColor: TelegramTheme.textPrimary, titleWeight: .bold, iconColor: TelegramTheme.transferHeaderText, iconOpacity: 1.0)
+                    Color.clear
+                        .frame(width: FileListColumnLayout.iconWidth, height: 1)
+
+                    fileListHeaderLabel("文件名称", icon: "doc")
+                        .frame(
+                            minWidth: FileListColumnLayout.nameMinWidth,
+                            maxWidth: .infinity,
+                            alignment: .leading
+                        )
+
+                    fileListHeaderLabel("文件大小", icon: "externaldrive")
+                        .frame(width: FileListColumnLayout.sizeWidth, alignment: .leading)
+
+                    fileListHeaderLabel("所属目录", icon: "folder")
+                        .frame(width: FileListColumnLayout.directoryWidth, alignment: .leading)
+
+                    fileListHeaderLabel("上传时间", icon: "clock")
+                        .frame(width: FileListColumnLayout.timeWidth, alignment: .leading)
+
+                    fileListHeaderLabel("操作", icon: nil)
+                        .frame(width: FileListColumnLayout.actionWidth, alignment: .center)
                 }
+                .padding(.horizontal, FileListColumnLayout.horizontalPadding)
+                .padding(.vertical, 8)
                 .background(VisualEffectView(material: .headerView, blendingMode: .withinWindow))
                 .overlay(
-                    Rectangle()
-                        .fill(TelegramTheme.panelBackground.opacity(0.18))
-                        .allowsHitTesting(false)
+                    VStack(spacing: 0) {
+                        TelegramTheme.panelBackground.opacity(0.18)
+                        Divider().opacity(0.45)
+                    }
+                    .allowsHitTesting(false)
                 )
 
                 // 文件列表内容区域
@@ -857,6 +1365,21 @@ struct MainChatStorage: View {
                 }
                 .background(TelegramTheme.appBackground.opacity(0.55))
             }
+        }
+    }
+
+    private func fileListHeaderLabel(_ title: String, icon: String?) -> some View {
+        HStack(spacing: 5) {
+            if let icon {
+                Image(systemName: icon)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(TelegramTheme.transferHeaderText)
+            }
+
+            Text(title)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundColor(TelegramTheme.textPrimary)
+                .lineLimit(1)
         }
     }
     
@@ -916,7 +1439,7 @@ struct MainChatStorage: View {
             onToggle: { toggleSelection(file.id) },
             onTap: {
                 self.selectedFileId = file.id
-                loadFileDetail(fileId: file.id)
+                loadFileDetail(fileId: file.id, item: file)
             },
             onPlay: {
                 VideoWindowManager.shared.show(fileId: file.id, fileName: file.fileName, fileSize: file.fileSize ?? 0)
@@ -935,99 +1458,249 @@ struct MainChatStorage: View {
     // MARK: - Transfer List View (文件传输区) 传输列表UI以及相关逻辑
     private var transferListView: some View {
         VStack(spacing: 0) {
-            // 标题栏
-            HStack(spacing: 8) {
-                Label("传输列表", systemImage: "arrow.up.arrow.down")
-                    .font(.system(size: 12, weight: .bold))
-                    .fixedSize()
+            transferHeaderBar
 
-                Spacer()
+            if isTransferCenterExpanded {
+                Divider().overlay(TelegramTheme.textSecondary.opacity(0.12))
+                transferFilterBar
+                Divider().overlay(TelegramTheme.textSecondary.opacity(0.12))
+                transferExpandedContent
+            }
+        }
+        .overlay(alignment: .top) {
+            Divider().overlay(TelegramTheme.textSecondary.opacity(0.12))
+        }
+    }
 
-                // 批量启动按钮，开启相关文件上传或是下载任务
-                Button(action: {
-                    handleBatchStart()
-                }) {
-                    Label("批量启动", systemImage: "play.circle")
-                }
-                .buttonStyle(TelegramToolbarButtonStyle(tint: TelegramTheme.accent))
-                .help("启动列表中所有待处理任务")
+    private var transferHeaderBar: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.up.arrow.down")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundColor(TelegramTheme.success)
+                    .frame(width: 34, height: 34)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(TelegramTheme.success.opacity(0.12)))
 
-                // 清除已完成按钮
-                Button(action: {
-                    // 1. 调用管理器清除 (内存 + 数据库)
-                    transferManager.clearCompletedTasks()
-
-                    // 2. 从UI列表移除
-                    let beforeCount = transferList.count
-                    transferList.removeAll { $0.status == "已完成" || $0.status == "Completed" }
-                    let removedCount = beforeCount - transferList.count
-
-                    print("✅ [UI] 已移除 \(removedCount) 个已完成任务")
-
-                    // 3. 重新排序
-                    if isAutoSortEnabled {
-                        sortTransferList()
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 8) {
+                        Text("传输中心")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(TelegramTheme.textPrimary)
+                        Text("\(transferList.count) 个任务")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(TelegramTheme.textSecondary)
+                            .padding(.horizontal, 8)
+                            .frame(height: 22)
+                            .background(Capsule().fill(TelegramTheme.elevatedBackground.opacity(0.72)))
                     }
-                }) {
+
+                    Text(transferSummaryText)
+                        .font(.system(size: 12))
+                        .foregroundColor(TelegramTheme.textSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+
+            Spacer(minLength: 16)
+
+            if !isTransferCenterExpanded {
+                ProgressView(value: activeTransferProgress)
+                    .progressViewStyle(.linear)
+                    .tint(TelegramTheme.success)
+                    .frame(width: 220)
+            } else {
+                Button(action: handleBatchStart) {
+                    Label("全部继续", systemImage: "play.circle")
+                }
+                .buttonStyle(CloudPrimaryButtonStyle(tint: TelegramTheme.accent))
+
+                Button(action: clearCompletedTransferItems) {
                     Label("清除已完成", systemImage: "trash.circle")
                 }
-                .buttonStyle(TelegramToolbarButtonStyle(tint: TelegramTheme.danger))
-                .help("清除所有已完成的任务记录")
+                .buttonStyle(CloudPrimaryButtonStyle(tint: TelegramTheme.danger))
 
-                // 自动排序开关
                 Toggle("自动排序", isOn: $isAutoSortEnabled)
                     .toggleStyle(.switch)
                     .controlSize(.small)
                     .fixedSize()
-                    .help("开启后，进行中的任务将自动排在前面")
                     .onChange(of: isAutoSortEnabled) { enabled in
                         if enabled { sortTransferList() }
                     }
             }
-            .padding(.leading, 12)
-            .padding(.trailing, 10)
-            .frame(height: 34)
-            .background(TelegramTheme.panelBackground)
 
-            Divider()
+            Button(action: {
+                isTransferCenterExpanded.toggle()
+            }) {
+                HStack(spacing: 6) {
+                    Text(isTransferCenterExpanded ? "收起" : "展开")
+                    Image(systemName: isTransferCenterExpanded ? "chevron.down" : "chevron.up")
+                }
+            }
+            .buttonStyle(CloudPrimaryButtonStyle(tint: TelegramTheme.textSecondary))
+        }
+        .padding(.horizontal, 18)
+        .frame(height: 58)
+        .background(TelegramTheme.panelBackground)
+    }
 
-            // 表头 (固定显示，避免空/非空切换时布局上下跳动)
+    private var transferFilterBar: some View {
+        HStack(spacing: 8) {
+            ForEach(TransferDisplayFilter.allCases) { filter in
+                Button(action: { transferDisplayFilter = filter }) {
+                    Text("\(filter.rawValue) \(transferCount(for: filter))")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(transferDisplayFilter == filter ? TelegramTheme.success : TelegramTheme.textSecondary)
+                        .padding(.horizontal, 12)
+                        .frame(height: 32)
+                        .background(
+                            Capsule()
+                                .fill(transferDisplayFilter == filter ? TelegramTheme.success.opacity(0.12) : Color.clear)
+                        )
+                        .overlay(
+                            Capsule()
+                                .stroke(TelegramTheme.textSecondary.opacity(0.16), lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+
+            Spacer()
+
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(TelegramTheme.textSecondary.opacity(0.72))
+                TextField("搜索任务", text: $transferSearchText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+            }
+            .padding(.horizontal, 12)
+            .frame(width: 220, height: 34)
+            .background(TelegramTheme.appBackground.opacity(0.72))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(TelegramTheme.textSecondary.opacity(0.16), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .padding(.horizontal, 18)
+        .frame(height: 58)
+        .background(TelegramTheme.panelBackground.opacity(0.96))
+    }
+
+    private var transferExpandedContent: some View {
+        VStack(spacing: 0) {
             FileTableHeaderView(items: [
-                HeaderItem(title: "序号", width: 36, alignment: .center),
-                HeaderItem(title: "文件名称", icon: "doc", isSpacer: true),
-                HeaderItem(title: "文件大小", icon: "externaldrive", width: 80),
-                HeaderItem(title: "所属目录", icon: "folder", width: 100),
-                HeaderItem(title: "传输类型", icon: "arrow.up.arrow.down", width: 100),
-                HeaderItem(title: "状态", icon: "waveform.path.ecg", width: 80),
-                HeaderItem(title: "传输进度", icon: "timer", width: 200),
-                HeaderItem(title: "操作", width: 80, alignment: .center)
-            ], leadingPadding: 0, titleColor: TelegramTheme.textPrimary, titleWeight: .bold, titleFontSize: 12, iconColor: TelegramTheme.transferHeaderText, iconOpacity: 1.0)
+                HeaderItem(title: "文件", icon: "doc", isSpacer: true),
+                HeaderItem(title: "类型", width: 84),
+                HeaderItem(title: "状态", width: 104),
+                HeaderItem(title: "速度", width: 100),
+                HeaderItem(title: "进度", width: 190),
+                HeaderItem(title: "操作", width: 78, alignment: .center)
+            ], leadingPadding: 0, titleColor: TelegramTheme.textSecondary, titleWeight: .bold, titleFontSize: 12, iconColor: TelegramTheme.textSecondary, iconOpacity: 0.8)
 
-            if transferList.isEmpty {
-                VStack(spacing: 12) {
+            if filteredTransferItems.isEmpty {
+                VStack(spacing: 10) {
+                    Spacer()
                     Image(systemName: "arrow.up.arrow.down.square")
-                        .font(.system(size: 40))
-                        .foregroundColor(TelegramTheme.textSecondary.opacity(0.5))
-
+                        .font(.system(size: 34))
+                        .foregroundColor(TelegramTheme.textSecondary.opacity(0.45))
                     Text("无传输任务")
                         .font(.system(size: 13))
                         .foregroundColor(TelegramTheme.textSecondary)
+                    Spacer()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(40)
-                .background(TelegramTheme.appBackground.opacity(0.55))
+                .background(TelegramTheme.appBackground.opacity(0.34))
             } else {
-                // 列表内容
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(Array(transferList.enumerated()), id: \.element.id) { index, item in
+                        ForEach(Array(filteredTransferItems.enumerated()), id: \.element.id) { index, item in
                             transferRow(item, index: index + 1)
-                            Divider()
+                            Divider().overlay(TelegramTheme.textSecondary.opacity(0.08))
                         }
                     }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
                 }
-                .background(TelegramTheme.appBackground.opacity(0.55))
+                .background(TelegramTheme.appBackground.opacity(0.34))
             }
+        }
+    }
+
+    private var filteredTransferItems: [TransferItem] {
+        let keyword = transferSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return transferList.filter { item in
+            let matchesFilter: Bool
+            switch transferDisplayFilter {
+            case .all:
+                matchesFilter = true
+            case .upload:
+                matchesFilter = item.taskType == .upload
+            case .download:
+                matchesFilter = item.taskType == .download
+            case .active:
+                matchesFilter = item.status == "上传中" || item.status == "下载中" || item.status == "等待上传" || item.status == "等待下载"
+            case .failed:
+                matchesFilter = item.status == "失败"
+            case .completed:
+                matchesFilter = item.status == "已完成" || item.status == "Completed"
+            }
+
+            guard matchesFilter else { return false }
+            guard !keyword.isEmpty else { return true }
+            return item.name.lowercased().contains(keyword)
+                || item.directoryName.lowercased().contains(keyword)
+                || item.status.lowercased().contains(keyword)
+        }
+    }
+
+    private var transferSummaryText: String {
+        guard !transferList.isEmpty else { return "暂无传输任务" }
+        if let active = transferList.first(where: { $0.status == "上传中" || $0.status == "下载中" }) {
+            return "\(active.name) \(active.status) · \(active.progressPercent)"
+        }
+        let failedCount = transferList.filter { $0.status == "失败" }.count
+        if failedCount > 0 {
+            return "\(failedCount) 个任务失败，可展开处理"
+        }
+        let completedCount = transferList.filter { $0.status == "已完成" || $0.status == "Completed" }.count
+        return "已完成 \(completedCount) 个，剩余 \(max(transferList.count - completedCount, 0)) 个"
+    }
+
+    private var activeTransferProgress: Double {
+        guard let active = transferList.first(where: { $0.status == "上传中" || $0.status == "下载中" }) else {
+            return transferList.isEmpty ? 0 : 1
+        }
+        return active.progress
+    }
+
+    private func transferCount(for filter: TransferDisplayFilter) -> Int {
+        switch filter {
+        case .all:
+            return transferList.count
+        case .upload:
+            return transferList.filter { $0.taskType == .upload }.count
+        case .download:
+            return transferList.filter { $0.taskType == .download }.count
+        case .active:
+            return transferList.filter { $0.status == "上传中" || $0.status == "下载中" || $0.status == "等待上传" || $0.status == "等待下载" }.count
+        case .failed:
+            return transferList.filter { $0.status == "失败" }.count
+        case .completed:
+            return transferList.filter { $0.status == "已完成" || $0.status == "Completed" }.count
+        }
+    }
+
+    private func clearCompletedTransferItems() {
+        transferManager.clearCompletedTasks()
+        let beforeCount = transferList.count
+        transferList.removeAll { $0.status == "已完成" || $0.status == "Completed" }
+        let removedCount = beforeCount - transferList.count
+        print("✅ [UI] 已移除 \(removedCount) 个已完成任务")
+        if isAutoSortEnabled {
+            sortTransferList()
         }
     }
     // 文件传输列表一行记录的状态
@@ -1222,8 +1895,7 @@ struct MainChatStorage: View {
                         addLog("✅ 文件删除成功: \(file.fileName)")
                         selectedFiles.remove(file.id)
                         if selectedFileId == file.id {
-                            selectedFileId = nil
-                            fileDetail = nil
+                            clearFileDetailSelection()
                         }
                         fileList.removeAll { $0.id == file.id }
                         totalCount = max(0, totalCount - 1)
@@ -1343,8 +2015,7 @@ struct MainChatStorage: View {
                 let deletedIds = Set(filesToDelete.map { $0.id })
                 fileList.removeAll { deletedIds.contains($0.id) }
                 if let selectedId = selectedFileId, deletedIds.contains(selectedId) {
-                    selectedFileId = nil
-                    fileDetail = nil
+                    clearFileDetailSelection()
                 }
                 totalCount = max(0, totalCount - Int64(successCount))
                 selectedFiles.removeAll()
@@ -1676,15 +2347,15 @@ struct MainChatStorage: View {
     private var storageView: some View {
         HSplitView {
             sidebar
-                .frame(minWidth: 170, idealWidth: 210, maxWidth: 280)
+                .frame(minWidth: 238, idealWidth: 258, maxWidth: 292)
                 .background(TelegramTheme.panelBackground)
 
             mainContent
-                .frame(minWidth: 620, idealWidth: 760, maxWidth: .infinity)
+                .frame(minWidth: 720, idealWidth: 860, maxWidth: .infinity)
                 .layoutPriority(1)
 
             detailSidebar
-                .frame(minWidth: 273, idealWidth: 364, maxWidth: 468)
+                .frame(minWidth: 292, idealWidth: 320, maxWidth: 420)
                 .background(TelegramTheme.panelBackground)
         }
         .transaction { tx in
@@ -1693,6 +2364,15 @@ struct MainChatStorage: View {
     }
     
     // MARK: - File Detail Sidebar
+
+    private var activeDetailPresentation: FileDetailPresentation? {
+        guard let selectedFileId else { return nil }
+        let item = selectedDetailItem?.id == selectedFileId
+            ? selectedDetailItem
+            : fileDetail?.id == selectedFileId ? fileDetail?.toDirectoryItem() : nil
+        guard let item else { return nil }
+        return FileDetailPresentation(item: item, detail: fileDetail)
+    }
     
     private var detailSidebar: some View {
         VStack(spacing: 0) {
@@ -1711,102 +2391,10 @@ struct MainChatStorage: View {
 
             Divider().opacity(0.1)
             
-            if let detail = fileDetail {
-                ScrollView {
-                    VStack(alignment: .center, spacing: 24) {
-                        // Large File Icon
-                        VStack(spacing: 12) {
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 24)
-                                    .fill(TelegramTheme.elevatedBackground)
-                                    .frame(width: 120, height: 120)
-                                
-                                Image(systemName: detail.iconName)
-                                    .font(.system(size: 64))
-                                    .foregroundColor(TelegramTheme.accent)
-                                    .symbolRenderingMode(.hierarchical)
-                            }
-                            
-                            Text(detail.fileName)
-                                .font(.system(size: 18, weight: .bold))
-                                .multilineTextAlignment(.center)
-                                .lineLimit(3)
-                        }
-                        .padding(.top, 24)
-                        
-                        // Properties Group
-                        VStack(alignment: .leading, spacing: 16) {
-                            DetailRow(label: "文件大小", value: detail.sizeString)
-                            DetailRow(label: "文件类型", value: detail.fileType.uppercased())
-                            DetailRow(label: "上传时间", value: detail.uploadTime)
-                            DetailRow(label: "存储目录", value: detail.directoryName)
-                        }
-                        .padding(16)
-                        .background(TelegramTheme.elevatedBackground.opacity(0.9))
-                        .cornerRadius(16)
-                        
-                        Spacer(minLength: 20)
-                        
-                        // Actions
-                        VStack(spacing: 12) {
-                            // 在线播放大按钮 (如果是视频)
-                            if detail.isPlayableVideoFile {
-                                Button(action: {
-                                    if let item = directoryTree.first(where: { $0.id == detail.id }) ?? findDirectoryItem(id: detail.id, nodes: directoryTree) {
-                                         VideoWindowManager.shared.show(fileId: item.id, fileName: item.fileName, fileSize: item.fileSize ?? 0)
-                                    } else {
-                                         let fileItem = detail.toDirectoryItem()
-                                     VideoWindowManager.shared.show(fileId: fileItem.id, fileName: fileItem.fileName, fileSize: fileItem.fileSize ?? 0)
-                                    }
-                                }) {
-                                    Label("在线播放", systemImage: "play.circle.fill")
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 8)
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .tint(TelegramTheme.success)
-                                .controlSize(.large)
-                            }
-                            
-                            Button(action: {
-                                if let item = directoryTree.first(where: { $0.id == detail.id }) ?? findDirectoryItem(id: detail.id, nodes: directoryTree) {
-                                     submitDownloadTask(for: item)
-                                } else {
-                                     submitDownloadTask(for: detail.toDirectoryItem())
-                                }
-                            }) {
-                                Label("立即下载", systemImage: "arrow.down.circle.fill")
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 8)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.large)
-                            
-                            Button(action: {
-                                fileRenameTargetId = detail.id
-                                fileRenameValue = detail.fileName
-                                showingFileRenameDialog = true
-                            }) {
-                                Label("重命名", systemImage: "pencil")
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 8)
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.large)
-
-                            Button(action: {
-                                handleFileAction(detail.toDirectoryItem(), action: 1)
-                            }) {
-                                Label("删除文件", systemImage: "trash")
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 8)
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.large)
-                            .tint(TelegramTheme.danger)
-                        }
-                    }
-                    .padding(16)
+            if let presentation = activeDetailPresentation {
+                GeometryReader { proxy in
+                    let metrics = FileDetailLayoutMetrics(availableHeight: proxy.size.height)
+                    detailContent(presentation: presentation, metrics: metrics)
                 }
             } else {
                 VStack(spacing: 20) {
@@ -1822,6 +2410,147 @@ struct MainChatStorage: View {
         }
         .background(TelegramTheme.panelBackground)
     }
+
+    private func detailContent(
+        presentation: FileDetailPresentation,
+        metrics: FileDetailLayoutMetrics
+    ) -> some View {
+        VStack(spacing: metrics.sectionSpacing) {
+            detailPreview(presentation: presentation, metrics: metrics)
+
+            Text(presentation.fileName)
+                .font(.system(size: metrics.titleFontSize, weight: .bold))
+                .foregroundColor(TelegramTheme.textPrimary)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity)
+                .frame(height: metrics.titleFontSize * 2.7)
+                .help(presentation.fileName)
+
+            VStack(spacing: 0) {
+                DetailRow(label: "文件大小", value: presentation.size)
+                Divider().opacity(0.08)
+                DetailRow(label: "文件类型", value: presentation.fileType)
+                Divider().opacity(0.08)
+                DetailRow(label: "上传时间", value: presentation.uploadTime)
+                Divider().opacity(0.08)
+                DetailRow(label: "存储目录", value: presentation.directoryName)
+            }
+            .padding(.horizontal, 12)
+            .background(TelegramTheme.elevatedBackground.opacity(0.9))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            Spacer(minLength: 0)
+
+            detailActions(presentation: presentation, metrics: metrics)
+        }
+        .padding(metrics.contentPadding)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private func detailPreview(
+        presentation: FileDetailPresentation,
+        metrics: FileDetailLayoutMetrics
+    ) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(TelegramTheme.elevatedBackground)
+
+            if let detailPreviewImage {
+                Image(nsImage: detailPreviewImage)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(6)
+            } else {
+                Image(systemName: presentation.iconName)
+                    .font(.system(size: metrics.previewHeight * 0.38))
+                    .foregroundColor(TelegramTheme.accent)
+                    .symbolRenderingMode(.hierarchical)
+            }
+
+            if isLoadingDetailPreview {
+                ProgressView()
+                    .controlSize(.small)
+                    .padding(8)
+                    .background(.ultraThinMaterial, in: Circle())
+            }
+
+            if presentation.item.isVideoFile, detailPreviewImage != nil {
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 28))
+                            .foregroundColor(.white)
+                            .shadow(color: .black.opacity(0.45), radius: 3)
+                            .padding(10)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: metrics.previewHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func detailActions(
+        presentation: FileDetailPresentation,
+        metrics: FileDetailLayoutMetrics
+    ) -> some View {
+        LazyVGrid(
+            columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible())],
+            spacing: 10
+        ) {
+            if presentation.item.isPlayableVideoFile {
+                Button {
+                    VideoWindowManager.shared.show(
+                        fileId: presentation.item.id,
+                        fileName: presentation.item.fileName,
+                        fileSize: presentation.item.fileSize ?? 0
+                    )
+                } label: {
+                    Label("在线播放", systemImage: "play.circle.fill")
+                        .frame(maxWidth: .infinity)
+                        .frame(height: metrics.actionButtonHeight)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(TelegramTheme.success)
+            }
+
+            Button {
+                submitDownloadTask(for: presentation.item)
+            } label: {
+                Label("立即下载", systemImage: "arrow.down.circle.fill")
+                    .frame(maxWidth: .infinity)
+                    .frame(height: metrics.actionButtonHeight)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(TelegramTheme.accent)
+
+            Button {
+                fileRenameTargetId = presentation.item.id
+                fileRenameValue = presentation.fileName
+                showingFileRenameDialog = true
+            } label: {
+                Label("重命名", systemImage: "pencil")
+                    .frame(maxWidth: .infinity)
+                    .frame(height: metrics.actionButtonHeight)
+            }
+            .buttonStyle(.bordered)
+
+            Button {
+                handleFileAction(presentation.item, action: 1)
+            } label: {
+                Label("删除文件", systemImage: "trash")
+                    .frame(maxWidth: .infinity)
+                    .frame(height: metrics.actionButtonHeight)
+            }
+            .buttonStyle(.bordered)
+            .tint(TelegramTheme.danger)
+        }
+    }
     
     // Helper View for Detail
     private struct DetailRow: View {
@@ -1833,11 +2562,17 @@ struct MainChatStorage: View {
                 Text(label)
                     .font(.system(size: 12))
                     .foregroundColor(TelegramTheme.textSecondary)
+                    .fixedSize(horizontal: true, vertical: false)
                 Spacer()
                 Text(value)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(TelegramTheme.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .help(value)
             }
+            .frame(height: 30)
         }
     }
 
@@ -2376,7 +3111,25 @@ struct MainChatStorage: View {
                 
                 // 更新 UI 状态
                 await MainActor.run {
-                    self.fileList = result.recordList.map { $0.toDirectoryItem() }
+                    self.fileList = result.recordList.map { fileDto in
+                        let item = fileDto.toDirectoryItem()
+                        let parentDirectoryName = fileDto.parentDirName ?? self.findDirectoryName(
+                            id: item.pId,
+                            nodes: self.directoryTree
+                        )
+
+                        return DirectoryItem(
+                            id: item.id,
+                            pId: item.pId,
+                            fileName: item.fileName,
+                            childFileList: item.childFileList,
+                            hasChild: item.hasChild,
+                            fileSize: item.fileSize,
+                            isFile: item.isFile,
+                            uploadTime: item.uploadTime,
+                            directoryName: parentDirectoryName ?? "未知目录"
+                        )
+                    }
                     self.totalPages = Int(result.totalPage)
                     self.totalCount = result.totalCount
                     // 如果当前页大于总页数（可能是删除后），且总页数不为0，重置为最后一页
@@ -2400,6 +3153,16 @@ struct MainChatStorage: View {
                     self.showingAlert = true
                 }
             }
+        }
+    }
+
+    private func scheduleFileListRefreshAfterUpload() {
+        uploadCompletionRefreshTask?.cancel()
+        uploadCompletionRefreshTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            loadCurrentFiles()
+            uploadCompletionRefreshTask = nil
         }
     }
     
@@ -2475,38 +3238,88 @@ struct MainChatStorage: View {
         }
     }
     
-    /// 加载文件详情
-    private func loadFileDetail(fileId: Int64) {
-        guard !isLoadingDetail else { return }
-        
+    /// 加载文件详情，并使用列表项作为网络请求失败时的降级数据。
+    private func loadFileDetail(fileId: Int64, item: DirectoryItem? = nil) {
+        let localItem = item
+            ?? currentFiles.first(where: { $0.id == fileId })
+            ?? (selectedDetailItem?.id == fileId ? selectedDetailItem : nil)
+            ?? (fileDetail?.id == fileId ? fileDetail?.toDirectoryItem() : nil)
+
+        selectedDetailItem = localItem
+        fileDetail = fileDetail?.id == fileId ? fileDetail : nil
+        loadDetailPreview(for: localItem)
+
+        detailLoadTask?.cancel()
         isLoadingDetail = true
-        // 先使用本地缓存的列表作为临时展示 (如果需要)
-        // fileDetail = fileList.first { $0.id == fileId }?.toFileDto() 
-        
-        Task {
-            do {
-                // Determine which service to use
-                // If directoryService is available, use it (it has fetchFileDetail)
-                if let service = directoryService {
-                    let detail = try await service.fetchFileDetail(fileId: fileId)
-                    await MainActor.run {
-                        self.fileDetail = detail
-                        self.isLoadingDetail = false
-                    }
-                } else {
-                     print("❌ directoryService is nil")
-                     await MainActor.run { self.isLoadingDetail = false }
+        detailLoadTask = Task { [service = directoryService] in
+            guard let service else {
+                await MainActor.run {
+                    guard selectedFileId == fileId else { return }
+                    isLoadingDetail = false
                 }
+                return
+            }
+
+            do {
+                let detail = try await service.fetchFileDetail(fileId: fileId)
+                try Task.checkCancellation()
+                await MainActor.run {
+                    guard selectedFileId == fileId else { return }
+                    fileDetail = detail
+                    selectedDetailItem = detail.toDirectoryItem()
+                    isLoadingDetail = false
+                }
+            } catch is CancellationError {
+                // 快速切换文件时取消旧请求，避免旧详情覆盖当前选择。
             } catch {
                 print("❌ 加载文件详情失败: \(error.localizedDescription)")
                 await MainActor.run {
-                    self.isLoadingDetail = false
-                    // 可选: 显示错误提示
-                    // alertMessage = "无法加载详情: \(error.localizedDescription)"
-                    // showingAlert = true
+                    guard selectedFileId == fileId else { return }
+                    isLoadingDetail = false
                 }
             }
         }
+    }
+
+    private func loadDetailPreview(for item: DirectoryItem?) {
+        detailPreviewTask?.cancel()
+        detailPreviewTask = nil
+        detailPreviewImage = nil
+
+        guard let item, item.isImageFile || item.isVideoFile else {
+            isLoadingDetailPreview = false
+            return
+        }
+
+        isLoadingDetailPreview = true
+        detailPreviewTask = Task {
+            let image: NSImage?
+            if item.isImageFile {
+                image = await FileThumbnailService.shared.previewImage(for: item)
+            } else {
+                image = await FileThumbnailService.shared.thumbnail(for: item)
+            }
+            guard !Task.isCancelled else { return }
+
+            await MainActor.run {
+                guard selectedFileId == item.id else { return }
+                detailPreviewImage = image
+                isLoadingDetailPreview = false
+            }
+        }
+    }
+
+    private func clearFileDetailSelection() {
+        detailLoadTask?.cancel()
+        detailPreviewTask?.cancel()
+        detailLoadTask = nil
+        detailPreviewTask = nil
+        selectedFileId = nil
+        fileDetail = nil
+        selectedDetailItem = nil
+        detailPreviewImage = nil
+        isLoadingDetail = false
+        isLoadingDetailPreview = false
     }
 }
 
@@ -2548,8 +3361,14 @@ extension FileDto {
     
     /// 获取所属目录名称
     var directoryName: String {
-        // 简化处理，如果有 filePath 则显示，否则显示 "-"
-        return filePath.isEmpty ? "-" : filePath
+        if let parentDirName, !parentDirName.isEmpty {
+            return parentDirName
+        }
+        guard !filePath.isEmpty else { return "-" }
+        let parentName = URL(fileURLWithPath: filePath)
+            .deletingLastPathComponent()
+            .lastPathComponent
+        return parentName.isEmpty ? "-" : parentName
     }
     
     /// 获取图标名称
@@ -4373,6 +5192,18 @@ struct VisualEffectView: NSViewRepresentable {
     }
 }
 
+private enum FileListColumnLayout {
+    static let spacing: CGFloat = 12
+    static let horizontalPadding: CGFloat = 14
+    static let checkboxWidth: CGFloat = 24
+    static let iconWidth: CGFloat = 32
+    static let nameMinWidth: CGFloat = 160
+    static let sizeWidth: CGFloat = 80
+    static let directoryWidth: CGFloat = 100
+    static let timeWidth: CGFloat = 140
+    static let actionWidth: CGFloat = 112
+}
+
 // MARK: - FileListRowView (商业级文件行组件)
 /// 带悬停动画、卡片背景、微缩放效果的文件行视图
 private struct FileListRowView: View {
@@ -4394,11 +5225,11 @@ private struct FileListRowView: View {
     @State private var isDeleteHovering = false
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: FileListColumnLayout.spacing) {
             // 复选框
             Toggle("", isOn: Binding(get: { isChecked }, set: { _ in onToggle() }))
                 .toggleStyle(.checkbox)
-                .frame(width: 24)
+                .frame(width: FileListColumnLayout.checkboxWidth)
 
             // 文件图标（图片/视频显示缩略图，其他保持 SF Symbol）
             ZStack {
@@ -4406,12 +5237,12 @@ private struct FileListRowView: View {
                     .fill(file.isFile
                           ? TelegramTheme.accent.opacity(0.12)
                           : TelegramTheme.warning.opacity(0.14))
-                    .frame(width: 32, height: 32)
+                    .frame(width: FileListColumnLayout.iconWidth, height: FileListColumnLayout.iconWidth)
                 if let thumb = thumbnail {
                     Image(nsImage: thumb)
                         .resizable()
                         .scaledToFit()
-                        .frame(width: 32, height: 32)
+                        .frame(width: FileListColumnLayout.iconWidth, height: FileListColumnLayout.iconWidth)
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                 } else {
                     Image(systemName: file.isFile ? file.iconName : "folder.fill")
@@ -4433,19 +5264,33 @@ private struct FileListRowView: View {
                 .foregroundColor(TelegramTheme.textPrimary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .frame(minWidth: 160, maxWidth: .infinity, alignment: .leading)
+                .frame(minWidth: FileListColumnLayout.nameMinWidth, maxWidth: .infinity, alignment: .leading)
 
             // 文件大小
             Text(file.sizeString)
                 .font(.system(size: 12))
                 .foregroundColor(TelegramTheme.textSecondary)
-                .frame(width: 80, alignment: .leading)
+                .frame(width: FileListColumnLayout.sizeWidth, alignment: .leading)
+
+            // 所属目录（仅显示直接父目录名称）
+            HStack(spacing: 5) {
+                Image(systemName: "folder")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(TelegramTheme.warning.opacity(0.9))
+
+                Text(file.directoryName ?? "未知目录")
+                    .font(.system(size: 12))
+                    .foregroundColor(TelegramTheme.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .frame(width: FileListColumnLayout.directoryWidth, alignment: .leading)
 
             // 上传时间
             Text(file.uploadTimeString)
                 .font(.system(size: 12))
                 .foregroundColor(TelegramTheme.textSecondary)
-                .frame(width: 140, alignment: .leading)
+                .frame(width: FileListColumnLayout.timeWidth, alignment: .leading)
 
             // 操作按钮（悬停时渐显）
             HStack(spacing: 0) {
@@ -4504,9 +5349,9 @@ private struct FileListRowView: View {
                 .frame(width: 28, alignment: .center)
             }
             .opacity(isHovering || isSelected ? 1 : 0.4)
-            .frame(width: 112, alignment: .center)
+            .frame(width: FileListColumnLayout.actionWidth, alignment: .center)
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, FileListColumnLayout.horizontalPadding)
         .padding(.vertical, 9)
         .background(
             RoundedRectangle(cornerRadius: 10)
@@ -4664,132 +5509,118 @@ private struct TransferListRowView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // 顶部行：序号 + 图标 + 文件名 + 右侧操作按钮
+        HStack(spacing: 12) {
             HStack(spacing: 10) {
-                // 序号列
-                Text("\(index)")
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundColor(TelegramTheme.textSecondary)
-                    .frame(width: 36, alignment: .center)
+                Text(fileTypeBadge)
+                    .font(.system(size: 10, weight: .black))
+                    .foregroundColor(item.taskType == .upload ? TelegramTheme.accent : TelegramTheme.success)
+                    .frame(width: 42, height: 42)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill((item.taskType == .upload ? TelegramTheme.accent : TelegramTheme.success).opacity(0.1))
+                    )
 
-                // 传输类型图标
-                ZStack {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(item.taskType == .upload
-                              ? TelegramTheme.accent.opacity(0.12)
-                              : TelegramTheme.success.opacity(0.14))
-                        .frame(width: 30, height: 30)
-                    Image(systemName: item.taskType == .upload
-                          ? "arrow.up.circle.fill"
-                          : "arrow.down.circle.fill")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(item.taskType == .upload
-                                         ? TelegramTheme.accent.gradient
-                                         : TelegramTheme.success.gradient)
-                }
-
-                // 文件名 + 目录
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 3) {
                     Text(item.name)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(TelegramTheme.textPrimary)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    HStack(spacing: 6) {
-                        Text(item.directoryName)
-                            .font(.system(size: 10))
-                            .foregroundColor(TelegramTheme.textSecondary)
-                        Text("·")
-                            .foregroundColor(TelegramTheme.textSecondary)
-                        Text(item.sizeString)
-                            .font(.system(size: 10))
-                            .foregroundColor(TelegramTheme.textSecondary)
-                    }
+
+                    Text("\(item.directoryName) / \(item.sizeString)")
+                        .font(.system(size: 12))
+                        .foregroundColor(TelegramTheme.textSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                // 状态徽章
-                Text(item.status)
-                    .font(.system(size: 10, weight: .semibold))
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(statusColor.opacity(0.15))
-                    .foregroundColor(statusColor)
-                    .clipShape(Capsule())
-
-                // 操作按钮（无动画切换）
-                HStack(spacing: 6) {
-                    if canResume {
-                        Button(action: onStart) {
-                            Image(systemName: "play.circle.fill")
-                                .font(.system(size: 18))
-                                .foregroundStyle(TelegramTheme.accent.gradient)
-                        }
-                        .buttonStyle(.plain)
-                        .help(item.taskType == .upload ? "开始上传" : "开始下载")
-                    } else if isActive {
-                        Button(action: onPause) {
-                            Image(systemName: "pause.circle.fill")
-                                .font(.system(size: 18))
-                                .foregroundStyle(TelegramTheme.warning.gradient)
-                        }
-                        .buttonStyle(.plain)
-                        .help("暂停")
-                    }
-
-                    Button(action: onCancel) {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 18))
-                            .foregroundStyle(TelegramTheme.danger.opacity(0.85).gradient)
-                    }
-                    .buttonStyle(.plain)
-                    .help("取消")
-                }
-                .opacity(isHovering ? 1 : 0.3)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-            // 进度条（渐变样式）
-            if item.progress > 0 || isActive {
+            Text(item.taskType.rawValue)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(TelegramTheme.textPrimary)
+                .frame(width: 84, alignment: .leading)
+
+            Text(item.status)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(statusColor)
+                .frame(width: 92, height: 26)
+                .background(Capsule().fill(statusColor.opacity(0.12)))
+                .frame(width: 104, alignment: .leading)
+
+            Text(isActive && !item.speed.isEmpty ? item.speed : "-")
+                .font(.system(size: 13))
+                .foregroundColor(TelegramTheme.textSecondary)
+                .frame(width: 100, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 6) {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
                         Capsule()
                             .fill(TelegramTheme.elevatedBackground)
-                            .frame(height: 5)
+                            .frame(height: 6)
                         Capsule()
                             .fill(progressGradient)
-                            .frame(width: max(geo.size.width * CGFloat(item.progress), 0), height: 5)
+                            .frame(width: max(geo.size.width * CGFloat(item.progress), 0), height: 6)
                     }
                 }
-                .frame(height: 5)
+                .frame(height: 6)
 
-                // 进度百分比 + 速度
-                HStack {
-                    Text(item.progressPercent)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(statusColor)
-                    Spacer()
-                    if isActive, !item.speed.isEmpty {
-                        Text(item.speed)
-                            .font(.system(size: 10))
-                            .foregroundColor(TelegramTheme.textSecondary)
-                    }
-                }
+                Text(item.progressPercent)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(TelegramTheme.textSecondary)
             }
+            .frame(width: 190)
+
+            HStack(spacing: 6) {
+                if canResume {
+                    Button(action: onStart) {
+                        Image(systemName: "play.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(TelegramTheme.accent)
+                    .help(item.taskType == .upload ? "开始上传" : "开始下载")
+                } else if isActive {
+                    Button(action: onPause) {
+                        Image(systemName: "pause.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(TelegramTheme.warning)
+                    .help("暂停")
+                }
+
+                Button(action: onCancel) {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(TelegramTheme.danger.opacity(0.88))
+                .help("取消")
+            }
+            .frame(width: 78, alignment: .center)
+            .opacity(isHovering ? 1 : 0.55)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 18)
+        .frame(height: 74)
         .background(
-            RoundedRectangle(cornerRadius: 10)
+            RoundedRectangle(cornerRadius: 12)
                 .fill(isHovering
-                      ? TelegramTheme.elevatedBackground.opacity(0.65)
+                      ? TelegramTheme.elevatedBackground.opacity(0.5)
                       : Color.clear)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 10)
+            RoundedRectangle(cornerRadius: 12)
                 .strokeBorder(TelegramTheme.textSecondary.opacity(isHovering ? 0.16 : 0), lineWidth: 1)
         )
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
+    }
+
+    private var fileTypeBadge: String {
+        let ext = (item.name as NSString).pathExtension.uppercased()
+        if !ext.isEmpty {
+            return String(ext.prefix(3))
+        }
+        return item.taskType == .upload ? "UP" : "DN"
     }
 }
 import Foundation
@@ -4799,6 +5630,7 @@ import AppKit
 /// NotificationCenter custom events
 extension Notification.Name {
     static let switchToChat = Notification.Name("switchToChat")
+    static let uploadTaskDidComplete = Notification.Name("uploadTaskDidComplete")
 }
 
 class NotificationManager: NSObject, UNUserNotificationCenterDelegate {

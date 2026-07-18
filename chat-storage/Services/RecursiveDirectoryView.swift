@@ -5,6 +5,7 @@ struct RecursiveDirectoryView: View {
     let nodes: [DirectoryItem]
     @Binding var selectedId: Int64?
     @Binding var expandedIds: Set<Int64>
+    var level: Int = 0
 
     var onCreate: (DirectoryItem) -> Void
     var onMove: (DirectoryItem) -> Void
@@ -19,6 +20,7 @@ struct RecursiveDirectoryView: View {
                 item: item,
                 selectedId: $selectedId,
                 expandedIds: $expandedIds,
+                level: level,
                 onCreate: onCreate,
                 onMove: onMove,
                 onRename: onRename,
@@ -34,6 +36,7 @@ struct DirectoryNodeView: View {
     let item: DirectoryItem
     @Binding var selectedId: Int64?
     @Binding var expandedIds: Set<Int64>
+    let level: Int
 
     var onCreate: (DirectoryItem) -> Void
     var onMove: (DirectoryItem) -> Void
@@ -60,71 +63,93 @@ struct DirectoryNodeView: View {
     }
 
     var body: some View {
-        Group {
-            if item.hasChild {
-                DisclosureGroup(isExpanded: isExpanded) {
-                    if let children = item.childFileList, !children.isEmpty {
-                        RecursiveDirectoryView(
-                            nodes: children,
-                            selectedId: $selectedId,
-                            expandedIds: $expandedIds,
-                            onCreate: onCreate,
-                            onMove: onMove,
-                            onRename: onRename,
-                            onDelete: onDelete,
-                            onUpload: onUpload,
-                            onExpand: onExpand
-                        )
-                    }
-                } label: {
-                    nodeContent(hasChildren: true)
-                }
-            } else {
-                nodeContent(hasChildren: false)
+        VStack(alignment: .leading, spacing: 2) {
+            nodeContent(hasChildren: item.hasChild)
+
+            if item.hasChild,
+               isExpanded.wrappedValue,
+               let children = item.childFileList,
+               !children.isEmpty {
+                RecursiveDirectoryView(
+                    nodes: children,
+                    selectedId: $selectedId,
+                    expandedIds: $expandedIds,
+                    level: level + 1,
+                    onCreate: onCreate,
+                    onMove: onMove,
+                    onRename: onRename,
+                    onDelete: onDelete,
+                    onUpload: onUpload,
+                    onExpand: onExpand
+                )
             }
         }
     }
 
     private func nodeContent(hasChildren: Bool) -> some View {
-        HStack(spacing: 8) {
-            // 文件夹图标 - 选中时 accentColor，否则 orange
-            Image(systemName: hasChildren ? (isExpanded.wrappedValue ? "folder.fill" : "folder") : "folder")
-                .font(.system(size: 14, weight: .medium))
+        HStack(spacing: 7) {
+            if level > 0 {
+                Color.clear
+                    .frame(width: CGFloat(level * 14))
+            }
+
+            Group {
+                if hasChildren {
+                    Button {
+                        isExpanded.wrappedValue.toggle()
+                    } label: {
+                        Image(systemName: isExpanded.wrappedValue ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(TelegramTheme.textSecondary.opacity(0.72))
+                            .frame(width: 12, height: 18)
+                    }
+                    .buttonStyle(.plain)
+                    .help(isExpanded.wrappedValue ? "收起目录" : "展开目录")
+                } else {
+                    Image(systemName: "circle.fill")
+                        .font(.system(size: 4, weight: .bold))
+                        .foregroundStyle(TelegramTheme.textSecondary.opacity(0.35))
+                        .frame(width: 12)
+                }
+            }
+
+            Image(systemName: "folder")
+                .font(.system(size: 13, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(
                     selectedId == item.id
-                    ? TelegramTheme.accent
-                    : TelegramTheme.warning.opacity(0.9)
+                    ? TelegramTheme.success
+                    : TelegramTheme.textSecondary.opacity(0.62)
                 )
-                .frame(width: 20)
+                .frame(width: 17)
 
             Text(item.fileName)
-                .font(.system(size: 13, weight: selectedId == item.id ? .semibold : .regular))
-                .foregroundColor(selectedId == item.id ? TelegramTheme.textPrimary : TelegramTheme.textSecondary.opacity(0.9))
+                .font(.system(size: 13, weight: selectedId == item.id ? .bold : .semibold))
+                .foregroundColor(selectedId == item.id ? TelegramTheme.success : TelegramTheme.textSecondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
 
             Spacer()
         }
-        .padding(.vertical, 5)
-        .padding(.horizontal, 8)
+        .frame(height: 38)
+        .padding(.horizontal, 10)
         .background(
-            RoundedRectangle(cornerRadius: 7)
+            RoundedRectangle(cornerRadius: 11)
                 .fill(
                     selectedId == item.id
-                    ? TelegramTheme.accent.opacity(0.2)
+                    ? TelegramTheme.success.opacity(0.12)
                     : isHovering
-                        ? TelegramTheme.elevatedBackground.opacity(0.75)
+                        ? TelegramTheme.elevatedBackground.opacity(0.55)
                         : Color.clear
                 )
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 7)
+            RoundedRectangle(cornerRadius: 11)
                 .strokeBorder(
-                    selectedId == item.id ? TelegramTheme.accent.opacity(0.52) : Color.clear,
+                    selectedId == item.id ? TelegramTheme.success.opacity(0.42) : Color.clear,
                     lineWidth: 1
                 )
         )
-        .scaleEffect(isHovering ? 1.01 : 1.0)
         .animation(.easeInOut(duration: 0.15), value: isHovering)
         .animation(.easeInOut(duration: 0.15), value: selectedId)
         .contentShape(Rectangle())
@@ -136,6 +161,12 @@ struct DirectoryNodeView: View {
                 selectedId = item.id
             }
         }
+        .simultaneousGesture(
+            TapGesture(count: 2).onEnded {
+                guard item.hasChild else { return }
+                isExpanded.wrappedValue.toggle()
+            }
+        )
         .contextMenu {
             Button("新建") { onCreate(item) }
             Button("选择") { selectedId = item.id }

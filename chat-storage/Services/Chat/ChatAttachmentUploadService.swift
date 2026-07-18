@@ -40,8 +40,8 @@ enum ChatAttachmentUploadError: LocalizedError {
 }
 
 final class ChatAttachmentUploadService {
-    typealias UploadExecutor = (ChatPreparedImageFile, Int64, Int32, String) async throws -> Int64?
-    private static let derivedImageDirId: Int64 = -1
+    typealias UploadExecutor = (ChatPreparedImageFile, Int64, Int32, String, String) async throws -> Int64?
+    private static let uploadPurpose = "CHAT_ATTACHMENT"
 
     private let uploadExecutor: UploadExecutor
     private let hostProvider: () -> String
@@ -51,12 +51,13 @@ final class ChatAttachmentUploadService {
         hostProvider: @escaping () -> String = { SocketManager.shared.getCurrentServer().0 }
     ) {
         self.hostProvider = hostProvider
-        self.uploadExecutor = uploadExecutor ?? { prepared, targetDirId, userId, userName in
+        self.uploadExecutor = uploadExecutor ?? { prepared, targetDirId, userId, userName, uploadPurpose in
             try await Self.uploadPreparedImage(
                 prepared,
                 targetDirId: targetDirId,
                 userId: userId,
                 userName: userName,
+                uploadPurpose: uploadPurpose,
                 host: hostProvider()
             )
         }
@@ -130,7 +131,9 @@ final class ChatAttachmentUploadService {
         userName: String
     ) async throws -> ChatImageAttachment {
         let prepared = try prepareImageFile(image)
-        guard let fileId = try await uploadExecutor(prepared, targetDirId, userId, userName), fileId > 0 else {
+        guard let fileId = try await uploadExecutor(
+            prepared, targetDirId, userId, userName, Self.uploadPurpose
+        ), fileId > 0 else {
             throw ChatAttachmentUploadError.missingFileId
         }
 
@@ -156,7 +159,9 @@ final class ChatAttachmentUploadService {
         } else {
             original = try prepareImageFile(pendingImage.previewImage, taskId: pendingImage.id)
         }
-        guard let originalFileId = try await uploadExecutor(original, targetDirId, userId, userName), originalFileId > 0 else {
+        guard let originalFileId = try await uploadExecutor(
+            original, targetDirId, userId, userName, Self.uploadPurpose
+        ), originalFileId > 0 else {
             throw ChatAttachmentUploadError.missingFileId
         }
 
@@ -199,7 +204,9 @@ final class ChatAttachmentUploadService {
         userName: String
     ) async throws -> ChatImageAttachment {
         let prepared = try prepareImageFile(fileURL: fileURL)
-        guard let fileId = try await uploadExecutor(prepared, targetDirId, userId, userName), fileId > 0 else {
+        guard let fileId = try await uploadExecutor(
+            prepared, targetDirId, userId, userName, Self.uploadPurpose
+        ), fileId > 0 else {
             throw ChatAttachmentUploadError.missingFileId
         }
 
@@ -254,7 +261,7 @@ final class ChatAttachmentUploadService {
             return (nil, nil)
         }
         do {
-            guard let fileId = try await uploadExecutor(prepared, Self.derivedImageDirId, userId, userName),
+            guard let fileId = try await uploadExecutor(prepared, 0, userId, userName, Self.uploadPurpose),
                   fileId > 0 else {
                 return (nil, nil)
             }
@@ -293,6 +300,7 @@ final class ChatAttachmentUploadService {
         targetDirId: Int64,
         userId: Int32,
         userName: String,
+        uploadPurpose: String,
         host: String
     ) async throws -> Int64? {
         let socketManager = SocketManager()
@@ -331,6 +339,7 @@ final class ChatAttachmentUploadService {
             userId: userId,
             userName: userName,
             taskId: prepared.taskId.uuidString,
+            uploadPurpose: uploadPurpose,
             startOffset: 0,
             persistTransferTask: false,
             progressHandler: nil

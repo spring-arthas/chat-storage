@@ -287,6 +287,8 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
     private var currentFileId: Int64?
     private var fileSize: Int64 = 0
     private var setupTask: Task<Void, Never>?
+    private var seekNotificationTask: Task<Void, Never>?
+    private var playbackSessionId: String?
     var onPlaybackSessionTerminated: (() -> Void)?
 
     // seek 状态机：保证同一时间只有一个活跃 player.seek，Chase Time 防抖
@@ -302,6 +304,8 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
 
         currentFileId = fileId
         fileSize = expectedSize
+        let sessionId = UUID().uuidString
+        playbackSessionId = sessionId
 
         isLoading = true
         errorMessage = nil
@@ -312,10 +316,15 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
 
         setupTask = Task { [weak self] in
             do {
-                let playInfo = try await VideoPlaybackService.shared.requestPlayUrl(fileId: fileId)
+                let playInfo = try await VideoPlaybackService.shared.requestPlayUrl(
+                    fileId: fileId,
+                    sessionId: sessionId
+                )
                 try Task.checkCancellation()
                 await MainActor.run {
-                    guard let self, self.currentFileId == fileId else { return }
+                    guard let self,
+                          self.currentFileId == fileId,
+                          self.playbackSessionId == sessionId else { return }
                     self.fileSize = playInfo.fileSize
                     self.startPlayer(url: playInfo.playUrl)
                 }
@@ -459,6 +468,37 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
         isSeekBuffering = true
         let target = chaseTime
 
+        guard let fileId = currentFileId,
+              let sessionId = playbackSessionId else {
+            executePlayerSeek(player: player, target: target)
+            return
+        }
+
+        seekNotificationTask?.cancel()
+        seekNotificationTask = Task { [weak self, weak player] in
+            await VideoPlaybackService.shared.notifySeek(
+                fileId: fileId,
+                sessionId: sessionId,
+                targetSeconds: target.seconds
+            )
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self,
+                      let player,
+                      self.player === player,
+                      self.currentFileId == fileId,
+                      self.playbackSessionId == sessionId else { return }
+                self.seekNotificationTask = nil
+                if CMTimeCompare(self.chaseTime, target) != 0 {
+                    self.performChaseSeek(player: player)
+                    return
+                }
+                self.executePlayerSeek(player: player, target: target)
+            }
+        }
+    }
+
+    private func executePlayerSeek(player: AVPlayer, target: CMTime) {
         player.seek(
             to: target,
             toleranceBefore: .zero,
@@ -495,6 +535,8 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
     func stopPlaying() {
         setupTask?.cancel()
         setupTask = nil
+        seekNotificationTask?.cancel()
+        seekNotificationTask = nil
 
         // 移除时间观察者（必须在 player 释放前）
         if let observer = timeObserver, let player {
@@ -530,6 +572,7 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
         isSeeking = false
         isSeekBuffering = false
         chaseTime = .zero
+        playbackSessionId = nil
         fileSize = 0
         isLoading = false
     }

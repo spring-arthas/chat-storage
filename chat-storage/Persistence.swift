@@ -84,7 +84,7 @@ class PersistenceManager {
         fileSize: Int64? = nil,
         targetDirId: Int64? = nil,
         userId: Int32? = nil,
-        userName: String? = "default",
+        userName: String? = nil,
         status: String? = nil,
         progress: Double? = nil,
         uploadedBytes: Int64? = nil,

@@ -49,11 +49,79 @@ final class chat_storageTests: XCTestCase {
         XCTAssertEqual(TelegramTheme.statusColorHex(for: "未知状态", isDark: false), "#51657F")
     }
 
-    func testMainWindowLayoutBoundsAreFixed() throws {
-        XCTAssertEqual(AppWindowLayout.mainWidth, 1240)
-        XCTAssertEqual(AppWindowLayout.mainHeight, 760)
+    func testMainWindowLayoutSupportsResponsiveGrowth() throws {
+        XCTAssertEqual(AppWindowLayout.mainDefaultWidth, 1240)
+        XCTAssertEqual(AppWindowLayout.mainDefaultHeight, 760)
+        XCTAssertEqual(AppWindowLayout.mainMinWidth, 1240)
+        XCTAssertEqual(AppWindowLayout.mainMinHeight, 760)
         XCTAssertEqual(AppWindowLayout.loginWidth, 720)
         XCTAssertEqual(AppWindowLayout.loginHeight, 456)
+    }
+
+    func testFileDetailDirectoryNameOnlyReturnsDirectParent() throws {
+        let detail = FileDto(
+            id: 1,
+            pId: 2,
+            fileName: "movie.mp4",
+            filePath: "/Users/demo/storages/account/电影/欧美/movie.mp4",
+            fileSize: 1024,
+            fileType: "mp4",
+            isFile: "Y",
+            isExist: "Y",
+            hasChild: "N",
+            userName: "demo",
+            gmtCreated: nil,
+            gmtModified: nil,
+            del: "N",
+            delTime: nil,
+            childFileList: nil
+        )
+
+        XCTAssertEqual(detail.directoryName, "欧美")
+    }
+
+    func testFileDetailLayoutCompactsForMinimumWindowHeight() throws {
+        let compact = FileDetailLayoutMetrics(availableHeight: 650)
+        let regular = FileDetailLayoutMetrics(availableHeight: 900)
+
+        XCTAssertLessThan(compact.previewHeight, regular.previewHeight)
+        XCTAssertLessThanOrEqual(compact.sectionSpacing, regular.sectionSpacing)
+        XCTAssertEqual(compact.actionButtonHeight, 38)
+    }
+
+    func testAppAppearanceModesMapToExpectedColorSchemes() throws {
+        XCTAssertNil(AppAppearanceMode.system.colorScheme)
+        XCTAssertEqual(AppAppearanceMode.light.colorScheme, .light)
+        XCTAssertEqual(AppAppearanceMode.dark.colorScheme, .dark)
+    }
+
+    func testAppSettingsCategoriesStayStable() throws {
+        XCTAssertEqual(AppSettingsCategory.allCases.map(\.title), ["外观", "文件传输", "网络连接"])
+    }
+
+    func testDirectoryTreeTreatsEmptyDirectoryChildrenAsNotExpandable() throws {
+        let directory = FileDto(
+            id: 100,
+            pId: 1,
+            fileName: "工作",
+            filePath: "/tmp/工作",
+            fileSize: nil,
+            fileType: "NOT_FILE",
+            isFile: "N",
+            isExist: "Y",
+            hasChild: "Y",
+            userName: "18806504525",
+            gmtCreated: nil,
+            gmtModified: nil,
+            del: "N",
+            delTime: nil,
+            childFileList: []
+        )
+
+        let item = directory.toDirectoryItem()
+
+        XCTAssertFalse(item.hasChild)
+        XCTAssertEqual(item.childFileList, [])
     }
 
     func testLocalMediaServerTreatsConnectionResetAsClientAbort() throws {
@@ -478,9 +546,9 @@ final class chat_storageTests: XCTestCase {
         NSRect(x: 0, y: 0, width: 16, height: 10).fill()
         image.unlockFocus()
 
-        var uploadedDirIds: [Int64] = []
-        let service = ChatAttachmentUploadService(uploadExecutor: { prepared, targetDirId, _, _ in
-            uploadedDirIds.append(targetDirId)
+        var uploadPurposes: [String] = []
+        let service = ChatAttachmentUploadService(uploadExecutor: { prepared, _, _, _, uploadPurpose in
+            uploadPurposes.append(uploadPurpose)
             if prepared.fileName.hasPrefix("chat-thumb") || prepared.fileName.hasPrefix("chat-preview") {
                 throw ChatAttachmentUploadError.uploadConnectionTimeout
             }
@@ -493,8 +561,7 @@ final class chat_storageTests: XCTestCase {
         XCTAssertEqual(attachment.fileId, 70001)
         XCTAssertNil(attachment.thumbnailFileId)
         XCTAssertNil(attachment.previewFileId)
-        XCTAssertEqual(uploadedDirIds.first, 0)
-        XCTAssertTrue(uploadedDirIds.contains(-1))
+        XCTAssertEqual(uploadPurposes, ["CHAT_ATTACHMENT", "CHAT_ATTACHMENT", "CHAT_ATTACHMENT"])
     }
 
     func testChatInputBarUsesUnifiedSendForTextAndImages() throws {
@@ -633,6 +700,87 @@ final class chat_storageTests: XCTestCase {
         )
     }
 
+    func testUploadProgressAckWindowUsesDynamicThreshold() throws {
+        XCTAssertFalse(
+            FileTransferService.debugShouldRequestUploadAck(
+                nextOffset: 2 * 1024 * 1024,
+                fileSize: 100 * 1024 * 1024,
+                lastAckOffset: 0,
+                ackWindowBytes: 4 * 1024 * 1024
+            )
+        )
+        XCTAssertTrue(
+            FileTransferService.debugShouldRequestUploadAck(
+                nextOffset: 4 * 1024 * 1024,
+                fileSize: 100 * 1024 * 1024,
+                lastAckOffset: 0,
+                ackWindowBytes: 4 * 1024 * 1024
+            )
+        )
+    }
+
+    func testUploadProgressAckDecodesAdaptiveFields() throws {
+        let json = """
+        {
+          "status": "progress",
+          "taskId": "task-123",
+          "uploadedSize": 1048576,
+          "serverState": "slow_down",
+          "recommendedChunkSize": 65536,
+          "recommendedAckWindow": 1048576,
+          "serverWriteMillis": 42,
+          "retryAfterMs": 120
+        }
+        """.data(using: .utf8)!
+
+        let ack = try JSONDecoder().decode(StandardAckResponse.self, from: json)
+
+        XCTAssertEqual(ack.serverState, "slow_down")
+        XCTAssertEqual(ack.recommendedChunkSize, 65_536)
+        XCTAssertEqual(ack.recommendedAckWindow, 1_048_576)
+        XCTAssertEqual(ack.serverWriteMillis, 42)
+        XCTAssertEqual(ack.retryAfterMs, 120)
+    }
+
+    func testResumeAckDecodesInitialAdaptiveStrategy() throws {
+        let json = """
+        {
+          "status": "resume",
+          "taskId": "task-123",
+          "uploadedSize": 4096,
+          "initialChunkSize": 131072,
+          "minChunkSize": 32768,
+          "maxChunkSize": 524288,
+          "initialAckWindow": 2097152,
+          "maxAckWindow": 8388608
+        }
+        """.data(using: .utf8)!
+
+        let ack = try JSONDecoder().decode(ResumeAckResponse.self, from: json)
+
+        XCTAssertEqual(ack.initialChunkSize, 131_072)
+        XCTAssertEqual(ack.initialAckWindow, 2_097_152)
+        XCTAssertEqual(ack.maxChunkSize, 524_288)
+        XCTAssertEqual(ack.maxAckWindow, 8_388_608)
+    }
+
+    func testUploadFinalizeTimeoutScalesForLargeFiles() throws {
+        XCTAssertEqual(
+            FileTransferService.debugUploadFinalizeTimeout(fileSize: 10 * 1024 * 1024),
+            60,
+            accuracy: 0.001
+        )
+        XCTAssertGreaterThan(
+            FileTransferService.debugUploadFinalizeTimeout(fileSize: 10 * 1024 * 1024 * 1024),
+            60
+        )
+        XCTAssertEqual(
+            FileTransferService.debugUploadFinalizeTimeout(fileSize: 100 * 1024 * 1024 * 1024),
+            600,
+            accuracy: 0.001
+        )
+    }
+
     func testUploadDataFramePayloadIncludesBigEndianOffsetPrefix() throws {
         let payload = FileTransferService.debugBuildUploadDataPayload(
             offset: 8192,
@@ -652,6 +800,40 @@ final class chat_storageTests: XCTestCase {
         XCTAssertTrue(source.contains("fileHandle.seek(toOffset: UInt64(confirmedOffset))"))
         XCTAssertTrue(source.contains("currentOffset = confirmedOffset"))
         XCTAssertTrue(source.contains("lastAckOffset = confirmedOffset"))
+    }
+
+    func testUploadProgressAckRejectsNegativeOrAdvancedOffset() throws {
+        XCTAssertThrowsError(
+            try FileTransferService.debugValidateUploadAckOffset(
+                uploadedSize: -1,
+                expectedOffset: 1024
+            )
+        )
+        XCTAssertThrowsError(
+            try FileTransferService.debugValidateUploadAckOffset(
+                uploadedSize: 2048,
+                expectedOffset: 1024
+            )
+        )
+        XCTAssertNoThrow(
+            try FileTransferService.debugValidateUploadAckOffset(
+                uploadedSize: 512,
+                expectedOffset: 1024
+            )
+        )
+    }
+
+    func testUploadRecoveryRetriesOnlyTransientNetworkErrors() throws {
+        XCTAssertTrue(TransferTaskManager.isRecoverableUploadError(SocketError.timeout))
+        XCTAssertTrue(TransferTaskManager.isRecoverableUploadError(SocketError.connectionClosed))
+        XCTAssertTrue(TransferTaskManager.isRecoverableUploadError(FileTransferError.connectionLost))
+
+        XCTAssertFalse(TransferTaskManager.isRecoverableUploadError(SocketError.invalidResponse))
+        XCTAssertFalse(
+            TransferTaskManager.isRecoverableUploadError(
+                FileTransferError.serverError("MD5 校验失败")
+            )
+        )
     }
 
     func testUserResponseDecodesTransferToken() throws {
@@ -679,6 +861,58 @@ final class chat_storageTests: XCTestCase {
         XCTAssertTrue(source.contains("transferToken"))
         XCTAssertTrue(source.contains("resumeInfo.status == \"complete\""))
         XCTAssertFalse(source.contains("将优先使用服务端的"))
+    }
+
+    func testUploadTaskUsesCurrentAuthenticatedIdentityInsteadOfPersistedIdentity() throws {
+        let currentUser = UserDO(
+            id: 7,
+            username: "18806504525",
+            nickname: nil,
+            avatar: nil,
+            email: nil,
+            phone: nil,
+            createTime: nil,
+            updateTime: nil,
+            status: nil,
+            transferToken: "transfer-token"
+        )
+
+        let identity = try TransferTaskManager.resolveUploadIdentity(currentUser: currentUser)
+
+        XCTAssertEqual(identity.userId, 7)
+        XCTAssertEqual(identity.userName, "18806504525")
+    }
+
+    func testUploadTaskRejectsResumeWhenLoginStateIsMissing() throws {
+        XCTAssertThrowsError(try TransferTaskManager.resolveUploadIdentity(currentUser: nil))
+    }
+
+    func testPartialTransferTaskUpdateDoesNotOverwritePersistedUserName() throws {
+        let source = try sourceFileContents("chat-storage/Persistence.swift")
+
+        XCTAssertTrue(source.contains("userName: String? = nil"))
+        XCTAssertFalse(source.contains("userName: String? = \"default\""))
+    }
+
+    func testUploadResponseMatcherAcceptsTaskScopedResponse() throws {
+        let data = try JSONSerialization.data(withJSONObject: [
+            "taskId": "task-123",
+            "status": "resume"
+        ])
+        let frame = Frame(type: .resumeAck, data: data)
+
+        XCTAssertTrue(FileTransferService.debugFrame(frame, matchesTaskId: "task-123"))
+        XCTAssertFalse(FileTransferService.debugFrame(frame, matchesTaskId: "task-456"))
+    }
+
+    func testUploadResponseMatcherAcceptsUnscopedServerError() throws {
+        let data = try JSONSerialization.data(withJSONObject: [
+            "status": "error",
+            "message": "上传用户身份不一致"
+        ])
+        let frame = Frame(type: .resumeAck, data: data)
+
+        XCTAssertTrue(FileTransferService.debugFrame(frame, matchesTaskId: "task-123"))
     }
 
     func testDownloadResumeUsesActualPartFileSize() throws {
@@ -789,6 +1023,313 @@ final class chat_storageTests: XCTestCase {
         let projectRoot = testFile.deletingLastPathComponent().deletingLastPathComponent()
         let fileURL = projectRoot.appendingPathComponent(relativePath)
         return try String(contentsOf: fileURL, encoding: .utf8)
+    }
+
+    func testAdaptiveUploadControllerStartsWithConservativeParameters() throws {
+        let decision = AdaptiveUploadController().currentDecision
+
+        XCTAssertEqual(decision.chunkSize, 65_536)
+        XCTAssertEqual(decision.ackWindowBytes, 1_048_576)
+        XCTAssertEqual(decision.ackTimeout, 30, accuracy: 0.001)
+        XCTAssertFalse(decision.isCoolingDown)
+        XCTAssertFalse(decision.shouldPause)
+        XCTAssertNil(decision.retryAfterMs)
+    }
+
+    func testAdaptiveUploadControllerRaisesAfterTwoHealthyWindows() throws {
+        var controller = AdaptiveUploadController()
+
+        let first = controller.record(adaptiveObservation())
+        let second = controller.record(adaptiveObservation())
+
+        XCTAssertEqual(first.chunkSize, 65_536)
+        XCTAssertEqual(first.ackWindowBytes, 1_048_576)
+        XCTAssertEqual(second.chunkSize, 131_072)
+        XCTAssertEqual(second.ackWindowBytes, 2_097_152)
+    }
+
+    func testAdaptiveUploadControllerAppliesMetricEWMAsAndDynamicTimeout() throws {
+        var controller = AdaptiveUploadController()
+
+        _ = controller.record(adaptiveObservation(rtt: 0.1, windowBytes: 1_048_576, windowDuration: 1))
+        let decision = controller.record(
+            adaptiveObservation(
+                rtt: 0.5,
+                windowBytes: 1_048_576,
+                windowDuration: 0.5,
+                serverState: .pause,
+                retryAfterMs: 250
+            )
+        )
+
+        XCTAssertEqual(controller.smoothedRTT, 0.18, accuracy: 0.000_001)
+        XCTAssertEqual(controller.smoothedGoodput, 1_310_720, accuracy: 0.001)
+        XCTAssertEqual(decision.ackTimeout, 10, accuracy: 0.001)
+    }
+
+    func testAdaptiveUploadControllerCalculatesUnclampedTimeoutFromGoodput() throws {
+        var controller = AdaptiveUploadController()
+
+        let decision = controller.record(
+            adaptiveObservation(rtt: 0.5, windowBytes: 131_072, windowDuration: 1)
+        )
+
+        XCTAssertEqual(decision.ackTimeout, 18, accuracy: 0.001)
+    }
+
+    func testAdaptiveUploadControllerStaysWithinMaximumParametersAndTimeout() throws {
+        var controller = AdaptiveUploadController()
+        var decision = controller.currentDecision
+
+        for _ in 0..<10 {
+            decision = controller.record(
+                adaptiveObservation(rtt: 0.1, windowBytes: 65_536, windowDuration: 1)
+            )
+        }
+
+        XCTAssertEqual(decision.chunkSize, 524_288)
+        XCTAssertEqual(decision.ackWindowBytes, 8_388_608)
+        XCTAssertEqual(decision.ackTimeout, 60, accuracy: 0.001)
+    }
+
+    func testAdaptiveUploadControllerTreatsServerRecommendationsAsOutputCaps() throws {
+        var controller = AdaptiveUploadController()
+
+        let capped = controller.record(
+            adaptiveObservation(
+                recommendedChunkSize: 49_152,
+                recommendedAckWindowBytes: 1_048_576
+            )
+        )
+        let uncapped = controller.record(adaptiveObservation())
+
+        XCTAssertEqual(capped.chunkSize, 49_152)
+        XCTAssertEqual(capped.ackWindowBytes, 1_048_576)
+        XCTAssertEqual(uncapped.chunkSize, 131_072)
+        XCTAssertEqual(uncapped.ackWindowBytes, 2_097_152)
+    }
+
+    func testAdaptiveUploadControllerPausesForRecommendationsBelowProtocolMinimums() throws {
+        var controller = AdaptiveUploadController()
+
+        let invalidChunk = controller.record(
+            adaptiveObservation(
+                recommendedChunkSize: 1,
+                recommendedAckWindowBytes: 1_048_576,
+                retryAfterMs: 750
+            )
+        )
+        let resumed = controller.record(adaptiveObservation())
+
+        var ackController = AdaptiveUploadController()
+        let invalidAckWindow = ackController.record(
+            adaptiveObservation(recommendedAckWindowBytes: 1)
+        )
+
+        XCTAssertTrue(invalidChunk.shouldPause)
+        XCTAssertEqual(invalidChunk.retryAfterMs, 750)
+        XCTAssertEqual(invalidChunk.chunkSize, 32_768)
+        XCTAssertEqual(invalidChunk.ackWindowBytes, 1_048_576)
+        XCTAssertEqual(resumed.chunkSize, 65_536)
+
+        XCTAssertTrue(invalidAckWindow.shouldPause)
+        XCTAssertGreaterThan(invalidAckWindow.retryAfterMs ?? 0, 0)
+        XCTAssertEqual(invalidAckWindow.chunkSize, 32_768)
+        XCTAssertEqual(invalidAckWindow.ackWindowBytes, 1_048_576)
+    }
+
+    func testAdaptiveUploadControllerHalvesImmediatelyForEveryCongestionSignal() throws {
+        let signals: [AdaptiveUploadController.Observation] = [
+            adaptiveObservation(serverState: .slowDown),
+            adaptiveObservation(serverState: .error),
+            adaptiveObservation(isOffsetBehind: true),
+            adaptiveObservation(rtt: nil, windowBytes: 0, windowDuration: 0, didTimeout: true),
+            adaptiveObservation(rtt: nil, windowBytes: 0, windowDuration: 0, didDisconnect: true),
+            adaptiveObservation(rtt: 1.0),
+            adaptiveObservation(socketWriteWaitRatio: 0.41)
+        ]
+
+        for (index, signal) in signals.enumerated() {
+            var controller = AdaptiveUploadController()
+            _ = controller.record(adaptiveObservation())
+            _ = controller.record(adaptiveObservation())
+
+            let decision = controller.record(signal)
+
+            XCTAssertEqual(decision.chunkSize, 65_536, "signal index \(index)")
+            XCTAssertEqual(decision.ackWindowBytes, 1_048_576, "signal index \(index)")
+            XCTAssertTrue(decision.isCoolingDown, "signal index \(index)")
+        }
+    }
+
+    func testAdaptiveUploadControllerCooldownRequiresThreeHealthyWindowsBeforeGrowthResumes() throws {
+        var controller = AdaptiveUploadController()
+        _ = controller.record(adaptiveObservation())
+        _ = controller.record(adaptiveObservation())
+        let reduced = controller.record(adaptiveObservation(serverState: .slowDown))
+
+        let cooldownOne = controller.record(adaptiveObservation())
+        let cooldownTwo = controller.record(adaptiveObservation())
+        let cooldownThree = controller.record(adaptiveObservation())
+        let probeOne = controller.record(adaptiveObservation())
+        let promoted = controller.record(adaptiveObservation())
+
+        XCTAssertEqual(reduced.chunkSize, 65_536)
+        XCTAssertTrue(cooldownOne.isCoolingDown)
+        XCTAssertTrue(cooldownTwo.isCoolingDown)
+        XCTAssertFalse(cooldownThree.isCoolingDown)
+        XCTAssertEqual(probeOne.chunkSize, 65_536)
+        XCTAssertEqual(promoted.chunkSize, 131_072)
+        XCTAssertEqual(promoted.ackWindowBytes, 2_097_152)
+    }
+
+    func testAdaptiveUploadControllerPauseWaitsWithoutAdvancingHealthyCount() throws {
+        var controller = AdaptiveUploadController()
+        _ = controller.record(adaptiveObservation())
+
+        let paused = controller.record(
+            adaptiveObservation(serverState: .pause, retryAfterMs: 750)
+        )
+        let resumed = controller.record(adaptiveObservation())
+
+        XCTAssertTrue(paused.shouldPause)
+        XCTAssertEqual(paused.retryAfterMs, 750)
+        XCTAssertEqual(paused.chunkSize, 65_536)
+        XCTAssertEqual(resumed.chunkSize, 131_072)
+        XCTAssertEqual(resumed.ackWindowBytes, 2_097_152)
+    }
+
+    func testAdaptiveUploadControllerPauseStillHalvesForCongestionSignals() throws {
+        let pauseSignals: [AdaptiveUploadController.Observation] = [
+            adaptiveObservation(serverState: .pause, retryAfterMs: 500, isOffsetBehind: true),
+            adaptiveObservation(serverState: .pause, retryAfterMs: 500, socketWriteWaitRatio: 0.41),
+            adaptiveObservation(serverState: .pause, retryAfterMs: 500, didTimeout: true),
+            adaptiveObservation(serverState: .pause, retryAfterMs: 500, didDisconnect: true),
+            adaptiveObservation(rtt: 1.0, serverState: .pause, retryAfterMs: 500)
+        ]
+
+        for (index, signal) in pauseSignals.enumerated() {
+            var controller = AdaptiveUploadController()
+            _ = controller.record(adaptiveObservation())
+            _ = controller.record(adaptiveObservation())
+
+            let decision = controller.record(signal)
+
+            XCTAssertTrue(decision.shouldPause, "signal index \(index)")
+            XCTAssertEqual(decision.retryAfterMs, 500, "signal index \(index)")
+            XCTAssertEqual(decision.chunkSize, 65_536, "signal index \(index)")
+            XCTAssertEqual(decision.ackWindowBytes, 1_048_576, "signal index \(index)")
+            XCTAssertTrue(decision.isCoolingDown, "signal index \(index)")
+        }
+    }
+
+    func testAdaptiveUploadControllerRejectsInvalidMetricsWithoutPollutingEWMAs() throws {
+        let invalidObservations: [AdaptiveUploadController.Observation] = [
+            adaptiveObservation(rtt: nil, windowBytes: 524_288, windowDuration: 2),
+            adaptiveObservation(rtt: -0.1, windowBytes: 524_288, windowDuration: 2),
+            adaptiveObservation(rtt: .nan, windowBytes: 524_288, windowDuration: 2),
+            adaptiveObservation(rtt: .infinity, windowBytes: 524_288, windowDuration: 2),
+            adaptiveObservation(rtt: 0.5, windowBytes: 524_288, windowDuration: 0),
+            adaptiveObservation(rtt: 0.5, windowBytes: 524_288, windowDuration: -1),
+            adaptiveObservation(rtt: 0.5, windowBytes: 524_288, windowDuration: .nan),
+            adaptiveObservation(rtt: 0.5, windowBytes: 524_288, windowDuration: .infinity),
+            adaptiveObservation(rtt: 0.5, windowBytes: 0, windowDuration: 2),
+            adaptiveObservation(rtt: 0.5, windowBytes: -1, windowDuration: 2),
+            adaptiveObservation(rtt: 0.5, windowBytes: 524_288, windowDuration: 2, socketWriteWaitRatio: -0.1),
+            adaptiveObservation(rtt: 0.5, windowBytes: 524_288, windowDuration: 2, socketWriteWaitRatio: 1.1),
+            adaptiveObservation(rtt: 0.5, windowBytes: 524_288, windowDuration: 2, socketWriteWaitRatio: .nan),
+            adaptiveObservation(rtt: 0.5, windowBytes: 524_288, windowDuration: 2, socketWriteWaitRatio: .infinity),
+            adaptiveObservation(
+                rtt: 0.5,
+                windowBytes: Int.max,
+                windowDuration: .leastNonzeroMagnitude
+            )
+        ]
+
+        for (index, observation) in invalidObservations.enumerated() {
+            var controller = AdaptiveUploadController()
+            _ = controller.record(adaptiveObservation())
+            _ = controller.record(adaptiveObservation())
+            let baselineRTT = controller.smoothedRTT
+            let baselineGoodput = controller.smoothedGoodput
+
+            let decision = controller.record(observation)
+
+            XCTAssertEqual(decision.chunkSize, 65_536, "observation index \(index)")
+            XCTAssertEqual(decision.ackWindowBytes, 1_048_576, "observation index \(index)")
+            XCTAssertTrue(decision.isCoolingDown, "observation index \(index)")
+            XCTAssertEqual(controller.smoothedRTT, baselineRTT, accuracy: 0.000_001, "observation index \(index)")
+            XCTAssertEqual(controller.smoothedGoodput, baselineGoodput, accuracy: 0.001, "observation index \(index)")
+        }
+    }
+
+    func testAdaptiveUploadControllerRepeatedFailuresRespectMinimumParameters() throws {
+        var controller = AdaptiveUploadController()
+        _ = controller.record(adaptiveObservation())
+        _ = controller.record(adaptiveObservation())
+
+        _ = controller.record(adaptiveObservation(serverState: .slowDown))
+        _ = controller.record(adaptiveObservation(serverState: .slowDown))
+        let minimum = controller.record(adaptiveObservation(serverState: .slowDown))
+
+        XCTAssertEqual(minimum.chunkSize, 32_768)
+        XCTAssertEqual(minimum.ackWindowBytes, 1_048_576)
+    }
+
+    private func adaptiveObservation(
+        rtt: TimeInterval? = 0.1,
+        windowBytes: Int = 1_048_576,
+        windowDuration: TimeInterval = 0.4,
+        serverState: AdaptiveUploadController.ServerState = .normal,
+        recommendedChunkSize: Int? = nil,
+        recommendedAckWindowBytes: Int? = nil,
+        retryAfterMs: Int? = nil,
+        isOffsetBehind: Bool = false,
+        socketWriteWaitRatio: Double = 0,
+        didTimeout: Bool = false,
+        didDisconnect: Bool = false
+    ) -> AdaptiveUploadController.Observation {
+        AdaptiveUploadController.Observation(
+            ackRTT: rtt,
+            windowBytes: windowBytes,
+            windowDuration: windowDuration,
+            serverState: serverState,
+            recommendedChunkSize: recommendedChunkSize,
+            recommendedAckWindowBytes: recommendedAckWindowBytes,
+            retryAfterMs: retryAfterMs,
+            isOffsetBehind: isOffsetBehind,
+            socketWriteWaitRatio: socketWriteWaitRatio,
+            didTimeout: didTimeout,
+            didDisconnect: didDisconnect
+        )
+    }
+
+    func testFileDtoDecodesServerParentDirectoryFields() throws {
+        let json = """
+        {
+          "id": 7475479260124168192,
+          "parentId": 7428297864713543680,
+          "parentDirName": "欧美",
+          "fileName": "movie.mp4",
+          "filePath": "/tmp/movie.mp4",
+          "fileSize": 1024,
+          "fileType": "mp4",
+          "isFile": "Y",
+          "isExist": "Y",
+          "hasChild": "N"
+        }
+        """.data(using: .utf8)!
+
+        let file = try JSONDecoder().decode(FileDto.self, from: json)
+
+        XCTAssertEqual(file.pId, 7428297864713543680)
+        XCTAssertEqual(file.parentDirName, "欧美")
+        XCTAssertEqual(file.toDirectoryItem().directoryName, "欧美")
+    }
+
+    func testOnlyUploadCompletionRequestsFileListRefresh() throws {
+        XCTAssertTrue(TransferTaskManager.shouldPostFileListRefresh(for: .upload))
+        XCTAssertFalse(TransferTaskManager.shouldPostFileListRefresh(for: .download))
     }
 
 }

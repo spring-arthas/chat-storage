@@ -1,0 +1,128 @@
+<style>
+  .login-grid { display:grid; grid-template-columns:repeat(3,minmax(280px,1fr)); gap:20px; align-items:start; }
+  .login-choice { cursor:pointer; border:2px solid transparent; border-radius:12px; padding:8px; transition:.18s ease; }
+  .login-choice:hover { transform:translateY(-2px); }
+  .login-choice.selected { border-color:#2f80ed; background:rgba(47,128,237,.07); }
+  .mac-window { overflow:hidden; border:1px solid #b9bec8; border-radius:11px; box-shadow:0 18px 42px rgba(31,38,52,.18); background:#f7f8fa; aspect-ratio:1.18/1; color:#18202b; }
+  .titlebar { height:30px; display:flex; align-items:center; padding:0 11px; gap:6px; background:rgba(248,249,251,.92); border-bottom:1px solid #d8dce3; }
+  .dot { width:8px; height:8px; border-radius:50%; }
+  .red { background:#ff5f57; } .yellow { background:#febc2e; } .green { background:#28c840; }
+  .window-title { margin:auto; padding-right:36px; font-size:10px; color:#69717e; font-weight:600; }
+  .screen { height:calc(100% - 31px); position:relative; }
+  .brandmark { width:48px; height:48px; display:grid; place-items:center; background:#2793e6; color:white; border-radius:13px; font-size:24px; font-weight:700; box-shadow:0 7px 16px rgba(39,147,230,.24); }
+  .field { height:34px; border:1px solid #cfd4dc; border-radius:7px; background:white; display:flex; align-items:center; padding:0 11px; color:#87909e; font-size:11px; box-sizing:border-box; }
+  .field + .field { margin-top:8px; }
+  .field-icon { width:17px; color:#7c8795; font-size:12px; }
+  .eye { margin-left:auto; color:#76818e; }
+  .primary { height:35px; border:0; border-radius:7px; background:#248fe0; color:white; font-weight:650; font-size:11px; width:100%; box-shadow:0 4px 10px rgba(36,143,224,.18); }
+  .status { display:flex; align-items:center; gap:6px; font-size:9px; color:#6c7581; }
+  .status i { width:6px; height:6px; border-radius:50%; background:#35b56b; }
+  .caption { padding:12px 5px 3px; }
+  .caption h3 { margin:0 0 5px; font-size:15px; }
+  .caption p { margin:0; font-size:12px; color:#687281; line-height:1.45; }
+
+  .compact { display:grid; place-items:center; padding:20px; box-sizing:border-box; background:radial-gradient(circle at 50% 15%,#ffffff 0,#f2f5f8 68%); }
+  .compact-inner { width:72%; max-width:220px; text-align:center; }
+  .compact .brandmark { margin:0 auto 12px; }
+  .compact h4 { margin:0; font-size:21px; letter-spacing:0; }
+  .compact .sub { margin:5px 0 16px; font-size:10px; color:#77818e; }
+  .compact .register { margin-top:11px; font-size:9px; color:#75808e; }
+  .compact .register b { color:#258ddd; }
+  .compact .status { justify-content:center; margin-top:20px; }
+
+  .workspace { display:grid; grid-template-columns:38% 62%; background:#f8f9fb; }
+  .workspace .left { padding:20px 17px; color:white; background:#182738; position:relative; overflow:hidden; box-sizing:border-box; }
+  .workspace .left:after { content:""; position:absolute; width:150px; height:150px; border:1px solid rgba(255,255,255,.09); border-radius:50%; right:-85px; bottom:-55px; box-shadow:0 0 0 25px rgba(255,255,255,.025),0 0 0 50px rgba(255,255,255,.018); }
+  .workspace .mini-logo { display:flex; align-items:center; gap:8px; font-size:12px; font-weight:700; }
+  .workspace .mini-logo span { width:25px; height:25px; display:grid; place-items:center; border-radius:7px; background:#2c9aeb; }
+  .workspace .statement { margin-top:38px; font-size:16px; line-height:1.35; font-weight:650; }
+  .workspace .statement small { display:block; margin-top:8px; font-size:9px; line-height:1.55; font-weight:400; color:#a9b7c7; }
+  .workspace .left-status { position:absolute; left:17px; bottom:15px; z-index:1; color:#aeb9c7; }
+  .workspace .right { padding:23px 19px; box-sizing:border-box; display:flex; flex-direction:column; justify-content:center; }
+  .workspace h4 { margin:0 0 4px; font-size:18px; }
+  .workspace .sub { color:#7e8793; font-size:9px; margin-bottom:15px; }
+  .workspace .links { display:flex; justify-content:space-between; margin-top:10px; color:#667180; font-size:9px; }
+  .workspace .links b { color:#278fdd; }
+
+  .branded { background:#eef3f7; padding:14px; box-sizing:border-box; }
+  .branded-panel { height:100%; background:#fff; border-radius:9px; box-shadow:0 9px 24px rgba(33,48,67,.09); overflow:hidden; display:grid; grid-template-rows:88px 1fr; }
+  .branded-head { color:white; background:#1d3247; padding:15px 18px; box-sizing:border-box; display:flex; justify-content:space-between; align-items:flex-start; }
+  .branded-head .identity { display:flex; gap:10px; align-items:center; font-size:13px; font-weight:700; }
+  .branded-head .identity span { width:30px; height:30px; border-radius:8px; display:grid; place-items:center; background:#2998e8; }
+  .branded-head .quote { font-size:8px; color:#aebccc; max-width:110px; line-height:1.5; text-align:right; }
+  .branded-body { width:74%; margin:-18px auto 0; background:white; border-radius:8px 8px 0 0; padding:17px 18px 11px; box-sizing:border-box; box-shadow:0 -2px 14px rgba(20,36,51,.08); }
+  .branded-body h4 { font-size:17px; margin:0 0 3px; }
+  .branded-body .sub { font-size:9px; color:#7b8592; margin-bottom:13px; }
+  .branded-body .bottom { margin-top:10px; display:flex; justify-content:space-between; font-size:8px; color:#76818e; }
+  .branded-body .bottom b { color:#288fdc; }
+  @media(max-width:1000px){.login-grid{grid-template-columns:1fr}.mac-window{max-width:500px;margin:auto;width:100%}}
+</style>
+
+<h2>登录窗口应该走哪种方向？</h2>
+<p class="subtitle">三套都保留登录、注册、回车提交、密码显隐、服务器状态与配置入口。点击最符合你预期的一套。</p>
+
+<div class="login-grid">
+  <div class="login-choice" data-choice="a-compact" onclick="toggleSelect(this)">
+    <div class="mac-window">
+      <div class="titlebar"><i class="dot red"></i><i class="dot yellow"></i><i class="dot green"></i><span class="window-title">毒药网盘</span></div>
+      <div class="screen compact">
+        <div class="compact-inner">
+          <div class="brandmark">D</div>
+          <h4>欢迎回来</h4>
+          <div class="sub">登录以继续聊天和访问云盘</div>
+          <div class="field"><span class="field-icon">◉</span>手机号 / 用户名</div>
+          <div class="field"><span class="field-icon">◆</span>密码<span class="eye">◉</span></div>
+          <button class="primary">登录</button>
+          <div class="register">还没有账号？ <b>创建账号</b></div>
+          <div class="status"><i></i>服务器已连接 · 设置</div>
+        </div>
+      </div>
+    </div>
+    <div class="caption"><h3>A · Telegram 式紧凑</h3><p>单列聚焦，熟悉直接，窗口尺寸最克制。适合强调效率和聊天产品感。</p></div>
+  </div>
+
+  <div class="login-choice" data-choice="b-workspace" onclick="toggleSelect(this)">
+    <div class="mac-window">
+      <div class="titlebar"><i class="dot red"></i><i class="dot yellow"></i><i class="dot green"></i><span class="window-title">毒药网盘</span></div>
+      <div class="screen workspace">
+        <div class="left">
+          <div class="mini-logo"><span>D</span>毒药网盘</div>
+          <div class="statement">让聊天与文件，<br>始终触手可及。<small>一处连接好友、消息和你的私人云盘。</small></div>
+          <div class="status left-status"><i></i>服务可用</div>
+        </div>
+        <div class="right">
+          <h4>欢迎回来</h4>
+          <div class="sub">请输入账号信息继续</div>
+          <div class="field"><span class="field-icon">◉</span>手机号 / 用户名</div>
+          <div class="field"><span class="field-icon">◆</span>密码<span class="eye">◉</span></div>
+          <button class="primary">登录</button>
+          <div class="links"><span>服务器设置</span><b>创建账号</b></div>
+        </div>
+      </div>
+    </div>
+    <div class="caption"><h3>B · macOS 工作台式（推荐）</h3><p>左侧建立产品身份，右侧完成任务。视觉更成熟，又不会做成营销落地页。</p></div>
+  </div>
+
+  <div class="login-choice" data-choice="c-branded" onclick="toggleSelect(this)">
+    <div class="mac-window">
+      <div class="titlebar"><i class="dot red"></i><i class="dot yellow"></i><i class="dot green"></i><span class="window-title">毒药网盘</span></div>
+      <div class="screen branded">
+        <div class="branded-panel">
+          <div class="branded-head">
+            <div class="identity"><span>D</span>毒药网盘</div>
+            <div class="quote">聊天、文件与回忆<br>安全抵达每一次连接</div>
+          </div>
+          <div class="branded-body">
+            <h4>登录</h4>
+            <div class="sub">欢迎回来，继续你的连接</div>
+            <div class="field"><span class="field-icon">◉</span>手机号 / 用户名</div>
+            <div class="field"><span class="field-icon">◆</span>密码<span class="eye">◉</span></div>
+            <button class="primary">登录</button>
+            <div class="bottom"><span>● 服务器已连接</span><b>注册 · 设置</b></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="caption"><h3>C · 品牌化层叠布局</h3><p>品牌头部与登录面板产生层次，识别度最高，但整体视觉比前两套更正式。</p></div>
+  </div>
+</div>

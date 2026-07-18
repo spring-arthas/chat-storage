@@ -37,6 +37,10 @@ struct LoginView: View {
 
     init(isLoggedIn: Binding<Bool>) {
         _isLoggedIn = isLoggedIn
+#if DEBUG
+        _username = State(initialValue: "18806504525")
+        _password = State(initialValue: "spring")
+#endif
     }
 
     // MARK: - Body

@@ -427,8 +427,9 @@ actor FileThumbnailService {
     }
 
     func markUploadSucceeded(taskId: String, fileId: Int64?) {
-        guard let fileId else {
+        guard let fileId, fileId > 0 else {
             upsertLedger(taskId: taskId, state: .uploadSucceededNoFileId)
+            print("[Thumbnail] 上传完成但 fileId 无效，保留 taskId 缓存: taskId=\(taskId), fileId=\(fileId?.description ?? "nil")")
             return
         }
         upsertLedger(taskId: taskId, fileId: fileId, state: .uploadSucceeded)
@@ -436,6 +437,7 @@ actor FileThumbnailService {
     }
 
     private func startRemapTaskIfNeeded(taskId: String, fileId: Int64) {
+        guard fileId > 0 else { return }
         guard !remapInFlight.contains(taskId) else { return }
         remapInFlight.insert(taskId)
         upsertLedger(taskId: taskId, fileId: fileId, state: .remapPending)
@@ -466,6 +468,10 @@ actor FileThumbnailService {
         timeoutSeconds: TimeInterval = 30.0,
         pollIntervalSeconds: TimeInterval = 0.5
     ) async -> Bool {
+        guard fileId > 0 else {
+            upsertLedger(taskId: taskId, state: .uploadSucceededNoFileId, lastError: "invalid_file_id")
+            return false
+        }
         let deadline = Date().addingTimeInterval(timeoutSeconds)
         while Date() < deadline {
             if remapToFileIdOnce(taskId: taskId, fileId: fileId) {
@@ -556,6 +562,27 @@ actor FileThumbnailService {
     // MARK: - 视频：AVAssetResourceLoader 按需拉取字节
 
     private func loadVideoThumbnailFromServer(_ item: DirectoryItem) async -> NSImage? {
+        // 优先复用在线播放服务的 HTTP Range 地址。AVFoundation 可自行请求文件头、
+        // 尾部 moov 和目标帧数据，避免把 requestsAllDataToEnd 请求截断后误报资源不完整。
+        do {
+            let playInfo = try await VideoPlaybackService.shared.requestPlayUrl(fileId: item.id)
+            let asset = AVURLAsset(url: playInfo.playUrl)
+            if let image = await generateRemoteVideoThumbnail(
+                asset: asset,
+                fileName: item.fileName,
+                timeoutSeconds: 30
+            ) {
+                return image
+            }
+            print("[Thumbnail] HTTP Range 抽帧失败，回退 range_pull: file=\(item.fileName), id=\(item.id)")
+        } catch {
+            print("[Thumbnail] 获取缩略图播放地址失败，回退 range_pull: file=\(item.fileName), error=\(error.localizedDescription)")
+        }
+
+        return await loadVideoThumbnailViaRangePull(item)
+    }
+
+    private func loadVideoThumbnailViaRangePull(_ item: DirectoryItem) async -> NSImage? {
         guard let fileSize = item.fileSize, fileSize > 0 else {
             // ⚠️ 诊断日志：fileSize 为 nil 或 0 时无法构建 ResourceLoader（AVFoundation ContentInfo 必须知道文件总大小）
             // 若此日志频繁出现，检查服务端目录接口是否对所有文件都返回了 fileSize 字段。
@@ -575,6 +602,21 @@ actor FileThumbnailService {
         let loaderQueue = DispatchQueue(label: "thumb.loader.\(item.id)")
         asset.resourceLoader.setDelegate(loader, queue: loaderQueue)
 
+        let image = await generateRemoteVideoThumbnail(
+            asset: asset,
+            fileName: item.fileName,
+            timeoutSeconds: 30
+        )
+        // AVAssetResourceLoader.setDelegate 只持有 delegate 的弱引用。
+        withExtendedLifetime(loader) {}
+        return image
+    }
+
+    private func generateRemoteVideoThumbnail(
+        asset: AVAsset,
+        fileName: String,
+        timeoutSeconds: UInt64
+    ) async -> NSImage? {
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.requestedTimeToleranceBefore = CMTime(seconds: 10, preferredTimescale: 600)
@@ -598,7 +640,7 @@ actor FileThumbnailService {
 
                     generator.generateCGImagesAsynchronously(
                         forTimes: candidateTimes.map { NSValue(time: $0) }
-                    ) { _, cgImage, _, result, _ in
+                    ) { _, cgImage, _, result, error in
                         lock.lock()
                         if result == .succeeded, let img = cgImage {
                             let score = brightnessScore(img)
@@ -614,7 +656,7 @@ actor FileThumbnailService {
                                 return
                             }
                         } else if result == .failed {
-                            print("[Thumbnail] \(item.fileName) 帧提取失败，result=\(result.rawValue)")
+                            print("[Thumbnail] \(fileName) 帧提取失败，result=\(result.rawValue), error=\(error?.localizedDescription ?? "unknown")")
                         }
                         pending -= 1
                         let done = pending == 0 && !hasResumed
@@ -628,18 +670,13 @@ actor FileThumbnailService {
                 }
             }
             group.addTask {
-                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                try? await Task.sleep(nanoseconds: timeoutSeconds * 1_000_000_000)
                 return nil
             }
             // 取第一个返回的结果（帧提取完成或 30 秒超时）
             let first = await group.next()
             group.cancelAll()
             generator.cancelAllCGImageGeneration()
-            // ⚠️ 关键修复：强制 loader 存活到整个 withTaskGroup 闭包结束。
-            // AVAssetResourceLoader.setDelegate 只持有 delegate 的 weak 引用。
-            // 若 loader（局部变量）在 AVFoundation 发出 DataRequest 之前被 ARC
-            // 释放，delegate 变为 nil，所有请求无人响应，导致帧提取始终失败。
-            withExtendedLifetime(loader) {}
             return first ?? nil
         }
 

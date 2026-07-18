@@ -1,0 +1,1233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>云盘 C 方案精细化</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #eef3f8;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+      color: #172033;
+    }
+    .page {
+      padding: 24px;
+      max-width: 1540px;
+      margin: 0 auto;
+    }
+    .titlebar {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      margin-bottom: 18px;
+      gap: 20px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 26px;
+      letter-spacing: 0;
+    }
+    .subtitle {
+      margin: 7px 0 0;
+      font-size: 14px;
+      color: #657386;
+    }
+    .decision {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      color: #667085;
+      font-size: 13px;
+      background: rgba(255,255,255,0.72);
+      border: 1px solid #dbe4ee;
+      border-radius: 10px;
+      padding: 10px 12px;
+      white-space: nowrap;
+    }
+    .mock-shell {
+      background: #ffffff;
+      border: 1px solid #d8e2ee;
+      border-radius: 18px;
+      overflow: hidden;
+      box-shadow: 0 18px 42px rgba(23,32,51,0.13);
+      min-height: 790px;
+    }
+    .window-top {
+      height: 52px;
+      display: grid;
+      grid-template-columns: 240px 1fr;
+      align-items: center;
+      padding: 0 18px;
+      background: #fbfcfe;
+      border-bottom: 1px solid #e7edf4;
+    }
+    .traffic {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .dot { width: 11px; height: 11px; border-radius: 50%; background: #d7dde6; }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      font-weight: 800;
+      color: #172033;
+    }
+    .brand-mark {
+      width: 30px;
+      height: 30px;
+      border-radius: 9px;
+      display: grid;
+      place-items: center;
+      background: #159b68;
+      color: white;
+      font-size: 15px;
+      font-weight: 900;
+    }
+    .seg {
+      display: flex;
+      background: #eff3f7;
+      border: 1px solid #dfe7f0;
+      padding: 3px;
+      border-radius: 10px;
+      gap: 2px;
+      font-size: 13px;
+      font-weight: 700;
+      color: #768397;
+    }
+    .seg span {
+      min-width: 58px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+    }
+    .seg .active {
+      background: #ffffff;
+      color: #159b68;
+      box-shadow: 0 1px 7px rgba(23,32,51,0.1);
+    }
+    .sys {
+      justify-self: end;
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      color: #667085;
+      font-size: 13px;
+      font-weight: 650;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #17b26a;
+      box-shadow: 0 0 0 4px rgba(23,178,106,0.13);
+    }
+    .app {
+      display: grid;
+      grid-template-columns: 258px minmax(720px, 1fr) 300px;
+      min-height: 738px;
+    }
+    .sidebar {
+      background: linear-gradient(180deg, #fbfcfe 0%, #f6f9fc 100%);
+      border-right: 1px solid #e7edf4;
+      padding: 16px 14px;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      min-height: 736px;
+    }
+    .workspace-card {
+      border: 1px solid #e3eaf2;
+      background: #ffffff;
+      border-radius: 14px;
+      padding: 12px;
+      margin-bottom: 12px;
+      box-shadow: 0 6px 18px rgba(23,32,51,0.05);
+    }
+    .workspace-main {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+    .workspace-avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: 11px;
+      display: grid;
+      place-items: center;
+      background: #e9f8f0;
+      color: #159b68;
+      font-weight: 900;
+      flex: 0 0 auto;
+    }
+    .workspace-name {
+      min-width: 0;
+      font-size: 13px;
+      font-weight: 900;
+      color: #172033;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .workspace-sub {
+      margin-top: 3px;
+      color: #98a2b3;
+      font-size: 12px;
+    }
+    .sidebar-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+      padding: 0 4px;
+    }
+    .sidebar-title {
+      font-size: 13px;
+      font-weight: 800;
+      color: #344054;
+    }
+    .small-icon {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      color: #657386;
+      background: transparent;
+    }
+    .small-icon.primary {
+      color: #159b68;
+      background: #eaf8f1;
+    }
+    .dir-search {
+      height: 34px;
+      border: 1px solid #e3eaf2;
+      background: #ffffff;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 10px;
+      color: #98a2b3;
+      font-size: 12px;
+      margin-bottom: 12px;
+    }
+    .tree-list {
+      position: relative;
+      display: grid;
+      gap: 4px;
+    }
+    .tree-item {
+      position: relative;
+      height: 36px;
+      display: grid;
+      grid-template-columns: 18px 28px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 7px;
+      padding: 0 8px;
+      border-radius: 10px;
+      color: #5d6b7e;
+      font-size: 13px;
+      font-weight: 720;
+      margin-bottom: 0;
+    }
+    .tree-item:hover {
+      background: #ffffff;
+    }
+    .tree-item .chev {
+      color: #98a2b3;
+      font-size: 12px;
+    }
+    .tree-item .folder {
+      width: 26px;
+      height: 26px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      color: #d89b2b;
+      font-size: 15px;
+      background: #fff5e0;
+    }
+    .tree-item .label {
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .tree-count {
+      color: #98a2b3;
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .tree-item.active {
+      color: #0f6846;
+      background: #e9f8f0;
+      box-shadow: inset 3px 0 0 #159b68;
+    }
+    .tree-item.active .folder {
+      color: #159b68;
+      background: #ffffff;
+    }
+    .tree-item.depth1 {
+      margin-left: 18px;
+    }
+    .tree-item.depth1::before,
+    .tree-item.depth2::before {
+      content: "";
+      position: absolute;
+      left: -8px;
+      top: -6px;
+      width: 1px;
+      height: 48px;
+      background: #dce5ef;
+    }
+    .tree-item.depth2 {
+      margin-left: 36px;
+    }
+    .sidebar-bottom {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 10px 2px;
+      border-top: 1px solid #e7edf4;
+    }
+    .dock-btn {
+      position: relative;
+      width: 42px;
+      height: 42px;
+      border: 0;
+      border-radius: 13px;
+      background: transparent;
+      display: grid;
+      place-items: center;
+      color: #98a2b3;
+      font-size: 26px;
+      line-height: 1;
+    }
+    .dock-btn.active {
+      color: #159b68;
+      background: #e9f8f0;
+    }
+    .dock-btn.chat {
+      color: #2397e8;
+      background: transparent;
+    }
+    .dock-btn.cloud {
+      color: #159b68;
+      background: #e9f8f0;
+    }
+    .dock-badge {
+      position: absolute;
+      top: -2px;
+      right: -2px;
+      min-width: 20px;
+      height: 20px;
+      border-radius: 999px;
+      background: #ff3b30;
+      color: #fff;
+      border: 2px solid #f8fafc;
+      display: grid;
+      place-items: center;
+      font-size: 11px;
+      font-weight: 900;
+    }
+    .chat-bubbles {
+      position: relative;
+      width: 31px;
+      height: 26px;
+    }
+    .chat-bubbles::before,
+    .chat-bubbles::after {
+      content: "";
+      position: absolute;
+      border-radius: 999px;
+      background: #2397e8;
+    }
+    .chat-bubbles::before {
+      width: 25px;
+      height: 20px;
+      right: 0;
+      top: 1px;
+    }
+    .chat-bubbles::after {
+      width: 24px;
+      height: 19px;
+      left: 0;
+      bottom: 0;
+      box-shadow: 7px 2px 0 #2397e8;
+    }
+    .chat-tail {
+      position: absolute;
+      left: 6px;
+      bottom: 0;
+      width: 10px;
+      height: 10px;
+      background: #2397e8;
+      transform: rotate(45deg);
+      border-radius: 2px;
+    }
+    .main {
+      background: #ffffff;
+      display: grid;
+      grid-template-rows: 78px minmax(0, 1fr) 58px;
+      min-width: 0;
+      position: relative;
+      overflow: hidden;
+    }
+    .main-top {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 18px;
+      align-items: center;
+      padding: 16px 18px;
+      border-bottom: 1px solid #e7edf4;
+      background: #ffffff;
+    }
+    .path {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+    .breadcrumb {
+      display: flex;
+      gap: 7px;
+      align-items: center;
+      font-size: 13px;
+      color: #667085;
+      margin-bottom: 6px;
+    }
+    .breadcrumb strong {
+      color: #172033;
+    }
+    .folder-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 20px;
+      font-weight: 850;
+      color: #172033;
+    }
+    .folder-count {
+      height: 24px;
+      display: inline-grid;
+      place-items: center;
+      padding: 0 9px;
+      border-radius: 999px;
+      background: #f2f5f8;
+      color: #667085;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+    }
+    .search {
+      width: 220px;
+      height: 36px;
+      border-radius: 10px;
+      border: 1px solid #dce5ef;
+      background: #f8fafc;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 12px;
+      color: #98a2b3;
+      font-size: 13px;
+    }
+    .btn {
+      height: 36px;
+      border: 1px solid #dce5ef;
+      border-radius: 10px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      padding: 0 12px;
+      font-size: 13px;
+      font-weight: 750;
+      color: #475467;
+      background: #fff;
+    }
+    .btn.green {
+      border-color: #159b68;
+      background: #159b68;
+      color: #fff;
+      box-shadow: 0 8px 18px rgba(21,155,104,0.22);
+    }
+    .btn.icon {
+      width: 36px;
+      padding: 0;
+    }
+    .content-area {
+      min-width: 0;
+      display: grid;
+      grid-template-rows: 50px 1fr;
+    }
+    .content-tools {
+      height: 50px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      border-bottom: 1px solid #eef2f6;
+      background: #fbfcfd;
+    }
+    .bulk {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .bulk .btn {
+      height: 32px;
+      font-size: 12px;
+      padding: 0 10px;
+      color: #667085;
+    }
+    .view-toggle {
+      display: flex;
+      padding: 3px;
+      border-radius: 9px;
+      border: 1px solid #dce5ef;
+      background: #f1f5f9;
+      gap: 2px;
+    }
+    .view-toggle span {
+      width: 30px;
+      height: 26px;
+      display: grid;
+      place-items: center;
+      border-radius: 7px;
+      color: #667085;
+      font-size: 14px;
+    }
+    .view-toggle .active {
+      color: #159b68;
+      background: #fff;
+      box-shadow: 0 1px 5px rgba(23,32,51,0.1);
+    }
+    .file-list {
+      padding: 0 18px 18px;
+      overflow: hidden;
+    }
+    .list-head {
+      display: grid;
+      grid-template-columns: 34px minmax(240px, 1fr) 100px 104px 136px 118px;
+      align-items: center;
+      height: 42px;
+      color: #7a8797;
+      font-size: 12px;
+      font-weight: 800;
+      border-bottom: 1px solid #eef2f6;
+    }
+    .file-row {
+      display: grid;
+      grid-template-columns: 34px minmax(240px, 1fr) 100px 104px 136px 118px;
+      align-items: center;
+      min-height: 64px;
+      border-bottom: 1px solid #eef2f6;
+      color: #344054;
+      font-size: 13px;
+    }
+    .file-row.selected {
+      background: #f4fbf8;
+      box-shadow: inset 3px 0 0 #159b68;
+    }
+    .check {
+      width: 17px;
+      height: 17px;
+      border: 1px solid #d0d8e2;
+      border-radius: 5px;
+      background: #fff;
+    }
+    .file-name {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .thumb {
+      width: 38px;
+      height: 38px;
+      border-radius: 10px;
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      font-size: 11px;
+      font-weight: 850;
+      letter-spacing: 0;
+    }
+    .ppt { background: #eef6ff; color: #1677c8; }
+    .video { background: linear-gradient(135deg,#111827,#263145); color: #fff; }
+    .img { background: #fff4df; color: #b76a00; }
+    .name-wrap {
+      min-width: 0;
+    }
+    .filename {
+      color: #172033;
+      font-weight: 800;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      max-width: 310px;
+    }
+    .meta {
+      margin-top: 4px;
+      font-size: 12px;
+      color: #98a2b3;
+    }
+    .folder-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 26px;
+      padding: 0 9px;
+      background: #f6f8fa;
+      color: #667085;
+      border-radius: 999px;
+      font-weight: 700;
+    }
+    .row-actions {
+      display: flex;
+      gap: 6px;
+      justify-content: flex-end;
+      padding-right: 8px;
+    }
+    .row-btn {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      background: #f3f6f9;
+      color: #667085;
+      font-size: 13px;
+    }
+    .row-btn.play {
+      background: #e8f7ef;
+      color: #159b68;
+    }
+    .transfer {
+      border-top: 1px solid #e7edf4;
+      background: #fbfcfd;
+      padding: 9px 18px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 14px;
+      align-items: center;
+    }
+    .task-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #667085;
+      font-size: 12px;
+    }
+    .mini-progress {
+      width: 210px;
+      height: 7px;
+      background: #edf2f7;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .mini-progress span {
+      display: block;
+      width: 64%;
+      height: 100%;
+      background: #159b68;
+    }
+    .transfer-summary {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+    .transfer-icon {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      display: grid;
+      place-items: center;
+      background: #e9f8f0;
+      color: #159b68;
+      font-weight: 900;
+      flex: 0 0 auto;
+    }
+    .transfer-text {
+      min-width: 0;
+    }
+    .transfer-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #172033;
+      font-size: 13px;
+      font-weight: 850;
+      margin-bottom: 4px;
+    }
+    .transfer-desc {
+      color: #667085;
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .transfer-drawer {
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      bottom: 66px;
+      height: 392px;
+      border: 1px solid #d9e3ee;
+      border-radius: 16px;
+      background: rgba(255,255,255,0.96);
+      box-shadow: 0 18px 46px rgba(23,32,51,0.18);
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr);
+      overflow: hidden;
+      z-index: 5;
+    }
+    .drawer-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 16px 12px;
+      border-bottom: 1px solid #eef2f6;
+      background: #ffffff;
+    }
+    .drawer-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #172033;
+      font-weight: 900;
+      font-size: 16px;
+    }
+    .drawer-title .count {
+      height: 24px;
+      display: grid;
+      place-items: center;
+      padding: 0 9px;
+      border-radius: 999px;
+      background: #f2f5f8;
+      color: #667085;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .drawer-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .filter-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 16px;
+      border-bottom: 1px solid #eef2f6;
+      background: #fbfcfd;
+    }
+    .filters {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .filter {
+      height: 30px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 11px;
+      border-radius: 999px;
+      border: 1px solid #dce5ef;
+      background: #fff;
+      color: #667085;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .filter.active {
+      color: #0f6846;
+      border-color: #bce8ce;
+      background: #e9f8f0;
+    }
+    .drawer-search {
+      width: 180px;
+      height: 30px;
+      border-radius: 9px;
+      border: 1px solid #dce5ef;
+      background: #fff;
+      color: #98a2b3;
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+      font-size: 12px;
+    }
+    .task-list {
+      min-height: 0;
+      overflow-y: auto;
+      background: #ffffff;
+    }
+    .task-head,
+    .task-item {
+      display: grid;
+      grid-template-columns: minmax(240px, 1fr) 76px 84px 92px 150px 98px;
+      align-items: center;
+      gap: 12px;
+      padding: 0 16px;
+    }
+    .task-head {
+      height: 34px;
+      color: #7a8797;
+      font-size: 11px;
+      font-weight: 900;
+      border-bottom: 1px solid #eef2f6;
+      position: sticky;
+      top: 0;
+      background: #ffffff;
+      z-index: 1;
+    }
+    .task-item {
+      min-height: 58px;
+      border-bottom: 1px solid #f1f4f7;
+      color: #344054;
+      font-size: 12px;
+    }
+    .task-name {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .task-thumb {
+      width: 34px;
+      height: 34px;
+      border-radius: 9px;
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      background: #eef6ff;
+      color: #1677c8;
+      font-size: 10px;
+      font-weight: 900;
+    }
+    .task-file {
+      min-width: 0;
+    }
+    .task-file strong {
+      display: block;
+      color: #172033;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      margin-bottom: 3px;
+    }
+    .task-file span {
+      color: #98a2b3;
+    }
+    .status-chip {
+      height: 24px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 850;
+    }
+    .status-chip.running { color: #0f6846; background: #e9f8f0; }
+    .status-chip.paused { color: #8a5b00; background: #fff4d6; }
+    .status-chip.failed { color: #b42318; background: #fee4e2; }
+    .status-chip.done { color: #475467; background: #f2f4f7; }
+    .task-progress {
+      display: grid;
+      gap: 5px;
+    }
+    .task-progress .mini-progress {
+      width: 100%;
+    }
+    .task-progress label {
+      color: #667085;
+      font-size: 11px;
+    }
+    .task-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+    .task-action {
+      width: 26px;
+      height: 26px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      color: #667085;
+      background: #f3f6f9;
+      font-size: 12px;
+    }
+    .detail {
+      background: #f9fbfd;
+      border-left: 1px solid #e7edf4;
+      padding: 18px;
+      min-width: 0;
+    }
+    .detail-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+    .detail-title {
+      font-size: 16px;
+      font-weight: 850;
+      color: #172033;
+    }
+    .preview {
+      height: 164px;
+      border-radius: 14px;
+      overflow: hidden;
+      background: linear-gradient(135deg,#0b1220,#243043);
+      border: 1px solid #dde6ef;
+      display: grid;
+      place-items: center;
+      color: white;
+      margin-bottom: 16px;
+      position: relative;
+    }
+    .play {
+      width: 50px;
+      height: 50px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.18);
+      backdrop-filter: blur(10px);
+      font-size: 20px;
+    }
+    .info-block {
+      background: #fff;
+      border: 1px solid #e7edf4;
+      border-radius: 12px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 8px 0;
+      color: #667085;
+      font-size: 12px;
+      border-bottom: 1px solid #f1f4f7;
+    }
+    .info-row:last-child { border-bottom: 0; }
+    .info-row strong {
+      color: #344054;
+      font-weight: 750;
+      text-align: right;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .detail-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .detail-actions .btn {
+      height: 34px;
+      font-size: 12px;
+    }
+    .variants {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-top: 18px;
+    }
+    .variant {
+      border: 1px solid #dbe4ee;
+      background: rgba(255,255,255,0.8);
+      border-radius: 14px;
+      padding: 16px;
+      cursor: pointer;
+    }
+    .variant:hover {
+      border-color: #159b68;
+      box-shadow: 0 0 0 3px rgba(21,155,104,0.12);
+    }
+    .variant h2 {
+      margin: 0 0 8px;
+      font-size: 16px;
+    }
+    .variant p {
+      margin: 0;
+      color: #657386;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+    @media (max-width: 1200px) {
+      .app { grid-template-columns: 210px minmax(640px, 1fr); }
+      .detail { display: none; }
+      .window-top { grid-template-columns: 220px 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="titlebar">
+      <div>
+        <h1>C 方案：目录导航优化版</h1>
+        <p class="subtitle">左侧栏改成工作区根目录卡片、目录搜索和带层级线的目录树；文件区和传输中心保持上一版结构。</p>
+      </div>
+      <div class="decision">评估重点：目录层级是否更清楚、选中态是否更舒服、左侧整体是否不再像原生树控件。</div>
+    </div>
+
+    <div class="mock-shell">
+      <div class="window-top">
+        <div class="traffic"><span class="dot"></span><span class="dot"></span><span class="dot"></span><div class="brand"><span class="brand-mark">D</span>毒药网盘</div></div>
+        <div class="sys"><span>2026-07-17 16:52:08</span><span style="color:#ef4444">⏻</span></div>
+      </div>
+
+      <div class="app">
+        <aside class="sidebar">
+          <div>
+            <div class="workspace-card">
+              <div class="workspace-main">
+                <div class="workspace-avatar">D</div>
+                <div style="min-width:0">
+                  <div class="workspace-name">18806504525</div>
+                  <div class="workspace-sub">我的云盘根目录</div>
+                </div>
+              </div>
+            </div>
+            <div class="sidebar-head"><span class="sidebar-title">目录</span><span class="small-icon primary">＋</span></div>
+            <div class="dir-search">⌕ 搜索目录</div>
+            <div class="tree-list">
+              <div class="tree-item">
+                <span class="chev">▾</span><span class="folder">▣</span><span class="label">188...4525</span><span class="tree-count">7</span>
+              </div>
+              <div class="tree-item depth1">
+                <span class="chev">▾</span><span class="folder">▣</span><span class="label">果果</span><span class="tree-count">3</span>
+              </div>
+              <div class="tree-item depth2 active">
+                <span></span><span class="folder">▣</span><span class="label">日常</span><span class="tree-count">4</span>
+              </div>
+              <div class="tree-item depth1">
+                <span class="chev">▾</span><span class="folder">▣</span><span class="label">电影</span><span class="tree-count">2</span>
+              </div>
+              <div class="tree-item depth2">
+                <span></span><span class="folder">▣</span><span class="label">欧美</span><span class="tree-count">1</span>
+              </div>
+              <div class="tree-item depth1">
+                <span></span><span class="folder">▣</span><span class="label">技术</span><span class="tree-count">8</span>
+              </div>
+              <div class="tree-item depth1">
+                <span></span><span class="folder">▣</span><span class="label">工作</span><span class="tree-count">5</span>
+              </div>
+            </div>
+          </div>
+          <div></div>
+          <div class="sidebar-bottom">
+            <button class="dock-btn chat" title="对话"><span class="chat-bubbles"><span class="chat-tail"></span></span><span class="dock-badge">5</span></button>
+            <button class="dock-btn cloud" title="云盘">☁</button>
+            <button class="dock-btn" title="设置">⚙</button>
+          </div>
+        </aside>
+
+        <main class="main">
+          <section class="main-top">
+            <div class="path">
+              <div class="breadcrumb"><span>188...4525</span><span>/</span><span>果果</span><span>/</span><strong>日常</strong></div>
+              <div class="folder-title">日常 <span class="folder-count">3 个文件</span></div>
+            </div>
+            <div class="actions">
+              <div class="search">⌕ 搜索文件名称</div>
+              <button class="btn green">⬆ 上传</button>
+              <button class="btn">＋ 新建目录</button>
+              <button class="btn icon">⋯</button>
+            </div>
+          </section>
+
+          <section class="content-area">
+            <div class="content-tools">
+              <div class="bulk">
+                <button class="btn">🗑 批量删除</button>
+                <button class="btn">⬇ 批量下载</button>
+                <button class="btn">↻ 刷新</button>
+              </div>
+              <div class="view-toggle"><span class="active">☷</span><span>▦</span></div>
+            </div>
+
+            <div class="file-list">
+              <div class="list-head"><span></span><span>文件名称</span><span>大小</span><span>所属目录</span><span>上传时间</span><span style="text-align:right;padding-right:12px;">操作</span></div>
+              <div class="file-row">
+                <span class="check"></span>
+                <div class="file-name"><span class="thumb ppt">PPT</span><div class="name-wrap"><div class="filename">3.1圆（1）原始.pptx</div><div class="meta">PowerPoint 演示文稿</div></div></div>
+                <span>1.1 MB</span><span class="folder-pill">▣ 日常</span><span>07-14 15:08</span>
+                <div class="row-actions"><span class="row-btn">✎</span><span class="row-btn">⬇</span><span class="row-btn">🗑</span></div>
+              </div>
+              <div class="file-row">
+                <span class="check"></span>
+                <div class="file-name"><span class="thumb ppt">PPT</span><div class="name-wrap"><div class="filename">3.1圆（1）保留错误.pptx</div><div class="meta">PowerPoint 演示文稿</div></div></div>
+                <span>889 KB</span><span class="folder-pill">▣ 日常</span><span>07-14 15:08</span>
+                <div class="row-actions"><span class="row-btn">✎</span><span class="row-btn">⬇</span><span class="row-btn">🗑</span></div>
+              </div>
+              <div class="file-row selected">
+                <span class="check"></span>
+                <div class="file-name"><span class="thumb video">MP4</span><div class="name-wrap"><div class="filename">Terminator.2.Judgment.Day.1991.DC.1080p.BluRay.mp4</div><div class="meta">视频 · 支持在线播放</div></div></div>
+                <span>2.9 GB</span><span class="folder-pill">▣ 欧美</span><span>07-13 18:52</span>
+                <div class="row-actions"><span class="row-btn play">▶</span><span class="row-btn">✎</span><span class="row-btn">⬇</span><span class="row-btn">🗑</span></div>
+              </div>
+              <div class="file-row">
+                <span class="check"></span>
+                <div class="file-name"><span class="thumb img">IMG</span><div class="name-wrap"><div class="filename">2025 转入.jpg</div><div class="meta">图片 · 可预览原图</div></div></div>
+                <span>3.0 MB</span><span class="folder-pill">▣ 日常</span><span>07-13 16:42</span>
+                <div class="row-actions"><span class="row-btn">👁</span><span class="row-btn">⬇</span><span class="row-btn">🗑</span></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="transfer">
+            <div class="transfer-summary">
+              <div class="transfer-icon">⇅</div>
+              <div class="transfer-text">
+                <div class="transfer-title"><span>传输中心</span><span class="folder-count">12 个任务</span></div>
+                <div class="transfer-desc">Terminator.2...mp4 上传中 · 64% · 点击展开查看全部上传/下载任务</div>
+              </div>
+            </div>
+            <div class="actions"><span class="mini-progress"><span></span></span><button class="btn">展开</button></div>
+          </section>
+
+          <section class="transfer-drawer">
+            <div class="drawer-head">
+              <div class="drawer-title">传输中心 <span class="count">20 个任务</span></div>
+              <div class="drawer-actions">
+                <button class="btn">全部暂停</button>
+                <button class="btn">全部继续</button>
+                <button class="btn">清除已完成</button>
+                <button class="btn icon">⌄</button>
+              </div>
+            </div>
+            <div class="filter-row">
+              <div class="filters">
+                <span class="filter active">全部 20</span>
+                <span class="filter">上传 12</span>
+                <span class="filter">下载 8</span>
+                <span class="filter">进行中 6</span>
+                <span class="filter">失败 2</span>
+                <span class="filter">已完成 9</span>
+              </div>
+              <div class="drawer-search">⌕ 搜索任务</div>
+            </div>
+            <div class="task-list">
+              <div class="task-head"><span>文件</span><span>类型</span><span>状态</span><span>速度</span><span>进度</span><span style="text-align:right;">操作</span></div>
+              <div class="task-item">
+                <div class="task-name"><span class="task-thumb" style="background:#111827;color:#fff;">MP4</span><div class="task-file"><strong>Terminator.2.Judgment.Day.1991.mp4</strong><span>电影 / 欧美</span></div></div>
+                <span>上传</span><span class="status-chip running">进行中</span><span>12.4 MB/s</span>
+                <div class="task-progress"><span class="mini-progress"><span style="width:64%"></span></span><label>64% · 剩余 02:18</label></div>
+                <div class="task-actions"><span class="task-action">Ⅱ</span><span class="task-action">×</span></div>
+              </div>
+              <div class="task-item">
+                <div class="task-name"><span class="task-thumb">PPT</span><div class="task-file"><strong>3.1圆（1）原始.pptx</strong><span>果果 / 日常</span></div></div>
+                <span>上传</span><span class="status-chip running">进行中</span><span>1.8 MB/s</span>
+                <div class="task-progress"><span class="mini-progress"><span style="width:82%"></span></span><label>82% · 剩余 00:03</label></div>
+                <div class="task-actions"><span class="task-action">Ⅱ</span><span class="task-action">×</span></div>
+              </div>
+              <div class="task-item">
+                <div class="task-name"><span class="task-thumb" style="background:#fff4df;color:#b76a00;">JPG</span><div class="task-file"><strong>2025 转入.jpg</strong><span>果果 / 日常</span></div></div>
+                <span>下载</span><span class="status-chip failed">失败</span><span>-</span>
+                <div class="task-progress"><span class="mini-progress"><span style="width:43%;background:#ef4444"></span></span><label>网络中断 · 可重试</label></div>
+                <div class="task-actions"><span class="task-action">↻</span><span class="task-action">×</span></div>
+              </div>
+              <div class="task-item">
+                <div class="task-name"><span class="task-thumb">XLS</span><div class="task-file"><strong>通讯记录 20250825-20260225.xlsx</strong><span>工作</span></div></div>
+                <span>上传</span><span class="status-chip paused">已暂停</span><span>-</span>
+                <div class="task-progress"><span class="mini-progress"><span style="width:31%;background:#f59e0b"></span></span><label>31% · 等待继续</label></div>
+                <div class="task-actions"><span class="task-action">▶</span><span class="task-action">×</span></div>
+              </div>
+              <div class="task-item">
+                <div class="task-name"><span class="task-thumb">PPT</span><div class="task-file"><strong>10.1.4 概率的基本性质.pptx</strong><span>技术</span></div></div>
+                <span>上传</span><span class="status-chip done">已完成</span><span>-</span>
+                <div class="task-progress"><span class="mini-progress"><span style="width:100%;background:#98a2b3"></span></span><label>100% · 已写入文件系统</label></div>
+                <div class="task-actions"><span class="task-action">↗</span><span class="task-action">×</span></div>
+              </div>
+              <div class="task-item">
+                <div class="task-name"><span class="task-thumb" style="background:#111827;color:#fff;">MP4</span><div class="task-file"><strong>素材片段-课堂导入.mp4</strong><span>电影 / 技术</span></div></div>
+                <span>下载</span><span class="status-chip running">进行中</span><span>8.6 MB/s</span>
+                <div class="task-progress"><span class="mini-progress"><span style="width:57%"></span></span><label>57% · 剩余 01:04</label></div>
+                <div class="task-actions"><span class="task-action">Ⅱ</span><span class="task-action">×</span></div>
+              </div>
+              <div class="task-item">
+                <div class="task-name"><span class="task-thumb" style="background:#fff4df;color:#b76a00;">PNG</span><div class="task-file"><strong>chat-image-8775CC51.png</strong><span>聊天附件</span></div></div>
+                <span>上传</span><span class="status-chip failed">失败</span><span>-</span>
+                <div class="task-progress"><span class="mini-progress"><span style="width:12%;background:#ef4444"></span></span><label>目录不存在 · 等待修复后重试</label></div>
+                <div class="task-actions"><span class="task-action">↻</span><span class="task-action">×</span></div>
+              </div>
+              <div class="task-item">
+                <div class="task-name"><span class="task-thumb">PPT</span><div class="task-file"><strong>5.4.3 正切函数的性质与图象.pptx</strong><span>技术</span></div></div>
+                <span>下载</span><span class="status-chip done">已完成</span><span>-</span>
+                <div class="task-progress"><span class="mini-progress"><span style="width:100%;background:#98a2b3"></span></span><label>100% · 已保存</label></div>
+                <div class="task-actions"><span class="task-action">↗</span><span class="task-action">×</span></div>
+              </div>
+              <div class="task-item">
+                <div class="task-name"><span class="task-thumb" style="background:#fff4df;color:#b76a00;">JPG</span><div class="task-file"><strong>课堂板书截图.jpg</strong><span>果果 / 日常</span></div></div>
+                <span>上传</span><span class="status-chip running">排队中</span><span>-</span>
+                <div class="task-progress"><span class="mini-progress"><span style="width:0%"></span></span><label>等待前序任务完成</label></div>
+                <div class="task-actions"><span class="task-action">×</span></div>
+              </div>
+              <div class="task-item">
+                <div class="task-name"><span class="task-thumb">ZIP</span><div class="task-file"><strong>教学资料归档.zip</strong><span>工作</span></div></div>
+                <span>上传</span><span class="status-chip paused">已暂停</span><span>-</span>
+                <div class="task-progress"><span class="mini-progress"><span style="width:75%;background:#f59e0b"></span></span><label>75% · 手动暂停</label></div>
+                <div class="task-actions"><span class="task-action">▶</span><span class="task-action">×</span></div>
+              </div>
+              <div class="task-item">
+                <div class="task-name"><span class="task-thumb">DOC</span><div class="task-file"><strong>家校沟通记录.docx</strong><span>工作</span></div></div>
+                <span>下载</span><span class="status-chip done">已完成</span><span>-</span>
+                <div class="task-progress"><span class="mini-progress"><span style="width:100%;background:#98a2b3"></span></span><label>100% · 已保存</label></div>
+                <div class="task-actions"><span class="task-action">↗</span><span class="task-action">×</span></div>
+              </div>
+            </div>
+          </section>
+        </main>
+
+        <aside class="detail">
+          <div class="detail-head"><span class="detail-title">文件详情</span><span class="small-icon">×</span></div>
+          <div class="preview"><span class="play">▶</span></div>
+          <div class="info-block">
+            <div class="info-row"><span>文件名</span><strong>Terminator.2...</strong></div>
+            <div class="info-row"><span>类型</span><strong>MP4 视频</strong></div>
+            <div class="info-row"><span>大小</span><strong>2.9 GB</strong></div>
+            <div class="info-row"><span>目录</span><strong>欧美</strong></div>
+            <div class="info-row"><span>上传时间</span><strong>2026-07-13 18:52</strong></div>
+          </div>
+          <div class="detail-actions">
+            <button class="btn green">▶ 播放</button>
+            <button class="btn">⬇ 下载</button>
+            <button class="btn">✎ 重命名</button>
+            <button class="btn">🗑 删除</button>
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <div class="variants">
+      <div class="variant" data-choice="c-list" onclick="toggleSelect(this)">
+        <h2>推荐落地：列表优先 + 折叠传输中心</h2>
+        <p>文件列表始终占主空间；底部只显示传输摘要、总进度和展开入口。大量上传/下载任务进入独立传输中心面板处理，避免主界面滚动条互相抢空间。</p>
+      </div>
+      <div class="variant" data-choice="c-card" onclick="toggleSelect(this)">
+        <h2>后续增强：网格/卡片视图</h2>
+        <p>作为文件列表的视图切换保留，不作为默认视图。图片和视频目录可以使用卡片视图增强预览，但常规文件管理仍以列表为主。</p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

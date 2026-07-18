@@ -15,6 +15,9 @@ struct FileDto: Codable {
     
     /// 父ID
     let pId: Int64
+
+    /// 直接父目录名称（由服务端文件列表返回）
+    let parentDirName: String?
     
     /// 文件/目录名称
     let fileName: String
@@ -61,7 +64,7 @@ struct FileDto: Codable {
     // MARK: - Robust Decoding
     
     enum CodingKeys: String, CodingKey {
-        case id, pId
+        case id, pId, parentId, parentDirName
         case fileName, filePath, fileSize
         case fileType, isFile, isExist, hasChild
         case userName
@@ -90,9 +93,14 @@ struct FileDto: Codable {
             self.pId = pIdVal
         } else if let pIdStr = try? container.decode(String.self, forKey: .pId), let pIdVal = Int64(pIdStr) {
             self.pId = pIdVal
+        } else if let parentIdVal = try? container.decode(Int64.self, forKey: .parentId) {
+            self.pId = parentIdVal
+        } else if let parentIdStr = try? container.decode(String.self, forKey: .parentId), let parentIdVal = Int64(parentIdStr) {
+            self.pId = parentIdVal
         } else {
             self.pId = 0
         }
+        self.parentDirName = try container.decodeIfPresent(String.self, forKey: .parentDirName)
         
         self.fileName = try container.decodeIfPresent(String.self, forKey: .fileName) ?? "未知文件"
         self.filePath = try container.decodeIfPresent(String.self, forKey: .filePath) ?? ""
@@ -125,9 +133,10 @@ struct FileDto: Codable {
     }
     
     // Default init for manual creation if needed
-    init(id: Int64, pId: Int64, fileName: String, filePath: String, fileSize: Int64?, fileType: String, isFile: String, isExist: String, hasChild: String, userName: String?, gmtCreated: Int64?, gmtModified: Int64?, del: String?, delTime: Int64?, childFileList: [FileDto]?, md5: String? = nil) {
+    init(id: Int64, pId: Int64, fileName: String, filePath: String, fileSize: Int64?, fileType: String, isFile: String, isExist: String, hasChild: String, userName: String?, gmtCreated: Int64?, gmtModified: Int64?, del: String?, delTime: Int64?, childFileList: [FileDto]?, md5: String? = nil, parentDirName: String? = nil) {
         self.id = id
         self.pId = pId
+        self.parentDirName = parentDirName
         self.fileName = fileName
         self.filePath = filePath
         self.fileSize = fileSize
@@ -148,6 +157,7 @@ struct FileDto: Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(pId, forKey: .pId)
+        try container.encodeIfPresent(parentDirName, forKey: .parentDirName)
         try container.encode(fileName, forKey: .fileName)
         try container.encode(filePath, forKey: .filePath)
         try container.encodeIfPresent(fileSize, forKey: .fileSize)
@@ -193,17 +203,18 @@ struct FileDto: Codable {
     /// 转换为 DirectoryItem (用于 UI 显示)
     func toDirectoryItem() -> DirectoryItem {
         let children = childFileList?.map { $0.toDirectoryItem() }
+        let hasDirectoryChildren = children.map { !$0.isEmpty } ?? hasChildBoolean
         
         return DirectoryItem(
             id: id,
             pId: pId,
             fileName: fileName,
             childFileList: children,
-            hasChild: hasChildBoolean,
+            hasChild: hasDirectoryChildren,
             fileSize: fileSize,
             isFile: isFileBoolean,
             uploadTime: gmtCreated,
-            directoryName: nil // 可以在 UI 层根据 pId 查找或忽略
+            directoryName: parentDirName
         )
     }
 }
