@@ -56,6 +56,7 @@ enum SocketError: LocalizedError {
     case timeout
     case invalidResponse
     case connectionClosed
+    case serverError(String)
     case unknown
     
     var errorDescription: String? {
@@ -66,6 +67,7 @@ enum SocketError: LocalizedError {
         case .timeout: return "等待响应超时"
         case .invalidResponse: return "响应数据无效"
         case .connectionClosed: return "连接已关闭"
+        case .serverError(let message): return message
         case .unknown: return "未知错误"
         }
     }
@@ -156,6 +158,7 @@ public class SocketManager: NSObject, ObservableObject {
         super.init()
         sendQueue.setSpecific(key: Self.sendQueueKey, value: "socket-send")
         setupChatHandlers()
+        setupFriendHandlers()
     }
     
     // MARK: - Connection Management
@@ -250,6 +253,7 @@ public class SocketManager: NSObject, ObservableObject {
         chatSendTimeoutWorkItems.values.forEach { $0.cancel() }
         chatSendTimeoutWorkItems.removeAll()
         setupChatHandlers()
+        setupFriendHandlers()
         
         if notifyUI {
             updateState(.disconnected)
@@ -771,7 +775,7 @@ extension SocketManager {
         
         // 3. 发送并等待响应 (0x34 userResponse - 假设服务端返回通用响应)
         // 注意：服务端应该返回 0x34，Data 为 UserDto 列表
-        let responseFrame = try await sendFrameAndWait(frame, expecting: .userResponse, timeout: 10.0)
+        let responseFrame = try await sendFrameAndWait(frame, expecting: .friendSearchResp, timeout: 10.0)
         
         // 打印调试信息，便于查看服务端实际返回的 JSON
         if let jsonString = String(data: responseFrame.data, encoding: .utf8) {
@@ -804,7 +808,7 @@ extension SocketManager {
         let frame = Frame(type: .friendListReq, data: Data())
         
         // 2. 发送并等待响应 (0x34)
-        let responseFrame = try await sendFrameAndWait(frame, expecting: .userResponse, timeout: 10.0)
+        let responseFrame = try await sendFrameAndWait(frame, expecting: .friendListResp, timeout: 10.0)
         
         if let rawJson = String(data: responseFrame.data, encoding: .utf8) {
             print("🔍 [getFriendList] Raw JSON: \(rawJson)")
@@ -924,7 +928,7 @@ extension SocketManager {
         let frame = Frame(type: .addFriendReq, data: jsonData)
         
         // 3. 发送并等待响应 (0x34)
-        let responseFrame = try await sendFrameAndWait(frame, expecting: .userResponse, timeout: 10.0)
+        let responseFrame = try await sendFrameAndWait(frame, expecting: .friendAddResp, timeout: 10.0)
         
         // 4. 解析通用响应 (code == 200 即成功)
         return try parseStandardResponse(responseFrame)
@@ -937,7 +941,7 @@ extension SocketManager {
         let frame = Frame(type: .pendingRequestsReq, data: Data())
         
         // 2. 发送并等待响应 (0x34)
-        let responseFrame = try await sendFrameAndWait(frame, expecting: .userResponse, timeout: 10.0)
+        let responseFrame = try await sendFrameAndWait(frame, expecting: .friendRequestsResp, timeout: 10.0)
         
         if let rawJson = String(data: responseFrame.data, encoding: .utf8) {
             print("🔍 [getPendingRequests] Raw JSON: \(rawJson)")
@@ -1010,7 +1014,7 @@ extension SocketManager {
         let frame = Frame(type: .handleFriendReq, data: jsonData)
         
         // 3. 发送
-        let responseFrame = try await sendFrameAndWait(frame, expecting: .userResponse, timeout: 10.0)
+        let responseFrame = try await sendFrameAndWait(frame, expecting: .friendHandleResp, timeout: 10.0)
         
         // 4. 解析
         return try parseStandardResponse(responseFrame)
@@ -1088,24 +1092,41 @@ extension SocketManager {
 // MARK: - Helper Parsing Methods
 extension SocketManager {
     
-    /// 解析通用响应 (code/msg)
+    /// 解析通用响应，兼容 success/message、code/msg 和 status 三种格式。
     func parseStandardResponse(_ frame: Frame) throws -> Bool {
         guard let json = try JSONSerialization.jsonObject(with: frame.data) as? [String: Any] else {
             throw SocketError.invalidResponse
+        }
+
+        let message = (json["message"] as? String)
+            ?? (json["msg"] as? String)
+            ?? "服务器处理失败"
+
+        if let success = json["success"] as? Bool {
+            if success {
+                return true
+            }
+            print("❌ 服务端返回错误: \(message)")
+            throw SocketError.serverError(message)
         }
         
         if let code = json["code"] as? Int {
             if code == 200 {
                 return true
             } else {
-                let msg = json["msg"] as? String ?? "Unknown error"
-                print("❌ 服务端返回错误: \(code) - \(msg)")
-                return false
+                print("❌ 服务端返回错误: \(code) - \(message)")
+                throw SocketError.serverError(message)
             }
         }
+
+        if let status = json["status"] as? String {
+            if status.uppercased() == "SUCCESS" {
+                return true
+            }
+            throw SocketError.serverError(message)
+        }
         
-        // 兼容性: 有些接口直接返回数据
-        return true
+        throw SocketError.invalidResponse
     }
     
     /// 解析数据响应 (泛型)
@@ -1122,7 +1143,7 @@ extension SocketManager {
                 throw SocketError.invalidResponse // Data is missing
             } else {
                 print("❌ 服务端返回错误: \(responseWrapper.code) - \(responseWrapper.message)")
-                throw SocketError.invalidResponse // Server error
+                throw SocketError.serverError(responseWrapper.message.isEmpty ? "服务器处理失败" : responseWrapper.message)
             }
         }
         
@@ -1132,6 +1153,47 @@ extension SocketManager {
         }
         
         throw SocketError.invalidResponse
+    }
+}
+
+private struct FriendEventPayload: Decodable {
+    let event: String
+    let requestId: Int64?
+    let actorUserId: Int64?
+}
+
+// MARK: - Friend Event Handlers
+extension SocketManager {
+
+    /// 好友申请创建、同意或拒绝后，由服务端主动推送并触发可靠的数据同步。
+    internal func setupFriendHandlers() {
+        registerStreamHandler(for: [.friendEventPush]) { [weak self] frame in
+            guard let self else { return false }
+            guard let event = try? JSONDecoder().decode(FriendEventPayload.self, from: frame.data) else {
+                print("❌ 好友事件推送解析失败")
+                return true
+            }
+
+            Task {
+                do {
+                    _ = try await self.getPendingRequests()
+                } catch {
+                    print("❌ 好友事件后刷新申请列表失败: \(error.localizedDescription)")
+                }
+
+                if event.event == "REQUEST_ACCEPTED" {
+                    do {
+                        let friends = try await self.getFriendList()
+                        await MainActor.run {
+                            self.friendList = friends
+                        }
+                    } catch {
+                        print("❌ 好友事件后刷新好友列表失败: \(error.localizedDescription)")
+                    }
+                }
+            }
+            return true
+        }
     }
 }
 

@@ -78,12 +78,6 @@ struct chat_storageApp: App {
             // 在应用菜单中添加连接控制（可选）
         }
 
-        WindowGroup("应用设置", id: "app-settings") {
-            AppSettingsView()
-                .environmentObject(socketManager)
-        }
-        .defaultSize(width: 720, height: 480)
-        .windowResizability(.contentSize)
     }
     
     init() {
@@ -94,7 +88,7 @@ struct chat_storageApp: App {
     }
 
     private func configureWindowForCurrentState() {
-        guard let window = NSApplication.shared.windows.first(where: { $0.title != "应用设置" }) else { return }
+        guard let window = NSApplication.shared.windows.first else { return }
 
         if isLoggedIn {
             let minimumSize = NSSize(

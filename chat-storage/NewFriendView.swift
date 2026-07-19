@@ -10,6 +10,7 @@ import SwiftUI
 
 struct NewFriendView: View {
     @EnvironmentObject var socketManager: SocketManager
+    var onAddFriend: (() -> Void)? = nil
     // Remove local state, use SocketManager's published property
     // @State private var requests: [FriendRequestDto] = []
     @State private var isLoading = false
@@ -22,6 +23,9 @@ struct NewFriendView: View {
     @State private var selectedRequestAvatar: String? = nil
     @State private var selectedRequestNickName: String? = nil
     @State private var isProcessingAlias = false
+    @State private var processingRequestIds: Set<Int64> = []
+    @State private var showingOperationError = false
+    @State private var operationErrorMessage = ""
     
     var body: some View {
         VStack(spacing: 0) {
@@ -31,6 +35,15 @@ struct NewFriendView: View {
                     .font(.title2)
                     .fontWeight(.bold)
                 Spacer()
+
+                if let onAddFriend {
+                    Button(action: onAddFriend) {
+                        Image(systemName: "person.badge.plus")
+                    }
+                    .buttonStyle(.plain)
+                    .help("添加好友")
+                    .accessibilityLabel("添加好友")
+                }
                 
                 Button(action: loadRequests) {
                     Image(systemName: "arrow.clockwise")
@@ -68,7 +81,10 @@ struct NewFriendView: View {
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(socketManager.pendingFriendRequests) { request in
-                            FriendRequestRow(request: request) { reqId, act, alias in
+                            FriendRequestRow(
+                                request: request,
+                                isProcessing: processingRequestIds.contains(request.id)
+                            ) { reqId, act, alias in
                                 if act == 1 && alias == nil {
                                     // Show alias modal
                                     selectedRequestId = reqId
@@ -130,6 +146,11 @@ struct NewFriendView: View {
                             TextField("输入备注名", text: $aliasInput)
                                 .textFieldStyle(RoundedBorderTextFieldStyle())
                                 .frame(width: 260)
+                                .onChange(of: aliasInput) { value in
+                                    if value.count > 64 {
+                                        aliasInput = String(value.prefix(64))
+                                    }
+                                }
                             
                             HStack(spacing: 16) {
                                 Button(action: {
@@ -146,27 +167,17 @@ struct NewFriendView: View {
                                 Button(action: {
                                     isProcessingAlias = true
                                     Task {
-                                        do {
-                                            let success = try await socketManager.handleFriendRequest(requestId: reqId, action: 1, alias: aliasInput)
+                                        let success = await processRequest(
+                                            requestId: reqId,
+                                            action: 1,
+                                            alias: aliasInput,
+                                            refreshFriends: true
+                                        )
+                                        await MainActor.run {
+                                            isProcessingAlias = false
                                             if success {
-                                                await MainActor.run {
-                                                    withAnimation { showingAliasAlert = false }
-                                                    loadRequests()
-                                                }
-                                                // 延迟500ms防止服务端DB事务尚未完全提交
-                                                try? await Task.sleep(nanoseconds: 500_000_000)
-                                                // 此时调用0x35帧类型请求来刷新最新的好友列表
-                                                let friends = try await socketManager.getFriendList()
-                                                await MainActor.run {
-                                                    socketManager.friendList = friends
-                                                    isProcessingAlias = false
-                                                }
-                                            } else {
-                                                await MainActor.run { isProcessingAlias = false }
+                                                withAnimation { showingAliasAlert = false }
                                             }
-                                        } catch {
-                                            await MainActor.run { isProcessingAlias = false }
-                                            print("Failed to handle request: \(error)")
                                         }
                                     }
                                 }) {
@@ -194,6 +205,11 @@ struct NewFriendView: View {
                 }
             }
         )
+        .alert("操作失败", isPresented: $showingOperationError) {
+            Button("确定", role: .cancel) { }
+        } message: {
+            Text(operationErrorMessage)
+        }
     }
     
     private func loadRequests() {
@@ -217,27 +233,60 @@ struct NewFriendView: View {
     }
     
     private func handleAction(requestId: Int64, action: Int, alias: String? = nil) {
+        guard !processingRequestIds.contains(requestId) else { return }
+        processingRequestIds.insert(requestId)
         Task {
-            do {
-                let success = try await socketManager.handleFriendRequest(requestId: requestId, action: action, alias: alias)
-                if success {
-                    await MainActor.run {
-                        // Refresh list to update status
-                        loadRequests()
-                    }
-                }
-            } catch {
-                print("Failed to handle request: \(error)")
+            _ = await processRequest(
+                requestId: requestId,
+                action: action,
+                alias: alias,
+                refreshFriends: action == 1
+            )
+            await MainActor.run {
+                processingRequestIds.remove(requestId)
             }
+        }
+    }
+
+    private func processRequest(
+        requestId: Int64,
+        action: Int,
+        alias: String?,
+        refreshFriends: Bool
+    ) async -> Bool {
+        do {
+            let success = try await socketManager.handleFriendRequest(
+                requestId: requestId,
+                action: action,
+                alias: alias
+            )
+            guard success else {
+                throw SocketError.serverError("服务器未完成好友申请处理")
+            }
+
+            _ = try await socketManager.getPendingRequests()
+            if refreshFriends {
+                let friends = try await socketManager.getFriendList()
+                await MainActor.run {
+                    socketManager.friendList = friends
+                }
+            }
+            return true
+        } catch {
+            await MainActor.run {
+                operationErrorMessage = error.localizedDescription
+                showingOperationError = true
+            }
+            return false
         }
     }
 }
 
 private struct FriendRequestRow: View {
     let request: FriendRequestDto
+    let isProcessing: Bool
     let onAction: (Int64, Int, String?) -> Void
     @State private var isHovering = false
-    @State private var isProcessing = false
     
     var body: some View {
         HStack(spacing: 12) {
@@ -280,7 +329,6 @@ private struct FriendRequestRow: View {
                             .frame(height: 20)
                     } else {
                         Button(action: {
-                            isProcessing = true
                             onAction(request.id, 2, nil) // Reject
                         }) {
                             Text("拒绝")

@@ -540,7 +540,7 @@ class TransferTaskManager: ObservableObject {
         switch socketError {
         case .connectionFailed, .notConnected, .sendFailed, .timeout, .connectionClosed:
             return true
-        case .invalidResponse, .unknown:
+        case .invalidResponse, .serverError(_), .unknown:
             return false
         }
     }

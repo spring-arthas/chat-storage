@@ -108,7 +108,7 @@ struct RegisterView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                         .shadow(color: TelegramTheme.accent.opacity(0.25), radius: 8, y: 5)
 
-                    Text("毒药网盘")
+                    Text("云境")
                         .font(.system(size: 17, weight: .bold))
                         .foregroundColor(.white)
                 }

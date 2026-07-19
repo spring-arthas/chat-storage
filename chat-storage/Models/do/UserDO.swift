@@ -96,7 +96,8 @@ struct ResponseWrapper<T: Codable>: Codable {
     enum CodingKeys: String, CodingKey {
         case success
         case codeValue = "code"
-        case message = "msg" // 兼容 msg 和 message
+        case message
+        case msg
         case data
     }
     
@@ -108,14 +109,9 @@ struct ResponseWrapper<T: Codable>: Codable {
         data = try container.decodeIfPresent(T.self, forKey: .data)
         
         // 尝试读取 message，如果失败尝试读取 msg
-        if let msg = try? container.decode(String.self, forKey: .message) {
-            message = msg
-        } else {
-            // 如果都没有，尝试用 CodingKey 扩展或者直接设为空
-            // 由于 CodingKeys 映射了 message = "msg"，这里其实只能读 "msg"
-            // 为了更灵活，可能需要手动处理
-            message = ""
-        }
+        message = (try? container.decode(String.self, forKey: .message))
+            ?? (try? container.decode(String.self, forKey: .msg))
+            ?? ""
     }
     
     func encode(to encoder: Encoder) throws {

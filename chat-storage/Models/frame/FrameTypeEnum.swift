@@ -69,6 +69,18 @@ enum FrameTypeEnum: UInt8, CaseIterable {
     case pendingRequestsReq = 0x38
     /// 处理好友申请请求 (0x39)
     case handleFriendReq = 0x39
+    /// 搜索好友响应 (0x3A)
+    case friendSearchResp = 0x3A
+    /// 发送好友申请响应 (0x3B)
+    case friendAddResp = 0x3B
+    /// 好友申请列表响应 (0x3C)
+    case friendRequestsResp = 0x3C
+    /// 处理好友申请响应 (0x3D)
+    case friendHandleResp = 0x3D
+    /// 好友关系事件推送 (0x3E)
+    case friendEventPush = 0x3E
+    /// 好友列表响应 (0x3F)
+    case friendListResp = 0x3F
     /// 修改好友备注请求 (0x57)
     case friendUpdateAliasReq = 0x57
     /// 修改好友备注响应 (0x58)
@@ -140,6 +152,12 @@ enum FrameTypeEnum: UInt8, CaseIterable {
         case .addFriendReq: return "添加好友请求"
         case .pendingRequestsReq: return "获取好友申请列表"
         case .handleFriendReq: return "处理好友申请"
+        case .friendSearchResp: return "搜索好友响应"
+        case .friendAddResp: return "发送好友申请响应"
+        case .friendRequestsResp: return "好友申请列表响应"
+        case .friendHandleResp: return "处理好友申请响应"
+        case .friendEventPush: return "好友关系事件推送"
+        case .friendListResp: return "好友列表响应"
         case .friendUpdateAliasReq: return "修改好友备注请求"
         case .friendUpdateAliasResp: return "修改好友备注响应"
             
