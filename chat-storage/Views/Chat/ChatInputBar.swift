@@ -6,41 +6,54 @@
 import AppKit
 import SwiftUI
 
+enum ChatInputPlaceholderPolicy {
+    static func shouldShow(
+        messageText: String,
+        isComposing: Bool,
+        hasAttachments: Bool,
+        hasQuote: Bool
+    ) -> Bool {
+        messageText.isEmpty && !isComposing && !hasAttachments && !hasQuote
+    }
+}
+
 struct ChatInputBar: View {
     let friendName: String
     @Binding var messageText: String
     @Binding var showEmojiPicker: Bool
     @Binding var pendingInsertToken: String?
     @Binding var quotedMessage: ChatMessage?
-    @Binding var pendingImages: [PendingChatImage]
-    @Binding var pendingImageError: String?
-    @Binding var isSending: Bool
-    let onSendNudge: () -> Void
-    let onPickImages: () -> Void
+    @Binding var pendingAttachments: [PendingChatAttachment]
+    @Binding var pendingAttachmentError: String?
+    let onPickAttachments: () -> Void
     let onPasteImage: (NSImage) -> Void
-    let onRemovePendingImage: (UUID) -> Void
+    let onRemovePendingAttachment: (UUID) -> Void
     let onSendMessage: () -> Void
+    @State private var isComposing = false
 
     var body: some View {
         VStack(spacing: 0) {
             Divider()
             toolBar
-
+            quotePreview
+            attachmentPreview
+            textEditor
+        }
+        .background(Color(NSColor.textBackgroundColor))
+        .frame(minHeight: 150)
+        .overlay(alignment: .topLeading) {
             if showEmojiPicker {
                 EmojiPickerPanel { emoji in
                     showEmojiPicker = false
                     pendingInsertToken = emoji
                     ChatEmojiStore.storeRecent(emoji)
                 }
+                .frame(maxWidth: .infinity)
+                .offset(y: -214)
                 .transition(.opacity.combined(with: .move(edge: .bottom)))
+                .zIndex(100)
             }
-
-            quotePreview
-            imagePreview
-            textEditor
         }
-        .background(Color(NSColor.textBackgroundColor))
-        .frame(minHeight: 150)
     }
 
     private var toolBar: some View {
@@ -54,13 +67,12 @@ struct ChatInputBar: View {
                     .font(.system(size: 18))
                     .foregroundColor(showEmojiPicker ? .accentColor : .secondary)
             }
-            Button(action: onPickImages) { Image(systemName: "photo.on.rectangle").font(.system(size: 18)).help("选择图片") }
-            Button(action: {}) { Image(systemName: "scissors").font(.system(size: 18)) }
-            Button(action: {}) { Image(systemName: "mic").font(.system(size: 18)) }
+            Button(action: onPickAttachments) {
+                Image(systemName: "paperclip")
+                    .font(.system(size: 18))
+                    .help("选择附件")
+            }
             Spacer()
-            Button(action: onSendNudge) { Image(systemName: "hand.tap").font(.system(size: 18)).help("抖一抖") }
-            Button(action: {}) { Image(systemName: "phone").font(.system(size: 18)) }
-            Button(action: {}) { Image(systemName: "video").font(.system(size: 18)) }
         }
         .foregroundColor(.secondary)
         .buttonStyle(.borderless)
@@ -99,44 +111,27 @@ struct ChatInputBar: View {
     }
 
     @ViewBuilder
-    private var imagePreview: some View {
-        if !pendingImages.isEmpty || pendingImageError != nil {
+    private var attachmentPreview: some View {
+        if !pendingAttachments.isEmpty || pendingAttachmentError != nil {
             VStack(alignment: .leading, spacing: 8) {
-                if !pendingImages.isEmpty {
+                if !pendingAttachments.isEmpty {
                     HStack(alignment: .top, spacing: 10) {
-                        LazyVGrid(columns: imageGridColumns, alignment: .leading, spacing: 8) {
-                            ForEach(pendingImages) { item in
-                                ZStack(alignment: .topTrailing) {
-                                    Image(nsImage: item.previewImage)
-                                        .resizable()
-                                        .scaledToFill()
-                                        .frame(width: 64, height: 64)
-                                        .clipped()
-                                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 6)
-                                                .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
-                                        )
-
-                                    Button(action: { onRemovePendingImage(item.id) }) {
-                                        Image(systemName: "xmark.circle.fill")
-                                            .font(.system(size: 14))
-                                            .symbolRenderingMode(.palette)
-                                            .foregroundStyle(Color.white, Color.black.opacity(0.55))
-                                    }
-                                    .buttonStyle(.borderless)
-                                    .disabled(isSending)
-                                    .offset(x: 5, y: -5)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(pendingAttachments) { item in
+                                    PendingChatAttachmentCard(
+                                        attachment: item,
+                                        onRemove: { onRemovePendingAttachment(item.id) }
+                                    )
                                 }
-                                .frame(width: 64, height: 64)
                             }
                         }
-                        .frame(maxWidth: 224, alignment: .leading)
+                        .frame(maxWidth: 440, alignment: .leading)
 
                         VStack(alignment: .leading, spacing: 3) {
-                            Text("\(pendingImages.count)/\(ChatMixedMessageContent.maxImageCount) 张图片")
+                            Text("\(pendingAttachments.count)/\(ChatMixedMessageContent.maxAttachmentCount) 个附件")
                                 .font(.caption.weight(.semibold))
-                            Text(isSending ? "上传中..." : "可继续输入文字后一起发送")
+                            Text("可继续输入文字后一起发送")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -144,8 +139,8 @@ struct ChatInputBar: View {
                     }
                 }
 
-                if let pendingImageError {
-                    Text(pendingImageError)
+                if let pendingAttachmentError {
+                    Text(pendingAttachmentError)
                         .font(.caption)
                         .foregroundColor(.red)
                 }
@@ -157,18 +152,19 @@ struct ChatInputBar: View {
         }
     }
 
-    private var imageGridColumns: [GridItem] {
-        Array(repeating: GridItem(.fixed(64), spacing: 8), count: min(3, max(1, pendingImages.count)))
-    }
-
     private var canSend: Bool {
-        !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingImages.isEmpty
+        !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingAttachments.isEmpty
     }
 
     private var textEditor: some View {
         HStack(alignment: .bottom, spacing: 8) {
             ZStack(alignment: .topLeading) {
-                if messageText.isEmpty {
+                if ChatInputPlaceholderPolicy.shouldShow(
+                    messageText: messageText,
+                    isComposing: isComposing,
+                    hasAttachments: !pendingAttachments.isEmpty,
+                    hasQuote: quotedMessage != nil
+                ) {
                     Text("请输入消息...")
                         .foregroundColor(.secondary)
                         .padding(.leading, 8)
@@ -179,6 +175,7 @@ struct ChatInputBar: View {
                 MacResponsiveTextView(
                     text: $messageText,
                     insertToken: $pendingInsertToken,
+                    isComposing: $isComposing,
                     onPasteImage: onPasteImage,
                     onSendTriggered: onSendMessage
                 )
@@ -187,23 +184,75 @@ struct ChatInputBar: View {
             .background(Color.clear)
 
             Button(action: onSendMessage) {
-                if isSending {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.72)
-                        .frame(width: 28, height: 28)
-                } else {
-                    Image(systemName: "paperplane.fill")
-                        .font(.system(size: 16))
-                        .frame(width: 28, height: 28)
-                }
+                Image(systemName: "paperplane.fill")
+                    .font(.system(size: 16))
+                    .frame(width: 28, height: 28)
             }
             .buttonStyle(.borderless)
             .foregroundColor(canSend ? .accentColor : .secondary)
-            .disabled(isSending || !canSend)
+            .disabled(!canSend)
             .help("发送")
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 16)
+    }
+}
+
+private struct PendingChatAttachmentCard: View {
+    let attachment: PendingChatAttachment
+    let onRemove: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            HStack(spacing: 8) {
+                if let image = attachment.previewImage {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 54, height: 54)
+                        .clipped()
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                } else {
+                    Image(systemName: fileIcon)
+                        .font(.system(size: 22))
+                        .foregroundColor(.accentColor)
+                        .frame(width: 42, height: 54)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(attachment.fileName)
+                        .font(.caption.weight(.medium))
+                        .lineLimit(2)
+                    Text(sizeText)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .frame(width: 92, alignment: .leading)
+            }
+            .padding(7)
+            .frame(width: 158, height: 68, alignment: .leading)
+            .background(Color(NSColor.controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.18)))
+
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 14))
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(Color.white, Color.black.opacity(0.55))
+            }
+            .buttonStyle(.borderless)
+            .offset(x: 5, y: -5)
+        }
+        .frame(width: 164, height: 72)
+    }
+
+    private var sizeText: String {
+        guard let size = attachment.fileSize else { return attachment.isImage ? "图片" : "文件" }
+        return ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+    }
+
+    private var fileIcon: String {
+        attachment.localAttachment().directoryItem().iconName
     }
 }

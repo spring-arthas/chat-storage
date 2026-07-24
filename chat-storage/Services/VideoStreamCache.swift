@@ -528,6 +528,59 @@ final class VideoStreamCacheManager {
 
         cache?.disableSequentialCompletionLog()
     }
+
+    /// 当前正在播放或后台拉流的视频缓存路径。清理缓存时必须排除这些文件。
+    func activeTempFilePaths() -> Set<String> {
+        lock.lock()
+        defer { lock.unlock() }
+        return Set(caches.values.map { $0.tempFileURL.standardizedFileURL.path })
+    }
+
+    /// 统计并清理没有被活跃播放任务占用的 video_*.cache 临时文件。
+    @discardableResult
+    func clearInactiveTemporaryCaches() -> Int64 {
+        let activePaths = activeTempFilePaths()
+        let directory = FileManager.default.temporaryDirectory
+        let keys: [URLResourceKey] = [.fileSizeKey, .isDirectoryKey]
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+
+        var clearedBytes: Int64 = 0
+        for file in files where file.lastPathComponent.hasPrefix("video_") && file.pathExtension == "cache" {
+            guard !activePaths.contains(file.standardizedFileURL.path),
+                  let values = try? file.resourceValues(forKeys: Set(keys)),
+                  values.isDirectory != true else { continue }
+            let fileSize = Int64(values.fileSize ?? 0)
+            if (try? FileManager.default.removeItem(at: file)) != nil {
+                clearedBytes += fileSize
+            }
+        }
+        if clearedBytes > 0 {
+            print("[VideoStreamCacheManager] 已清理非活跃视频缓存: \(clearedBytes) 字节")
+        }
+        return clearedBytes
+    }
+
+    func inactiveTemporaryCacheSize() -> Int64 {
+        let activePaths = activeTempFilePaths()
+        let directory = FileManager.default.temporaryDirectory
+        let keys: [URLResourceKey] = [.fileSizeKey, .isDirectoryKey]
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return files.reduce(into: Int64(0)) { total, file in
+            guard file.lastPathComponent.hasPrefix("video_") && file.pathExtension == "cache",
+                  !activePaths.contains(file.standardizedFileURL.path),
+                  let values = try? file.resourceValues(forKeys: Set(keys)),
+                  values.isDirectory != true else { return }
+            total += Int64(values.fileSize ?? 0)
+        }
+    }
 }
 
 // MARK: - Error

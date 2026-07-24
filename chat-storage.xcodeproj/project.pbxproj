@@ -51,6 +51,7 @@
 		F367581AF0A30FDA474AEFE6 /* StreamingVideoPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F0DEAC3AAE6F6EDB94346C /* StreamingVideoPlayer.swift */; };
 		F376FF2A8792AEC068D20113 /* AVKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BD0B61B09A0C287FDAA8E760 /* AVKit.framework */; };
 		AA1B2C3D4E5F6071A2B3C4D5 /* FileThumbnailService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1B2C3D4E5F6071A2B3C4D4 /* FileThumbnailService.swift */; };
+		C0E500012F47000000000001 /* CacheCleanupService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0E500112F47000000000011 /* CacheCleanupService.swift */; };
 		BB2C3D4E5F6071A2B3C4D5E6 /* VideoThumbnailResourceLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2C3D4E5F6071A2B3C4D5E5 /* VideoThumbnailResourceLoader.swift */; };
 		C0D100012F3D000000000001 /* ChatMessageModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D100112F3D000000000011 /* ChatMessageModels.swift */; };
 		C0D100022F3D000000000002 /* ChatEmojiStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D100122F3D000000000012 /* ChatEmojiStore.swift */; };
@@ -62,6 +63,9 @@
 		C0D100082F3D000000000008 /* MacResponsiveTextView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D100182F3D000000000018 /* MacResponsiveTextView.swift */; };
 		C0D100092F3D000000000009 /* ChatAttachmentModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D100192F3D000000000019 /* ChatAttachmentModels.swift */; };
 		C0D1000A2F3D00000000000A /* ChatAttachmentUploadService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D1001A2F3D00000000001A /* ChatAttachmentUploadService.swift */; };
+		C0D300012F45000000000001 /* ChatAttachmentTransferStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D300112F45000000000011 /* ChatAttachmentTransferStore.swift */; };
+		C0D400012F46000000000001 /* ChatAttachmentTransferCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D400112F46000000000011 /* ChatAttachmentTransferCoordinator.swift */; };
+		C0D600012F48000000000001 /* ChatHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D600112F48000000000011 /* ChatHistoryStore.swift */; };
 		C0D200012F3E000000000001 /* AdaptiveUploadController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D200112F3E000000000011 /* AdaptiveUploadController.swift */; };
 /* End PBXBuildFile section */
 
@@ -131,6 +135,7 @@
 		BD0B61B09A0C287FDAA8E760 /* AVKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVKit.framework; path = System/Library/Frameworks/AVKit.framework; sourceTree = SDKROOT; };
 		C2F0DEAC3AAE6F6EDB94346C /* StreamingVideoPlayer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Views/StreamingVideoPlayer.swift; sourceTree = "<group>"; };
 		AA1B2C3D4E5F6071A2B3C4D4 /* FileThumbnailService.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = FileThumbnailService.swift; sourceTree = "<group>"; };
+		C0E500112F47000000000011 /* CacheCleanupService.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = CacheCleanupService.swift; sourceTree = "<group>"; };
 		BB2C3D4E5F6071A2B3C4D5E5 /* VideoThumbnailResourceLoader.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = VideoThumbnailResourceLoader.swift; sourceTree = "<group>"; };
 		C0D100112F3D000000000011 /* ChatMessageModels.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ChatMessageModels.swift; sourceTree = "<group>"; };
 		C0D100122F3D000000000012 /* ChatEmojiStore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ChatEmojiStore.swift; sourceTree = "<group>"; };
@@ -142,6 +147,9 @@
 		C0D100182F3D000000000018 /* MacResponsiveTextView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = MacResponsiveTextView.swift; sourceTree = "<group>"; };
 		C0D100192F3D000000000019 /* ChatAttachmentModels.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ChatAttachmentModels.swift; sourceTree = "<group>"; };
 		C0D1001A2F3D00000000001A /* ChatAttachmentUploadService.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ChatAttachmentUploadService.swift; sourceTree = "<group>"; };
+		C0D300112F45000000000011 /* ChatAttachmentTransferStore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ChatAttachmentTransferStore.swift; sourceTree = "<group>"; };
+		C0D400112F46000000000011 /* ChatAttachmentTransferCoordinator.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ChatAttachmentTransferCoordinator.swift; sourceTree = "<group>"; };
+		C0D600112F48000000000011 /* ChatHistoryStore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ChatHistoryStore.swift; sourceTree = "<group>"; };
 		C0D200112F3E000000000011 /* AdaptiveUploadController.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = AdaptiveUploadController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -332,6 +340,7 @@
 				4ED769D02F2CB903006CFB2F /* AuthenticationService.swift */,
 				8C25750653B3817FE0C7D25A /* VideoWindowManager.swift */,
 				AA1B2C3D4E5F6071A2B3C4D4 /* FileThumbnailService.swift */,
+				C0E500112F47000000000011 /* CacheCleanupService.swift */,
 				BB2C3D4E5F6071A2B3C4D5E5 /* VideoThumbnailResourceLoader.swift */,
 			);
 			path = Services;
@@ -341,8 +350,11 @@
 			isa = PBXGroup;
 			children = (
 				C0D100192F3D000000000019 /* ChatAttachmentModels.swift */,
+				C0D300112F45000000000011 /* ChatAttachmentTransferStore.swift */,
+				C0D400112F46000000000011 /* ChatAttachmentTransferCoordinator.swift */,
 				C0D1001A2F3D00000000001A /* ChatAttachmentUploadService.swift */,
 				C0D100122F3D000000000012 /* ChatEmojiStore.swift */,
+				C0D600112F48000000000011 /* ChatHistoryStore.swift */,
 				C0D100112F3D000000000011 /* ChatMessageModels.swift */,
 				C0D100132F3D000000000013 /* ChatTextInsertion.swift */,
 			);
@@ -513,6 +525,9 @@
 				C0D100072F3D000000000007 /* EmojiPickerPanel.swift in Sources */,
 				C0D100082F3D000000000008 /* MacResponsiveTextView.swift in Sources */,
 				C0D100092F3D000000000009 /* ChatAttachmentModels.swift in Sources */,
+				C0D300012F45000000000001 /* ChatAttachmentTransferStore.swift in Sources */,
+				C0D400012F46000000000001 /* ChatAttachmentTransferCoordinator.swift in Sources */,
+				C0D600012F48000000000001 /* ChatHistoryStore.swift in Sources */,
 				C0D1000A2F3D00000000000A /* ChatAttachmentUploadService.swift in Sources */,
 				4ED7699E2F2C88DF006CFB2F /* ConfigServerView.swift in Sources */,
 				4ED769CA2F2CB8F4006CFB2F /* FrameTypeEnum.swift in Sources */,
@@ -549,6 +564,7 @@
 				1A9C1AFBF514D6EB09347A01 /* VideoWindowManager.swift in Sources */,
 				F367581AF0A30FDA474AEFE6 /* StreamingVideoPlayer.swift in Sources */,
 				AA1B2C3D4E5F6071A2B3C4D5 /* FileThumbnailService.swift in Sources */,
+				C0E500012F47000000000001 /* CacheCleanupService.swift in Sources */,
 				BB2C3D4E5F6071A2B3C4D5E6 /* VideoThumbnailResourceLoader.swift in Sources */,
 				C0D200012F3E000000000001 /* AdaptiveUploadController.swift in Sources */,
 			);
@@ -712,7 +728,8 @@
 				DEVELOPMENT_ASSET_PATHS = "\"chat-storage/Preview Content\"";
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "chat-storage/Info.plist";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -737,7 +754,8 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"chat-storage/Preview Content\"";
 				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "chat-storage/Info.plist";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

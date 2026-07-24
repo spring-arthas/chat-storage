@@ -8,6 +8,48 @@
 
 import Foundation
 
+enum FileNameRules {
+    static func resolvedExtension(fileName: String, fileType: String = "", filePath: String = "") -> String {
+        let fileNameExtension = normalizedExtension(from: fileName)
+        if !fileNameExtension.isEmpty {
+            return fileNameExtension
+        }
+
+        let serverTypeExtension = normalizedExtension(from: fileType)
+        if !serverTypeExtension.isEmpty {
+            return serverTypeExtension
+        }
+
+        return normalizedExtension(from: filePath)
+    }
+
+    static func editableStem(for fileName: String) -> String {
+        let ext = normalizedExtension(from: fileName)
+        guard !ext.isEmpty else { return fileName }
+        return (fileName as NSString).deletingPathExtension
+    }
+
+    static func applyingPreservedExtension(to editedName: String, originalFileName: String) -> String {
+        let trimmed = editedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return trimmed }
+
+        let originalExtension = normalizedExtension(from: originalFileName)
+        guard !originalExtension.isEmpty else { return trimmed }
+
+        let editedExtension = normalizedExtension(from: trimmed)
+        guard editedExtension.isEmpty else { return trimmed }
+
+        return "\(trimmed).\(originalExtension)"
+    }
+
+    private static func normalizedExtension(from value: String) -> String {
+        let ext = (value as NSString).pathExtension
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return ext
+    }
+}
+
 /// 文件/目录数据传输对象 (对应服务端 FileDto)
 struct FileDto: Codable {
     /// 文件/目录ID
@@ -196,7 +238,11 @@ struct FileDto: Codable {
 
     var isPlayableVideoFile: Bool {
         guard isFileBoolean else { return false }
-        let ext = (fileName as NSString).pathExtension.lowercased()
+        let ext = FileNameRules.resolvedExtension(
+            fileName: fileName,
+            fileType: fileType,
+            filePath: filePath
+        )
         return ["mp4", "m4v", "mov"].contains(ext)
     }
     
@@ -214,7 +260,9 @@ struct FileDto: Codable {
             fileSize: fileSize,
             isFile: isFileBoolean,
             uploadTime: gmtCreated,
-            directoryName: parentDirName
+            directoryName: parentDirName,
+            filePath: filePath,
+            fileType: fileType
         )
     }
 }
@@ -233,6 +281,8 @@ struct DirectoryItem: Identifiable, CustomDebugStringConvertible, Codable, Hasha
     let isFile: Bool
     let uploadTime: Int64? // Timestamp in milliseconds
     let directoryName: String? // Display purpose
+    let filePath: String
+    let fileType: String
 
     // Helper for UI
     var sizeString: String {
@@ -260,9 +310,13 @@ struct DirectoryItem: Identifiable, CustomDebugStringConvertible, Codable, Hasha
 
     var iconName: String {
         guard isFile else { return "folder.fill" }
-        let ext = (fileName as NSString).pathExtension.lowercased()
+        if isImageFile { return "photo" }
+        let ext = FileNameRules.resolvedExtension(
+            fileName: fileName,
+            fileType: fileType,
+            filePath: filePath
+        )
         switch ext {
-        case "jpg", "jpeg", "png", "gif", "bmp": return "photo"
         case "mp4", "m4v", "mov", "avi", "mkv": return "film"   // m4v = iTunes 视频格式
         case "mp3", "wav", "aac": return "music.note"
         case "doc", "docx": return "doc.text"
@@ -277,20 +331,27 @@ struct DirectoryItem: Identifiable, CustomDebugStringConvertible, Codable, Hasha
 
     var isImageFile: Bool {
         guard isFile else { return false }
-        let ext = (fileName as NSString).pathExtension.lowercased()
-        return ["jpg", "jpeg", "png", "gif", "bmp"].contains(ext)
+        return ChatImageFormat.isSupported(fileName: fileName)
     }
 
     var isVideoFile: Bool {
         guard isFile else { return false }
-        let ext = (fileName as NSString).pathExtension.lowercased()
+        let ext = FileNameRules.resolvedExtension(
+            fileName: fileName,
+            fileType: fileType,
+            filePath: filePath
+        )
         // 与 iconName、buildFromLocal、VideoThumbnailResourceLoader.contentType 保持一致
         return ["mp4", "m4v", "mov", "avi", "mkv"].contains(ext)
     }
 
     var isPlayableVideoFile: Bool {
         guard isFile else { return false }
-        let ext = (fileName as NSString).pathExtension.lowercased()
+        let ext = FileNameRules.resolvedExtension(
+            fileName: fileName,
+            fileType: fileType,
+            filePath: filePath
+        )
         return ["mp4", "m4v", "mov"].contains(ext)
     }
 
@@ -299,7 +360,7 @@ struct DirectoryItem: Identifiable, CustomDebugStringConvertible, Codable, Hasha
     }
 
     // Default Init
-    init(id: Int64, pId: Int64, fileName: String, childFileList: [DirectoryItem]?, hasChild: Bool? = nil, fileSize: Int64? = nil, isFile: Bool = false, uploadTime: Int64? = nil, directoryName: String? = nil) {
+    init(id: Int64, pId: Int64, fileName: String, childFileList: [DirectoryItem]?, hasChild: Bool? = nil, fileSize: Int64? = nil, isFile: Bool = false, uploadTime: Int64? = nil, directoryName: String? = nil, filePath: String = "", fileType: String = "") {
         self.id = id
         self.pId = pId
         self.fileName = fileName
@@ -309,5 +370,7 @@ struct DirectoryItem: Identifiable, CustomDebugStringConvertible, Codable, Hasha
         self.isFile = isFile
         self.uploadTime = uploadTime
         self.directoryName = directoryName
+        self.filePath = filePath
+        self.fileType = fileType
     }
 }

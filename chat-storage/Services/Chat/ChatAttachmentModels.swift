@@ -5,8 +5,9 @@
 
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 
-struct ChatImageAttachment: Codable, Equatable, Identifiable {
+struct ChatAttachment: Codable, Equatable, Identifiable, Sendable {
     let kind: String
     let fileId: Int64
     let fileName: String
@@ -21,6 +22,20 @@ struct ChatImageAttachment: Codable, Equatable, Identifiable {
 
     var id: Int64 { fileId }
     var isLocalPending: Bool { fileId < 0 }
+    var isImage: Bool { kind.caseInsensitiveCompare("image") == .orderedSame }
+    var aspectRatio: CGFloat? {
+        guard let width, let height, width > 0, height > 0 else {
+            return nil
+        }
+        return CGFloat(width) / CGFloat(height)
+    }
+
+    var isVeryTallImage: Bool {
+        guard let aspectRatio else {
+            return false
+        }
+        return aspectRatio <= 1.0 / 3.0
+    }
 
     init(
         kind: String = "image",
@@ -58,14 +73,14 @@ struct ChatImageAttachment: Codable, Equatable, Identifiable {
         return string
     }
 
-    static func parse(_ content: String) -> ChatImageAttachment? {
+    static func parse(_ content: String) -> ChatAttachment? {
         guard let data = content.data(using: .utf8) else {
             return nil
         }
-        guard let attachment = try? JSONDecoder().decode(ChatImageAttachment.self, from: data) else {
+        guard let attachment = try? JSONDecoder().decode(ChatAttachment.self, from: data) else {
             return nil
         }
-        return attachment.kind == "image" && attachment.fileId > 0 ? attachment : nil
+        return attachment.isImage && attachment.fileId > 0 ? attachment : nil
     }
 
     func directoryItem() -> DirectoryItem {
@@ -80,11 +95,73 @@ struct ChatImageAttachment: Codable, Equatable, Identifiable {
         )
     }
 
+    func bubbleThumbnailDirectoryItem() -> DirectoryItem? {
+        if let thumbnailFileId, thumbnailFileId > 0 {
+            return directoryItem(
+                fileId: thumbnailFileId,
+                fileSize: thumbnailFileSize ?? 0,
+                fileName: "thumb-\(fileName)"
+            )
+        }
+        if let previewFileId, previewFileId > 0 {
+            return directoryItem(
+                fileId: previewFileId,
+                fileSize: previewFileSize ?? 0,
+                fileName: "preview-\(fileName)"
+            )
+        }
+        return nil
+    }
+
     func previewDirectoryItem() -> DirectoryItem {
         directoryItem(
             fileId: previewFileId ?? fileId,
             fileSize: previewFileSize ?? fileSize,
             fileName: previewFileId == nil ? fileName : "preview-\(fileName)"
+        )
+    }
+
+    func previewCandidateDirectoryItems() -> [DirectoryItem] {
+        let preferred = previewDirectoryItem()
+        let original = directoryItem()
+        guard preferred.id != original.id else {
+            return [original]
+        }
+        return [original, preferred]
+    }
+
+    func bubblePreviewSize(
+        maxWidth: CGFloat = 320,
+        maxHeight: CGFloat = 360,
+        minWidth: CGFloat = 160,
+        minHeight: CGFloat = 120
+    ) -> CGSize {
+        guard let aspectRatio else {
+            return CGSize(width: min(maxWidth, 220), height: min(maxHeight, 172))
+        }
+
+        if isVeryTallImage {
+            return CGSize(width: maxWidth, height: maxHeight)
+        }
+
+        var targetWidth = maxWidth
+        var targetHeight = targetWidth / aspectRatio
+        if targetHeight > maxHeight {
+            targetHeight = maxHeight
+            targetWidth = targetHeight * aspectRatio
+        }
+        if targetWidth < minWidth {
+            targetWidth = minWidth
+            targetHeight = targetWidth / aspectRatio
+        }
+        if targetHeight < minHeight {
+            targetHeight = minHeight
+            targetWidth = targetHeight * aspectRatio
+        }
+
+        return CGSize(
+            width: min(maxWidth, max(minWidth, targetWidth)).rounded(),
+            height: min(maxHeight, max(minHeight, targetHeight)).rounded()
         )
     }
 
@@ -98,18 +175,23 @@ struct ChatImageAttachment: Codable, Equatable, Identifiable {
             fileSize: fileSize,
             isFile: true,
             uploadTime: nil,
-            directoryName: "聊天图片"
+            directoryName: isImage ? "聊天图片" : "聊天附件"
         )
     }
 }
 
-struct PendingChatImage: Identifiable {
+typealias ChatImageAttachment = ChatAttachment
+
+struct PendingChatAttachment: Identifiable {
     let id: UUID
-    let previewImage: NSImage
+    let kind: String
+    let previewImage: NSImage?
     let sourceURL: URL?
     let fileName: String
     let fileSize: Int64?
     let mimeType: String
+
+    var isImage: Bool { kind == "image" }
 
     var localAttachmentId: Int64 {
         let hex = id.uuidString.replacingOccurrences(of: "-", with: "")
@@ -120,56 +202,122 @@ struct PendingChatImage: Identifiable {
         return -Int64(fallback)
     }
 
-    func localAttachment() -> ChatImageAttachment {
-        ChatImageAttachment(
+    func localAttachment() -> ChatAttachment {
+        ChatAttachment(
+            kind: kind,
             fileId: localAttachmentId,
             fileName: fileName,
             fileSize: fileSize ?? 0,
             mimeType: mimeType,
-            width: Int(previewImage.size.width.rounded()),
-            height: Int(previewImage.size.height.rounded())
+            width: previewImage.map { Int($0.size.width.rounded()) },
+            height: previewImage.map { Int($0.size.height.rounded()) }
         )
     }
 
-    static func pasted(_ image: NSImage, id: UUID = UUID()) -> PendingChatImage {
-        PendingChatImage(
+    static func pasted(_ image: NSImage, id: UUID = UUID()) -> PendingChatAttachment {
+        let fileName = "chat-image-\(id.uuidString).png"
+        let stableURL: URL?
+        let stableFileSize: Int64?
+        if let tiffData = image.tiffRepresentation,
+           let bitmap = NSBitmapImageRep(data: tiffData),
+           let pngData = bitmap.representation(using: .png, properties: [:]) {
+            let target = stableDirectory(for: id).appendingPathComponent(fileName)
+            do {
+                try FileManager.default.createDirectory(
+                    at: target.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try pngData.write(to: target, options: .atomic)
+                stableURL = target
+                stableFileSize = Int64(pngData.count)
+            } catch {
+                stableURL = nil
+                stableFileSize = nil
+            }
+        } else {
+            stableURL = nil
+            stableFileSize = nil
+        }
+        return PendingChatAttachment(
             id: id,
+            kind: "image",
             previewImage: image,
-            sourceURL: nil,
-            fileName: "chat-image-\(id.uuidString).png",
-            fileSize: nil,
+            sourceURL: stableURL,
+            fileName: fileName,
+            fileSize: stableFileSize,
             mimeType: "image/png"
         )
     }
 
-    static func file(url: URL, id: UUID = UUID()) throws -> PendingChatImage {
-        guard ChatImageFormat.isSupported(fileName: url.lastPathComponent) else {
-            throw ChatAttachmentUploadError.unsupportedImageFormat
-        }
-
+    static func file(url: URL, id: UUID = UUID()) throws -> PendingChatAttachment {
         let isScoped = url.startAccessingSecurityScopedResource()
         defer { if isScoped { url.stopAccessingSecurityScopedResource() } }
 
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw ChatAttachmentUploadError.imageFileNotFound
         }
-        guard let image = NSImage(contentsOf: url) else {
-            throw ChatAttachmentUploadError.invalidImage
-        }
-
         let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
         let fileSize = (attributes?[.size] as? NSNumber)?.int64Value
+        guard let fileSize, fileSize > 0 else {
+            throw ChatAttachmentUploadError.sourceFileEmpty(url.lastPathComponent)
+        }
+        let isImage = ChatImageFormat.isSupported(fileName: url.lastPathComponent)
+        let image = isImage ? NSImage(contentsOf: url) : nil
+        if isImage && image == nil {
+            throw ChatAttachmentUploadError.invalidImage
+        }
+        let mimeType = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+            ?? (isImage ? ChatImageFormat.mimeType(forFileName: url.lastPathComponent) : "application/octet-stream")
 
-        return PendingChatImage(
+        let stableDirectory = stableDirectory(for: id)
+        try FileManager.default.createDirectory(at: stableDirectory, withIntermediateDirectories: true)
+        let stableURL = stableDirectory.appendingPathComponent(url.lastPathComponent)
+        if FileManager.default.fileExists(atPath: stableURL.path) {
+            try FileManager.default.removeItem(at: stableURL)
+        }
+        try FileManager.default.copyItem(at: url, to: stableURL)
+
+        return PendingChatAttachment(
             id: id,
+            kind: isImage ? "image" : "file",
             previewImage: image,
-            sourceURL: url,
+            sourceURL: stableURL,
             fileName: url.lastPathComponent,
             fileSize: fileSize,
-            mimeType: ChatImageFormat.mimeType(forFileName: url.lastPathComponent)
+            mimeType: mimeType
         )
     }
+
+    static func restored(
+        id: UUID,
+        kind: String,
+        sourceURL: URL,
+        fileName: String,
+        fileSize: Int64,
+        mimeType: String
+    ) -> PendingChatAttachment? {
+        let preview = kind == "image" ? NSImage(contentsOf: sourceURL) : nil
+        return PendingChatAttachment(
+            id: id,
+            kind: kind,
+            previewImage: preview,
+            sourceURL: sourceURL,
+            fileName: fileName,
+            fileSize: fileSize,
+            mimeType: mimeType
+        )
+    }
+
+    private static func stableDirectory(for id: UUID) -> URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        return base
+            .appendingPathComponent("chat-storage/chat-attachments", isDirectory: true)
+            .appendingPathComponent(id.uuidString, isDirectory: true)
+    }
 }
+
+typealias PendingChatImage = PendingChatAttachment
 
 @MainActor
 final class ChatPendingImageStore {
@@ -179,9 +327,11 @@ final class ChatPendingImageStore {
 
     private init() {}
 
-    func store(_ pendingImages: [PendingChatImage]) {
-        for pendingImage in pendingImages {
-            images[pendingImage.localAttachmentId] = pendingImage.previewImage
+    func store(_ pendingAttachments: [PendingChatAttachment]) {
+        for attachment in pendingAttachments where attachment.isImage {
+            if let previewImage = attachment.previewImage {
+                images[attachment.localAttachmentId] = previewImage
+            }
         }
     }
 
@@ -206,32 +356,33 @@ enum ChatMixedMessageError: LocalizedError, Equatable {
         case .emptyContent:
             return "消息内容不能为空"
         case .tooManyImages:
-            return "单条消息最多发送9张图片"
+            return "单条消息最多发送9个附件"
         case .invalidJSON:
             return "图文消息编码失败"
         }
     }
 }
 
-struct ChatMixedMessageContent: Codable, Equatable {
-    static let maxImageCount = 9
+struct ChatMixedMessageContent: Codable, Equatable, Sendable {
+    static let maxAttachmentCount = 9
+    static let maxImageCount = maxAttachmentCount
 
     let kind: String
     let version: Int
     let text: String
-    let attachments: [ChatImageAttachment]
+    let attachments: [ChatAttachment]
 
     init(
         kind: String = "mixed",
-        version: Int = 1,
+        version: Int = 2,
         text: String,
-        attachments: [ChatImageAttachment]
+        attachments: [ChatAttachment]
     ) throws {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty || !attachments.isEmpty else {
             throw ChatMixedMessageError.emptyContent
         }
-        guard attachments.count <= Self.maxImageCount else {
+        guard attachments.count <= Self.maxAttachmentCount else {
             throw ChatMixedMessageError.tooManyImages
         }
         self.kind = kind
@@ -256,14 +407,15 @@ struct ChatMixedMessageContent: Codable, Equatable {
               payload.kind == "mixed",
               payload.version >= 1,
               !payload.attachments.isEmpty,
-              payload.attachments.count <= Self.maxImageCount else {
+              payload.attachments.count <= Self.maxAttachmentCount,
+              payload.attachments.allSatisfy({ ($0.isImage || $0.kind == "file") && $0.fileId != 0 }) else {
             return nil
         }
         return payload
     }
 }
 
-enum ChatMessagePayload: Equatable {
+enum ChatMessagePayload: Equatable, Sendable {
     case text(String)
     case image(ChatImageAttachment)
     case mixed(ChatMixedMessageContent)
@@ -300,6 +452,26 @@ enum ChatMessagePayload: Equatable {
         case .image(let attachment):
             return [attachment]
         case .mixed(let payload):
+            return payload.attachments.filter(\.isImage)
+        }
+    }
+
+    var files: [ChatAttachment] {
+        switch self {
+        case .text, .image:
+            return []
+        case .mixed(let payload):
+            return payload.attachments.filter { !$0.isImage }
+        }
+    }
+
+    var attachments: [ChatAttachment] {
+        switch self {
+        case .text:
+            return []
+        case .image(let attachment):
+            return [attachment]
+        case .mixed(let payload):
             return payload.attachments
         }
     }
@@ -311,9 +483,18 @@ enum ChatMessagePayload: Equatable {
         case .image:
             return "[图片]"
         case .mixed(let payload):
-            let imageText = payload.attachments.count == 1 ? "[图片]" : "[\(payload.attachments.count)张图片]"
+            let imageCount = payload.attachments.filter(\.isImage).count
+            let fileCount = payload.attachments.count - imageCount
+            let attachmentText: String
+            if imageCount > 0 && fileCount > 0 {
+                attachmentText = "[\(imageCount)张图片，\(fileCount)个文件]"
+            } else if imageCount > 0 {
+                attachmentText = imageCount == 1 ? "[图片]" : "[\(imageCount)张图片]"
+            } else {
+                attachmentText = fileCount == 1 ? "[文件]" : "[\(fileCount)个文件]"
+            }
             let trimmed = payload.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? imageText : "\(imageText) \(trimmed)"
+            return trimmed.isEmpty ? attachmentText : "\(attachmentText) \(trimmed)"
         }
     }
 }
@@ -329,7 +510,10 @@ enum ChatImageFormat {
         "gif": "image/gif",
         "bmp": "image/bmp",
         "tif": "image/tiff",
-        "tiff": "image/tiff"
+        "tiff": "image/tiff",
+        "avif": "image/avif",
+        "jfif": "image/jpeg",
+        "jp2": "image/jp2"
     ]
 
     static func isSupported(fileName: String) -> Bool {

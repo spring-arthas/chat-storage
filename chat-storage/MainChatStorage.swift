@@ -64,11 +64,18 @@ private enum MainWorkspaceLayout {
 
 struct AppSettingsView: View {
     @Binding var selectedTab: Int
+    @Binding var isLoggedIn: Bool
     @EnvironmentObject private var socketManager: SocketManager
+    @EnvironmentObject private var authService: AuthenticationService
     @StateObject private var downloadDirectoryManager = DownloadDirectoryManager.shared
     @AppStorage("appearanceMode") private var appearanceModeRaw = AppAppearanceMode.migratedDefaultRawValue
-    @State private var selectedCategory: AppSettingsCategory? = .appearance
+    @State private var selectedCategory: AppSettingsCategory? = .profile
     @State private var showingServerConfig = false
+    @State private var isUploadingAvatar = false
+    @State private var avatarUploadMessage: String?
+    @StateObject private var cacheCleanupService = CacheCleanupService.shared
+    @State private var showingClearCacheConfirmation = false
+    @State private var cacheCleanupMessage: String?
 
     private var appearanceMode: Binding<AppAppearanceMode> {
         Binding(
@@ -79,7 +86,7 @@ struct AppSettingsView: View {
 
     var body: some View {
         ZStack {
-            MeshGradientBackground()
+            TelegramTheme.appBackground
 
             HStack(alignment: .top, spacing: MainWorkspaceLayout.panelSpacing) {
                 VStack(spacing: 0) {
@@ -142,10 +149,14 @@ struct AppSettingsView: View {
 
                 Group {
                     switch selectedCategory ?? .appearance {
+                    case .profile:
+                        profileSettings
                     case .appearance:
                         appearanceSettings
                     case .transfer:
                         transferSettings
+                    case .storage:
+                        storageSettings
                     case .connection:
                         connectionSettings
                     }
@@ -157,9 +168,133 @@ struct AppSettingsView: View {
             .padding(MainWorkspaceLayout.contentPadding)
         }
         .preferredColorScheme(appearanceMode.wrappedValue.colorScheme)
+        .onAppear {
+            Task {
+                await cacheCleanupService.refreshSummary()
+            }
+        }
         .sheet(isPresented: $showingServerConfig) {
-            ConfigServerView()
+            ConfigServerView {
+                authService.invalidateLocalSession()
+                isLoggedIn = false
+            }
                 .environmentObject(socketManager)
+        }
+        .alert("清除缓存", isPresented: $showingClearCacheConfirmation) {
+            Button("清除", role: .destructive) {
+                clearCaches()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将清理缩略图、视频临时缓存、上传校验缓存和已完成聊天附件副本。头像、未完成任务和正在传输的数据会保留。")
+        }
+    }
+
+    private var settingsAvatar: String? {
+        if let avatar = socketManager.myAvatar, !avatar.isEmpty {
+            return avatar
+        }
+        return authService.currentUser?.avatar
+    }
+
+    private var profileSettings: some View {
+        settingsPage(title: "个人资料", subtitle: "设置当前登录用户在聊天和云盘中的展示头像") {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: 18) {
+                    profileAvatarIdentity
+                    Spacer(minLength: 18)
+                    avatarUploadControl
+                }
+
+                VStack(alignment: .leading, spacing: 16) {
+                    profileAvatarIdentity
+                    avatarUploadControl
+                }
+            }
+            .padding(18)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(CloudStorageSurface.field.opacity(0.88))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(TelegramTheme.accent.opacity(0.10), lineWidth: 1)
+            )
+        }
+    }
+
+    private var profileAvatarIdentity: some View {
+        HStack(alignment: .center, spacing: 16) {
+            ZStack(alignment: .bottomTrailing) {
+                CurrentUserAvatarBadge(
+                    avatar: settingsAvatar,
+                    username: authService.currentUser?.username,
+                    size: 72
+                )
+
+                Image(systemName: "camera.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(.white)
+                    .frame(width: 22, height: 22)
+                    .background(Circle().fill(TelegramTheme.accent))
+                    .overlay(Circle().stroke(CloudStorageSurface.field, lineWidth: 2))
+                    .offset(x: 1, y: 1)
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text(authService.currentUser?.username ?? "当前用户")
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundColor(TelegramTheme.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Text("未配置头像时显示用户名缩写")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(TelegramTheme.textSecondary)
+                    .lineLimit(1)
+            }
+            .frame(minWidth: 0, maxWidth: 260, alignment: .leading)
+        }
+    }
+
+    private var avatarUploadControl: some View {
+        VStack(alignment: .trailing, spacing: 8) {
+            Button {
+                chooseAvatarImage()
+            } label: {
+                HStack(spacing: 8) {
+                    if isUploadingAvatar {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(TelegramTheme.accent)
+                    } else {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 15, weight: .semibold))
+                    }
+
+                    Text(isUploadingAvatar ? "上传中" : "更换头像")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundColor(TelegramTheme.accent)
+                .padding(.horizontal, 16)
+                .frame(height: 38)
+                .background(Capsule().fill(TelegramTheme.accent.opacity(0.12)))
+                .overlay(Capsule().stroke(TelegramTheme.accent.opacity(0.32), lineWidth: 1))
+                .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(isUploadingAvatar)
+            .opacity(isUploadingAvatar ? 0.72 : 1)
+
+            if let avatarUploadMessage {
+                Label(
+                    avatarUploadMessage,
+                    systemImage: avatarUploadMessage.contains("成功") ? "checkmark.circle.fill" : "exclamationmark.circle.fill"
+                )
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(avatarUploadMessage.contains("成功") ? TelegramTheme.success : TelegramTheme.danger)
+                .lineLimit(1)
+            }
         }
     }
 
@@ -227,6 +362,109 @@ struct AppSettingsView: View {
         }
     }
 
+    private var storageSettings: some View {
+        settingsPage(title: "存储与缓存", subtitle: "清理可以重新生成的本地缓存，保留头像和未完成任务") {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("可清理缓存")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(TelegramTheme.textPrimary)
+                    Spacer()
+                    Text(formattedBytes(cacheCleanupService.summary.totalBytes))
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundColor(TelegramTheme.accent)
+                }
+                .padding(.bottom, 14)
+
+                cacheSizeRow(
+                    icon: "photo.on.rectangle",
+                    title: "缩略图和图片预览",
+                    bytes: cacheCleanupService.summary.thumbnailsBytes
+                )
+                cacheSizeRow(
+                    icon: "film",
+                    title: "视频临时缓存",
+                    bytes: cacheCleanupService.summary.videoBytes
+                )
+                cacheSizeRow(
+                    icon: "number.square",
+                    title: "上传校验缓存",
+                    bytes: cacheCleanupService.summary.uploadMD5Bytes
+                )
+                cacheSizeRow(
+                    icon: "paperclip",
+                    title: "已完成聊天附件副本",
+                    bytes: cacheCleanupService.summary.chatAttachmentsBytes
+                )
+            }
+            .padding(16)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(CloudStorageSurface.field.opacity(0.88))
+            )
+
+            Button {
+                showingClearCacheConfirmation = true
+            } label: {
+                Label(
+                    cacheCleanupService.isWorking ? "清理中" : "清除缓存",
+                    systemImage: cacheCleanupService.isWorking ? "hourglass" : "trash"
+                )
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(TelegramTheme.danger)
+            .disabled(cacheCleanupService.isWorking || cacheCleanupService.summary.totalBytes == 0)
+            .padding(.top, 20)
+
+            if let cacheCleanupMessage {
+                Text(cacheCleanupMessage)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(TelegramTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 10)
+            }
+        }
+    }
+
+    private func cacheSizeRow(icon: String, title: String, bytes: Int64) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(TelegramTheme.accent)
+                .frame(width: 22)
+
+            Text(title)
+                .font(.system(size: 12))
+                .foregroundColor(TelegramTheme.textPrimary)
+
+            Spacer()
+
+            Text(formattedBytes(bytes))
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(TelegramTheme.textSecondary)
+        }
+        .padding(.vertical, 7)
+    }
+
+    private func formattedBytes(_ bytes: Int64) -> String {
+        CacheSizeFormatter.string(fromByteCount: bytes)
+    }
+
+    private func clearCaches() {
+        Task {
+            let result = await cacheCleanupService.clearCaches()
+            let cleared = formattedBytes(result.clearedBytes)
+            let skipped = formattedBytes(result.skippedBytes)
+            if result.hasFailures {
+                cacheCleanupMessage = "已清理 \(cleared)，有 \(result.failedPaths.count) 项未能删除。"
+            } else if result.skippedBytes > 0 {
+                cacheCleanupMessage = "已清理 \(cleared)，正在使用或待重传数据保留 \(skipped)。"
+            } else {
+                cacheCleanupMessage = "缓存已清理，共释放 \(cleared)。"
+            }
+        }
+    }
+
     private var connectionSettings: some View {
         settingsPage(title: "网络连接", subtitle: "查看连接状态或切换 net-server 地址") {
             let server = socketManager.getCurrentServer()
@@ -251,6 +489,43 @@ struct AppSettingsView: View {
             }
             .buttonStyle(.borderedProminent)
             .padding(.top, 22)
+        }
+    }
+
+    private func chooseAvatarImage() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png, .jpeg, .heic, .tiff]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+
+        guard panel.runModal() == .OK,
+              let url = panel.url,
+              let image = NSImage(contentsOf: url) else {
+            return
+        }
+
+        guard let base64 = AvatarImageEncoder.jpegBase64(from: image) else {
+            avatarUploadMessage = "头像处理失败，请重新选择图片"
+            return
+        }
+
+        isUploadingAvatar = true
+        avatarUploadMessage = nil
+
+        Task {
+            do {
+                _ = try await authService.updateAvatar(avatarData: base64, avatarName: "avatar.jpg")
+                await MainActor.run {
+                    avatarUploadMessage = "头像上传成功"
+                    isUploadingAvatar = false
+                }
+            } catch {
+                await MainActor.run {
+                    avatarUploadMessage = error.localizedDescription
+                    isUploadingAvatar = false
+                }
+            }
         }
     }
 
@@ -299,24 +574,30 @@ struct AppSettingsView: View {
 }
 
 enum AppSettingsCategory: String, CaseIterable, Identifiable {
+    case profile
     case appearance
     case transfer
+    case storage
     case connection
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
+        case .profile: return "个人资料"
         case .appearance: return "外观"
         case .transfer: return "文件传输"
+        case .storage: return "存储与缓存"
         case .connection: return "网络连接"
         }
     }
 
     var icon: String {
         switch self {
+        case .profile: return "person.crop.circle"
         case .appearance: return "paintbrush"
         case .transfer: return "arrow.up.arrow.down"
+        case .storage: return "internaldrive"
         case .connection: return "network"
         }
     }
@@ -717,6 +998,34 @@ private struct FileDetailPresentation {
     }
 }
 
+enum CloudUploadTargetError: LocalizedError, Equatable {
+    case invalidTarget
+
+    var errorDescription: String? {
+        "根目录不允许上传，请先选择一个子目录"
+    }
+}
+
+enum CloudUploadTargetValidator {
+    static func validate(
+        selectedDirectoryId: Int64?,
+        rootDirectoryId: Int64?,
+        resolvedDirectory: DirectoryItem?
+    ) -> Result<DirectoryItem, CloudUploadTargetError> {
+        guard let selectedDirectoryId,
+              selectedDirectoryId > 0,
+              let rootDirectoryId,
+              rootDirectoryId > 0,
+              selectedDirectoryId != rootDirectoryId,
+              let resolvedDirectory,
+              resolvedDirectory.id == selectedDirectoryId,
+              !resolvedDirectory.isFile else {
+            return .failure(.invalidTarget)
+        }
+        return .success(resolvedDirectory)
+    }
+}
+
 /// 主文件管理界面
 struct MainChatStorage: View {
     
@@ -752,7 +1061,6 @@ struct MainChatStorage: View {
     @State private var transferList: [TransferItem] = []
     @State private var isTransferCenterExpanded = false
     @State private var transferDisplayFilter: TransferDisplayFilter = .all
-    @State private var transferSearchText = ""
     
     /// 选中的文件
     @State private var selectedFiles: Set<Int64> = []
@@ -838,6 +1146,7 @@ struct MainChatStorage: View {
     @State private var showingFileRenameDialog = false
     @State private var fileRenameTargetId: Int64?
     @State private var fileRenameValue = ""
+    @State private var fileRenameOriginalName = ""
     @State private var isFileRenaming = false
 
     // Video Playing State
@@ -901,8 +1210,9 @@ struct MainChatStorage: View {
                     case 1:
                         storageView
                     default:
-                        AppSettingsView(selectedTab: $selectedTab)
+                        AppSettingsView(selectedTab: $selectedTab, isLoggedIn: $isLoggedIn)
                             .environmentObject(socketManager)
+                            .environmentObject(authService)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -971,9 +1281,10 @@ struct MainChatStorage: View {
                             await loadDirectoryFromServer()
                         }
                     }
+                } else {
+                    // 目录树已有有效选中目录时，才加载该目录下的文件。
+                    loadCurrentFiles()
                 }
-                // 刷新文件列表
-                Task { loadCurrentFiles() }
             }
         }
         // 监听目录选中变化，加载对应文件
@@ -1073,31 +1384,12 @@ struct MainChatStorage: View {
     
     private var topToolbar: some View {
         HStack(spacing: 16) {
-            HStack(spacing: 10) {
-                Group {
-                    if let avatar = toolbarAvatar, !avatar.isEmpty {
-                        AvatarDecodeView(
-                            base64: avatar,
-                            fallbacName: String(authService.currentUser?.username.prefix(1) ?? "用"),
-                            fallbackColor: TelegramTheme.success,
-                            cache: ChatAvatarCache.shared,
-                            customSize: 34
-                        )
-                    } else {
-                        Text(String(authService.currentUser?.username.prefix(1) ?? "用"))
-                            .font(.system(size: 16, weight: .black))
-                            .foregroundColor(.white)
-                            .frame(width: 34, height: 34)
-                            .background(Circle().fill(TelegramTheme.success.opacity(0.95)))
-                    }
-                }
-                .frame(width: 34, height: 34)
-                .clipShape(Circle())
-
-                Text("下午好，\(authService.currentUser?.username ?? "朋友")")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundColor(TelegramTheme.textPrimary)
-            }
+            CurrentUserIdentityView(
+                avatar: toolbarAvatar,
+                username: authService.currentUser?.username,
+                subtitle: "下午好",
+                avatarSize: 34
+            )
 
             Spacer()
             
@@ -1225,7 +1517,7 @@ struct MainChatStorage: View {
                                 self.showingDeleteAlert = true
                             },
                             onUpload: { item in
-                                handleSelectFiles(targetDirectory: item)
+                                handleCloudUpload(targetDirectory: item)
                             },
                             onExpand: { item in
                                 Task { await loadDirectoryChildrenIfNeeded(item) }
@@ -1353,6 +1645,14 @@ struct MainChatStorage: View {
 
     private var cloudHeaderIdentity: some View {
         VStack(alignment: .leading, spacing: 7) {
+            CurrentUserIdentityView(
+                avatar: toolbarAvatar,
+                username: authService.currentUser?.username,
+                subtitle: "个人云盘",
+                avatarSize: 32
+            )
+            .padding(.bottom, 3)
+
             Text(currentBreadcrumb)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(TelegramTheme.textSecondary)
@@ -1397,7 +1697,7 @@ struct MainChatStorage: View {
                 .clipShape(RoundedRectangle(cornerRadius: 10))
 
                 Button(action: {
-                    handleSelectFiles(targetDirectory: selectedDirectoryId.flatMap { findDirectoryItem(id: $0, nodes: directoryTree) })
+                    handleCloudUpload()
                 }) {
                     Image(systemName: "icloud.and.arrow.up")
                         .accessibilityHidden(true)
@@ -1662,7 +1962,8 @@ struct MainChatStorage: View {
             },
             onRename: {
                 fileRenameTargetId = file.id
-                fileRenameValue = file.fileName
+                fileRenameOriginalName = file.fileName
+                fileRenameValue = FileNameRules.editableStem(for: file.fileName)
                 showingFileRenameDialog = true
             },
             onDownload: { handleFileAction(file, action: 2) },
@@ -1802,19 +2103,14 @@ struct MainChatStorage: View {
     }
 
     private var transferFilterBar: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 10) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    transferFilterButtons(horizontalPadding: 9, spacing: 6)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                transferBatchControls
-                    .fixedSize(horizontal: true, vertical: false)
+        HStack(spacing: 10) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                transferFilterButtons(horizontalPadding: 9, spacing: 6)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-            transferSearchField
-                .frame(maxWidth: .infinity)
+            transferBatchControls
+                .fixedSize(horizontal: true, vertical: false)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -1845,25 +2141,6 @@ struct MainChatStorage: View {
                 .buttonStyle(.plain)
             }
         }
-    }
-
-    private var transferSearchField: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(TelegramTheme.textSecondary.opacity(0.72))
-            TextField("搜索任务", text: $transferSearchText)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12))
-        }
-        .padding(.horizontal, 12)
-        .frame(height: 34)
-        .background(CloudStorageSurface.field)
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(TelegramTheme.textSecondary.opacity(0.16), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     private var transferExpandedContent: some View {
@@ -1905,7 +2182,6 @@ struct MainChatStorage: View {
     }
 
     private var filteredTransferItems: [TransferItem] {
-        let keyword = transferSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return transferList.filter { item in
             let matchesFilter: Bool
             switch transferDisplayFilter {
@@ -1923,11 +2199,7 @@ struct MainChatStorage: View {
                 matchesFilter = item.status == "已完成" || item.status == "Completed"
             }
 
-            guard matchesFilter else { return false }
-            guard !keyword.isEmpty else { return true }
-            return item.name.lowercased().contains(keyword)
-                || item.directoryName.lowercased().contains(keyword)
-                || item.status.lowercased().contains(keyword)
+            return matchesFilter
         }
     }
 
@@ -2069,8 +2341,12 @@ struct MainChatStorage: View {
     // MARK: - Action Handlers
     
     private func handleLogout() {
-        print("退出登录")
-        isLoggedIn = false
+        Task {
+            await authService.logout()
+            await MainActor.run {
+                isLoggedIn = false
+            }
+        }
     }
     
     private func handleDirectory() {
@@ -2121,17 +2397,34 @@ struct MainChatStorage: View {
     private func handleStartUpload() {
         // Not used, using handleSelectFiles via UI context
     }
-    
-    private func handleSelectFiles(targetDirectory: DirectoryItem? = nil) {
+
+    private func handleCloudUpload(targetDirectory: DirectoryItem? = nil) {
+        let targetDirectoryId = targetDirectory?.id ?? selectedDirectoryId
+        let resolvedDirectory = targetDirectory ?? targetDirectoryId.flatMap {
+            findDirectoryItem(id: $0, nodes: directoryTree)
+        }
+        let result = CloudUploadTargetValidator.validate(
+            selectedDirectoryId: targetDirectoryId,
+            rootDirectoryId: directoryTree.first?.id,
+            resolvedDirectory: resolvedDirectory
+        )
+
+        switch result {
+        case .success(let targetDirectory):
+            handleSelectFiles(targetDirectory: targetDirectory)
+        case .failure(let error):
+            alertMessage = error.errorDescription ?? "根目录不允许上传，请先选择一个子目录"
+            showingAlert = true
+        }
+    }
+
+    private func handleSelectFiles(targetDirectory: DirectoryItem) {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = true
         panel.prompt = "确定选择"
-        
-        if let target = targetDirectory {
-            panel.message = "选择文件上传到目录: \(target.fileName)"
-        }
+        panel.message = "选择文件上传到目录: \(targetDirectory.fileName)"
         
         if panel.runModal() == .OK {
             let urls = panel.urls
@@ -2145,14 +2438,14 @@ struct MainChatStorage: View {
                 let name = url.lastPathComponent
                 
                 // Determine target directory name
-                let targetName = targetDirectory?.fileName ?? "根目录"
+                let targetName = targetDirectory.fileName
                 
                 let item = TransferItem(
                     name: name,
                     size: fileSize,
                     directoryName: targetName,
                     fileUrl: url, // 保存 URL
-                    targetDirId: targetDirectory?.id ?? 0,
+                    targetDirId: targetDirectory.id,
                     taskType: .upload, // Set as Upload
                     status: "等待上传",
                     progress: 0.0,
@@ -2184,7 +2477,7 @@ struct MainChatStorage: View {
                 transferManager.submit(task: task)
             }
             
-            let dirInfo = targetDirectory != nil ? " -> [\(targetDirectory!.fileName)]" : ""
+            let dirInfo = " -> [\(targetDirectory.fileName)]"
             addLog("用户选择了 \(urls.count) 个文件\(dirInfo)，已提交到传输队列")
         }
     }
@@ -2233,7 +2526,8 @@ struct MainChatStorage: View {
         } else if action == 3 {
             // 重命名操作
             fileRenameTargetId = file.id
-            fileRenameValue = file.fileName
+            fileRenameOriginalName = file.fileName
+            fileRenameValue = FileNameRules.editableStem(for: file.fileName)
             showingFileRenameDialog = true
         }
     }
@@ -2468,6 +2762,14 @@ struct MainChatStorage: View {
             let items = try await service.loadDirectoryTree()
 
             self.directoryTree = items
+            // 文件列表必须始终有一个来自左侧目录树的父目录；首次进入云盘时默认选中根目录。
+            if let selectedDirectoryId,
+               findDirectoryItem(id: selectedDirectoryId, nodes: items) == nil {
+                self.selectedDirectoryId = nil
+            }
+            if self.selectedDirectoryId == nil {
+                self.selectedDirectoryId = items.first?.id
+            }
             // 仅在首次加载（无展开项）时执行默认展开，否则保留用户当前的展开状态
             if self.expandedDirectoryIds.isEmpty {
                self.expandDefaultLevels(items: items) // 默认展开两层
@@ -2877,7 +3179,8 @@ struct MainChatStorage: View {
 
             Button {
                 fileRenameTargetId = presentation.item.id
-                fileRenameValue = presentation.fileName
+                fileRenameOriginalName = presentation.fileName
+                fileRenameValue = FileNameRules.editableStem(for: presentation.fileName)
                 showingFileRenameDialog = true
             } label: {
                 Label("重命名", systemImage: "pencil")
@@ -3155,6 +3458,13 @@ struct MainChatStorage: View {
 
                 TextField("请输入新文件名", text: $fileRenameValue)
                     .textFieldStyle(.roundedBorder)
+
+                let preservedExtension = FileNameRules.resolvedExtension(fileName: fileRenameOriginalName)
+                if !preservedExtension.isEmpty {
+                    Text("未填写扩展名时将自动保留 .\(preservedExtension)")
+                        .font(.caption2)
+                        .foregroundColor(TelegramTheme.textSecondary)
+                }
             }
 
             HStack(spacing: 20) {
@@ -3162,6 +3472,7 @@ struct MainChatStorage: View {
                     showingFileRenameDialog = false
                     fileRenameValue = ""
                     fileRenameTargetId = nil
+                    fileRenameOriginalName = ""
                 }
                 .keyboardShortcut(.cancelAction)
 
@@ -3187,7 +3498,10 @@ struct MainChatStorage: View {
 
     private func handleRenameFile() {
         guard let service = directoryService, let id = fileRenameTargetId else { return }
-        let name = fileRenameValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = FileNameRules.applyingPreservedExtension(
+            to: fileRenameValue,
+            originalFileName: fileRenameOriginalName
+        )
         if name.isEmpty { return }
 
         isFileRenaming = true
@@ -3202,6 +3516,7 @@ struct MainChatStorage: View {
                     showingFileRenameDialog = false
                     fileRenameValue = ""
                     fileRenameTargetId = nil
+                    fileRenameOriginalName = ""
 
                     // 刷新文件列表
                     loadCurrentFiles()
@@ -3216,6 +3531,7 @@ struct MainChatStorage: View {
                     addLog("文件重命名失败: \(error.localizedDescription)")
                     isFileRenaming = false
                     showingAlert = true
+                    fileRenameOriginalName = ""
                     if let dirError = error as? DirectoryError, case .serverError(_, let msg) = dirError {
                         alertMessage = msg
                     } else {
@@ -3422,8 +3738,13 @@ struct MainChatStorage: View {
     private func loadCurrentFilesFromServer() async {
         guard let service = directoryService else { return }
 
-        // 如果选中了目录，使用 selectedDirectoryId，否则默认为 0 (根目录)
-        let dirId = selectedDirectoryId ?? 0
+        // 没有左侧目录选中项时不发起全量查询，避免聊天附件混入云盘列表。
+        guard let dirId = selectedDirectoryId, dirId > 0 else {
+            self.fileList = []
+            self.totalCount = 0
+            self.totalPages = 1
+            return
+        }
         let currentKeyword = searchKeyword
 
         do {
@@ -3852,34 +4173,56 @@ struct Friend: Identifiable, Hashable {
     let avatarColor: Color
     let avatarBase64: String?
     let serverUnreadCount: Int32?
-    let serverLatestMsg: String?
+    let serverLatestDisplayText: String?
 }
 
 // 2. Chat Detail View (右侧聊天窗口)
 private struct ChatDetailView: View {
+    private enum ChatTimelineEntry: Identifiable {
+        case dateHeader(id: String, title: String)
+        case message(ChatMessage)
+
+        var id: String {
+            switch self {
+            case .dateHeader(let id, _):
+                return id
+            case .message(let message):
+                return message.id
+            }
+        }
+    }
+
+    private enum HistoryScrollRestoreEdge: Equatable {
+        case top
+        case bottom
+    }
+
     let friend: Friend
+    let currentUserAvatarBase64: String?
     @State private var messageText = ""
     @EnvironmentObject var socketManager: SocketManager
     @EnvironmentObject var authService: AuthenticationService
     
     // Pagination states
-    @State private var currentOffset: Int32 = 0
     let pageSize: Int32 = 20
     @State private var hasMore: Bool = true
+    @State private var hasNewer: Bool = false
     @State private var isLoadingHistory: Bool = false
-    @State private var topMessageIdBeforeLoad: String? = nil
+    @State private var scrollRestoreMessageId: String? = nil
+    @State private var scrollRestoreEdge: HistoryScrollRestoreEdge = .top
     @State private var shouldScrollToBottom: Bool = false
     @State private var isInitialProcessing: Bool = true 
+    @State private var historyLoadTask: Task<Void, Never>? = nil
     
     // Emoji Picker State
     @State private var showEmojiPicker: Bool = false
     @State private var pendingInsertToken: String? = nil
     @State private var quotedMessage: ChatMessage? = nil
-    @State private var pendingImages: [PendingChatImage] = []
-    @State private var pendingImageError: String? = nil
-    @State private var isUploadingImage: Bool = false
-    @State private var pendingMediaMessages: [String: [PendingChatImage]] = [:]
+    @State private var pendingAttachments: [PendingChatAttachment] = []
+    @State private var pendingAttachmentError: String? = nil
     @State private var imagePreviewContext: ChatImagePreviewContext?
+    @StateObject private var attachmentTransferStore = ChatAttachmentTransferStore.shared
+    private let attachmentTransferCoordinator = ChatAttachmentTransferCoordinator.shared
     
     // Alias Update State
     @State private var showingAliasPopover: Bool = false
@@ -3887,25 +4230,33 @@ private struct ChatDetailView: View {
     @State private var isUpdatingAlias: Bool = false
     
     // Nudge/Reaction States
-    @State private var nudgeOffset: CGFloat = 0
     @State private var reactionOpacity: Double = 0
     @State private var reactionScale: CGFloat = 0.5
     
     var messages: [ChatMessage] {
         socketManager.chatHistory[friend.id] ?? []
     }
+
+    private var historyWindowRevision: UInt64 {
+        socketManager.chatHistoryStates[friend.id]?.windowRevision ?? 0
+    }
     
-    var groupedMessages: [(String, [ChatMessage])] {
-        var result: [(String, [ChatMessage])] = []
-        for msg in messages {
-            let group = msg.groupTime ?? "未知时间"
-            if let last = result.last, last.0 == group {
-                result[result.count - 1].1.append(msg)
-            } else {
-                result.append((group, [msg]))
+    private var timelineEntries: [ChatTimelineEntry] {
+        var entries: [ChatTimelineEntry] = []
+        entries.reserveCapacity(messages.count + 8)
+        var previousGroup: String?
+
+        for message in messages {
+            if let group = message.groupTime ?? ChatMessageTimeGrouping.groupTime(for: message.timestamp) {
+                if group != previousGroup {
+                    entries.append(.dateHeader(id: "date-\(group)", title: group))
+                    previousGroup = group
+                }
             }
+            entries.append(.message(message))
         }
-        return result
+
+        return entries
     }
     
     var body: some View {
@@ -3933,8 +4284,7 @@ private struct ChatDetailView: View {
                         // TODO: Implement background change
                     }
                     Button("清空聊天记录") {
-                        // TODO: Implement clear history
-                        socketManager.chatHistory[friend.id]?.removeAll()
+                        Task { await clearLocalHistory() }
                     }
                 } label: {
                     Image(systemName: "ellipsis")
@@ -3989,7 +4339,7 @@ private struct ChatDetailView: View {
                     
                     ScrollView {
                         LazyVStack(spacing: 12) {
-                            if isLoadingHistory {
+                            if isLoadingHistory && scrollRestoreEdge == .top {
                                 ProgressView()
                                     .padding(.top, 8)
                             } else if !hasMore && messages.count > 0 {
@@ -4001,33 +4351,27 @@ private struct ChatDetailView: View {
                                 Color.clear
                                     .frame(height: 1)
                                     .onAppear {
-                                        if !isLoadingHistory && hasMore && !shouldScrollToBottom && !isInitialProcessing {
-                                            Task {
-                                                try? await Task.sleep(nanoseconds: 300_000_000)
-                                                if !isLoadingHistory && hasMore && !shouldScrollToBottom && !isInitialProcessing {
-                                                    await loadMoreHistory()
-                                                }
-                                            }
-                                        }
+                                        scheduleLoadMoreHistory()
                                     }
                             }
                             
-                            ForEach(groupedMessages, id: \.0) { groupInfo in
-                                let (groupTime, msgs) = groupInfo
-                                if !groupTime.isEmpty {
-                                    Text(groupTime)
-                                        .font(.caption2)
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 4)
-                                        .background(Color.gray.opacity(0.2))
-                                        .cornerRadius(8)
-                                        .padding(.top, 8)
-                                }
-                                
-                                ForEach(msgs) { msg in
+                            ForEach(timelineEntries) { entry in
+                                switch entry {
+                                case .dateHeader(_, let title):
+                                    if !title.isEmpty {
+                                        Text(title)
+                                            .font(.caption2)
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 4)
+                                            .background(Color.gray.opacity(0.2))
+                                            .cornerRadius(8)
+                                            .padding(.top, 8)
+                                    }
+                                case .message(let msg):
                                     ChatMessageRow(
                                         message: msg,
                                         friendName: friend.name,
+                                        currentUserAvatarBase64: currentUserAvatarBase64,
                                         friendAvatarBase64: friend.avatarBase64,
                                         friendAvatarColor: friend.avatarColor,
                                         onCopy: copyMessage,
@@ -4035,10 +4379,24 @@ private struct ChatDetailView: View {
                                         onDeleteLocal: deleteLocalMessage,
                                         onRetract: retractMessage,
                                         onRetry: retryMessage,
+                                        onRetryAttachment: retryChatAttachment,
+                                        onRemoveAttachment: removeChatAttachment,
                                         onDoubleTap: triggerReaction,
-                                        onPreviewImage: openImagePreview
+                                        onPreviewImage: openImagePreview,
+                                        onDownloadAttachment: downloadChatAttachment
                                     )
                                 }
+                            }
+
+                            if isLoadingHistory && scrollRestoreEdge == .bottom {
+                                ProgressView()
+                                    .padding(.bottom, 8)
+                            } else if hasNewer {
+                                Color.clear
+                                    .frame(height: 1)
+                                    .onAppear {
+                                        scheduleLoadNewerHistory()
+                                    }
                             }
                             
                             Rectangle()
@@ -4050,15 +4408,12 @@ private struct ChatDetailView: View {
                         .padding(.top, 16)
                         .padding(.bottom, 8)
                     }
-                    .onChange(of: messages.count) { newCount in
-                        if newCount > 0 {
-                            if let topId = topMessageIdBeforeLoad {
-                                topMessageIdBeforeLoad = nil
-                                DispatchQueue.main.async { proxy.scrollTo(topId, anchor: .top) }
-                            } else {
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                                    proxy.scrollTo("BOTTOM_ANCHOR", anchor: .bottom)
-                                }
+                    .onChange(of: historyWindowRevision) { _ in
+                        if let messageId = scrollRestoreMessageId {
+                            let anchor: UnitPoint = scrollRestoreEdge == .top ? .top : .bottom
+                            scrollRestoreMessageId = nil
+                            DispatchQueue.main.async {
+                                proxy.scrollTo(messageId, anchor: anchor)
                             }
                         }
                     }
@@ -4080,7 +4435,6 @@ private struct ChatDetailView: View {
                             .shadow(radius: 10)
                     }
                 }
-                .offset(x: nudgeOffset)
             }
             .frame(height: messageHeight)
             .background(Color(NSColor.textBackgroundColor).opacity(0.8))
@@ -4091,19 +4445,17 @@ private struct ChatDetailView: View {
                         showEmojiPicker: $showEmojiPicker,
                         pendingInsertToken: $pendingInsertToken,
                         quotedMessage: $quotedMessage,
-                        pendingImages: $pendingImages,
-                        pendingImageError: $pendingImageError,
-                        isSending: $isUploadingImage,
-                        onSendNudge: sendNudge,
-                        onPickImages: pickImages,
+                        pendingAttachments: $pendingAttachments,
+                        pendingAttachmentError: $pendingAttachmentError,
+                        onPickAttachments: pickAttachments,
                         onPasteImage: handlePastedImage,
-                        onRemovePendingImage: removePendingImage,
+                        onRemovePendingAttachment: removePendingAttachment,
                         onSendMessage: {
                             Task { await sendMessage() }
                         }
                     )
                     .frame(height: inputHeight)
-                    .clipped()
+                    .zIndex(20)
                 }
             }
         }
@@ -4113,6 +4465,20 @@ private struct ChatDetailView: View {
                 await loadInitialHistory()
                 try? await Task.sleep(nanoseconds: 600_000_000)
                 isInitialProcessing = false
+            }
+        }
+        .onDisappear {
+            historyLoadTask?.cancel()
+            historyLoadTask = nil
+        }
+        .onReceive(TransferTaskManager.shared.$taskUpdates) { updates in
+            for (taskId, info) in updates {
+                attachmentTransferStore.updateDownload(
+                    taskId: taskId,
+                    status: info.0,
+                    progress: info.1,
+                    errorMessage: info.0.contains("失败") ? info.0 : nil
+                )
             }
         }
 
@@ -4129,17 +4495,6 @@ private struct ChatDetailView: View {
             }
         }
         .animation(.easeInOut(duration: 0.16), value: imagePreviewContext?.id)
-    }
-    
-    private func sendNudge() {
-        withAnimation(.spring(response: 0.2, dampingFraction: 0.2, blendDuration: 0)) { nudgeOffset = 10 }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            withAnimation(.spring(response: 0.2, dampingFraction: 0.2, blendDuration: 0)) { nudgeOffset = -10 }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                withAnimation(.spring(response: 0.2, dampingFraction: 0.2, blendDuration: 0)) { nudgeOffset = 0 }
-            }
-        }
-        socketManager.sendChatMessage(receiverId: friend.id, content: "【抖了你一下】", msgType: "NUDGE", avatar: authService.currentUser?.avatar)
     }
     
     private func handleUpdateAlias() {
@@ -4178,6 +4533,63 @@ private struct ChatDetailView: View {
         }
     }
 
+    private func downloadChatAttachment(_ attachment: ChatAttachment) {
+        guard !attachment.isLocalPending, attachment.fileId > 0 else { return }
+        guard let currentUser = authService.currentUser else {
+            pendingAttachmentError = "请先登录后再下载附件"
+            return
+        }
+
+        if let existing = attachmentTransferStore.download(for: attachment.fileId) {
+            if existing.state == .completed,
+               FileManager.default.fileExists(atPath: existing.targetPath) {
+                NSWorkspace.shared.open(URL(fileURLWithPath: existing.targetPath))
+                return
+            }
+            if existing.state == .failed || existing.state == .paused {
+                submitChatAttachmentDownload(
+                    attachment,
+                    targetURL: URL(fileURLWithPath: existing.targetPath),
+                    currentUser: currentUser
+                )
+                return
+            }
+        }
+
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = attachment.fileName
+        panel.canCreateDirectories = true
+        panel.prompt = "下载"
+        guard panel.runModal() == .OK, let targetURL = panel.url else { return }
+
+        submitChatAttachmentDownload(attachment, targetURL: targetURL, currentUser: currentUser)
+    }
+
+    private func submitChatAttachmentDownload(
+        _ attachment: ChatAttachment,
+        targetURL: URL,
+        currentUser: UserDO
+    ) {
+        let taskId = attachmentTransferStore.download(for: attachment.fileId)
+            .flatMap { UUID(uuidString: $0.taskId) } ?? UUID()
+        let task = StorageTransferTask(
+            id: taskId,
+            taskType: .download,
+            name: targetURL.lastPathComponent,
+            fileUrl: targetURL,
+            targetDirId: 0,
+            userId: currentUser.id,
+            userName: currentUser.username,
+            fileSize: attachment.fileSize,
+            directoryName: "聊天附件",
+            remoteFileId: attachment.fileId,
+            progress: 0,
+            status: "等待下载"
+        )
+        attachmentTransferStore.registerDownload(task: task, attachment: attachment)
+        TransferTaskManager.shared.submit(task: task)
+    }
+
     private func copyMessage(_ msg: ChatMessage) {
         guard !msg.content.isEmpty else { return }
         let pasteboard = NSPasteboard.general
@@ -4189,6 +4601,11 @@ private struct ChatDetailView: View {
         guard let index = socketManager.chatHistory[friend.id]?.firstIndex(where: { $0.id == msg.id }) else { return }
         let snapshot = socketManager.chatHistory[friend.id] ?? []
         socketManager.chatHistory[friend.id]?.remove(at: index)
+
+        if let clientMsgId = msg.clientMsgId,
+           attachmentTransferStore.batches[clientMsgId] != nil {
+            attachmentTransferStore.updateBatchState(clientMsgId, state: .cancelled)
+        }
 
         guard let messageId = msg.messageId else { return }
         Task {
@@ -4226,9 +4643,16 @@ private struct ChatDetailView: View {
     private func retryMessage(_ msg: ChatMessage) {
         guard msg.isMe else { return }
         if let clientMsgId = msg.clientMsgId,
-           let pendingImages = pendingMediaMessages[clientMsgId] {
+           attachmentTransferStore.batches[clientMsgId] != nil {
             Task {
-                await retryPendingMediaMessage(msg, imagesToSend: pendingImages)
+                if attachmentTransferStore.allRetainedTransfersSucceeded(clientMsgId: clientMsgId) {
+                    await sendUploadedBatch(clientMsgId: clientMsgId)
+                } else {
+                    await retryPendingMediaMessage(
+                        msg,
+                        attachmentsToSend: attachmentTransferStore.pendingAttachments(clientMsgId: clientMsgId)
+                    )
+                }
             }
             return
         }
@@ -4238,6 +4662,7 @@ private struct ChatDetailView: View {
             receiverId: friend.id,
             content: msg.content,
             msgType: msg.type,
+            preparedPayload: msg.preparedPayload,
             avatar: authService.currentUser?.avatar,
             quoteMsgId: msg.quoteMsgId,
             quoteMsgContent: msg.quoteMsgContent,
@@ -4245,6 +4670,58 @@ private struct ChatDetailView: View {
             clientMsgId: msg.clientMsgId
         )
         shouldScrollToBottom = true
+    }
+
+    private func retryChatAttachment(_ msg: ChatMessage, _ attachment: ChatAttachment) {
+        guard let clientMsgId = msg.clientMsgId,
+              let transfer = attachmentTransferStore.transfer(
+                clientMsgId: clientMsgId,
+                attachment: attachment
+              ),
+              let pending = attachmentTransferStore.pendingAttachment(
+                clientMsgId: clientMsgId,
+                localAttachmentId: transfer.localAttachmentId
+              ) else { return }
+
+        Task {
+            await retryPendingMediaMessage(msg, attachmentsToSend: [pending])
+        }
+    }
+
+    private func removeChatAttachment(_ msg: ChatMessage, _ attachment: ChatAttachment) {
+        guard let clientMsgId = msg.clientMsgId,
+              let transfer = attachmentTransferStore.transfer(
+                clientMsgId: clientMsgId,
+                attachment: attachment
+              ),
+              let batch = attachmentTransferStore.batches[clientMsgId] else { return }
+
+        attachmentTransferStore.markRemoved(
+            clientMsgId: clientMsgId,
+            localAttachmentId: transfer.localAttachmentId
+        )
+        let retained = attachmentTransferStore.retainedTransfers(clientMsgId: clientMsgId)
+        if retained.isEmpty && batch.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            attachmentTransferStore.updateBatchState(clientMsgId, state: .cancelled)
+            attachmentTransferCoordinator.cancelQueued(batchId: clientMsgId)
+            socketManager.chatHistory[friend.id]?.removeAll { $0.clientMsgId == clientMsgId }
+            return
+        }
+        do {
+            try refreshLocalBatchMessage(clientMsgId: clientMsgId, text: batch.text)
+        } catch {
+            attachmentTransferStore.updateBatchState(
+                clientMsgId,
+                state: .partialFailure,
+                errorMessage: error.localizedDescription
+            )
+            return
+        }
+
+        if attachmentTransferStore.allRetainedTransfersSucceeded(clientMsgId: clientMsgId)
+            || retained.isEmpty {
+            Task { await sendUploadedBatch(clientMsgId: clientMsgId) }
+        }
     }
 
     private func updateMessage(_ msg: ChatMessage, transform: (inout ChatMessage) -> Void) {
@@ -4257,19 +4734,18 @@ private struct ChatDetailView: View {
     }
 
     private func handlePastedImage(_ image: NSImage) {
-        guard pendingImages.count < ChatMixedMessageContent.maxImageCount else {
-            pendingImageError = "单条消息最多发送\(ChatMixedMessageContent.maxImageCount)张图片"
+        guard pendingAttachments.count < ChatMixedMessageContent.maxAttachmentCount else {
+            pendingAttachmentError = "单条消息最多发送\(ChatMixedMessageContent.maxAttachmentCount)个附件"
             return
         }
-        pendingImages.append(PendingChatImage.pasted(image))
-        pendingImageError = nil
+        pendingAttachments.append(PendingChatAttachment.pasted(image))
+        pendingAttachmentError = nil
     }
 
-    private func pickImages() {
-        guard !isUploadingImage else { return }
-        let remaining = ChatMixedMessageContent.maxImageCount - pendingImages.count
+    private func pickAttachments() {
+        let remaining = ChatMixedMessageContent.maxAttachmentCount - pendingAttachments.count
         guard remaining > 0 else {
-            pendingImageError = "单条消息最多发送\(ChatMixedMessageContent.maxImageCount)张图片"
+            pendingAttachmentError = "单条消息最多发送\(ChatMixedMessageContent.maxAttachmentCount)个附件"
             return
         }
 
@@ -4277,44 +4753,43 @@ private struct ChatDetailView: View {
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
-        panel.allowedContentTypes = [.image]
         panel.prompt = "选择"
 
         guard panel.runModal() == .OK else { return }
 
-        var newItems: [PendingChatImage] = []
+        var newItems: [PendingChatAttachment] = []
         for url in panel.urls.prefix(remaining) {
             do {
-                newItems.append(try PendingChatImage.file(url: url))
+                newItems.append(try PendingChatAttachment.file(url: url))
             } catch {
-                pendingImageError = error.localizedDescription
+                pendingAttachmentError = error.localizedDescription
             }
         }
         if panel.urls.count > remaining {
-            pendingImageError = "已达到\(ChatMixedMessageContent.maxImageCount)张上限，超出的图片未加入"
+            pendingAttachmentError = "已达到\(ChatMixedMessageContent.maxAttachmentCount)个附件上限，超出的文件未加入"
         } else if !newItems.isEmpty {
-            pendingImageError = nil
+            pendingAttachmentError = nil
         }
-        pendingImages.append(contentsOf: newItems)
+        pendingAttachments.append(contentsOf: newItems)
     }
 
-    private func removePendingImage(_ id: UUID) {
-        pendingImages.removeAll { $0.id == id }
-        if pendingImages.isEmpty {
-            pendingImageError = nil
+    private func removePendingAttachment(_ id: UUID) {
+        pendingAttachments.removeAll { $0.id == id }
+        if pendingAttachments.isEmpty {
+            pendingAttachmentError = nil
         }
     }
 
     private func sendMessage() async {
         let trimmedText = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let imagesToSend = pendingImages
-        guard !trimmedText.isEmpty || !imagesToSend.isEmpty else { return }
+        let attachmentsToSend = pendingAttachments
+        guard !trimmedText.isEmpty || !attachmentsToSend.isEmpty else { return }
 
         let contentToSend = messageText
         let quote = quotedMessage
         let avatar = authService.currentUser?.avatar
 
-        if imagesToSend.isEmpty {
+        if attachmentsToSend.isEmpty {
             messageText = ""
             quotedMessage = nil
             shouldScrollToBottom = true
@@ -4323,69 +4798,96 @@ private struct ChatDetailView: View {
                 receiverId: friend.id,
                 content: contentToSend,
                 msgType: "TEXT",
+                preparedPayload: .text(contentToSend),
                 avatar: avatar,
                 quoteMsgId: quote?.messageId.map { Int64($0) },
-                quoteMsgContent: quote.map { ChatMessagePayload.parse(content: $0.content, msgType: $0.type).displayText },
+                quoteMsgContent: quote?.preparedPayload.displayText,
                 quoteMsgSenderName: quote.map { $0.isMe ? "我" : friend.name }
             )
             return
         }
 
-        pendingImageError = nil
+        pendingAttachmentError = nil
 
         do {
             guard let currentUser = authService.currentUser else {
-                pendingImageError = "请先登录"
+                pendingAttachmentError = "请先登录"
                 return
             }
             guard currentUser.id >= Int64(Int32.min), currentUser.id <= Int64(Int32.max) else {
-                pendingImageError = "当前用户ID超出上传协议范围"
+                pendingAttachmentError = "当前用户ID超出上传协议范围"
                 return
             }
 
             let clientMsgId = UUID().uuidString
-            let localAttachments = imagesToSend.map { $0.localAttachment() }
+            let localAttachments = attachmentsToSend.map { $0.localAttachment() }
             let localPayload = try ChatMixedMessageContent(text: contentToSend, attachments: localAttachments)
             let localContent = try localPayload.contentString()
 
+            guard attachmentsToSend.allSatisfy({ $0.sourceURL != nil }) else {
+                pendingAttachmentError = "附件本地副本保存失败，请重新选择"
+                return
+            }
+
+            attachmentTransferStore.createBatch(
+                clientMsgId: clientMsgId,
+                friendId: friend.id,
+                text: contentToSend,
+                content: localContent,
+                quoteMsgId: quote?.messageId.map { Int64($0) },
+                quoteMsgContent: quote?.preparedPayload.displayText,
+                quoteMsgSenderName: quote.map { $0.isMe ? "我" : friend.name },
+                avatar: avatar,
+                attachments: attachmentsToSend
+            )
+
             messageText = ""
-            pendingImages.removeAll()
-            pendingImageError = nil
+            pendingAttachments.removeAll()
+            pendingAttachmentError = nil
             quotedMessage = nil
             shouldScrollToBottom = true
 
-            ChatPendingImageStore.shared.store(imagesToSend)
-            pendingMediaMessages[clientMsgId] = imagesToSend
+            ChatPendingImageStore.shared.store(attachmentsToSend)
             socketManager.appendLocalChatMessage(
                 receiverId: friend.id,
                 content: localContent,
                 msgType: "MIXED",
+                preparedPayload: .mixed(localPayload),
                 avatar: avatar,
                 quoteMsgId: quote?.messageId.map { Int64($0) },
-                quoteMsgContent: quote.map { ChatMessagePayload.parse(content: $0.content, msgType: $0.type).displayText },
+                quoteMsgContent: quote?.preparedPayload.displayText,
                 quoteMsgSenderName: quote.map { $0.isMe ? "我" : friend.name },
                 clientMsgId: clientMsgId,
                 sendStatus: .uploadingMedia
             )
 
-            await uploadAndSendPendingMediaMessage(
-                clientMsgId: clientMsgId,
-                contentToSend: contentToSend,
-                imagesToSend: imagesToSend,
-                quoteMsgId: quote?.messageId.map { Int64($0) },
-                quoteMsgContent: quote.map { ChatMessagePayload.parse(content: $0.content, msgType: $0.type).displayText },
-                quoteMsgSenderName: quote.map { $0.isMe ? "我" : friend.name },
-                avatar: avatar,
-                currentUser: currentUser,
-                localAttachmentIds: localAttachments.map { $0.fileId }
-            )
+            attachmentTransferCoordinator.enqueue(
+                batchId: clientMsgId,
+                requestId: "initial"
+            ) {
+                await self.uploadAndSendPendingMediaMessage(
+                    clientMsgId: clientMsgId,
+                    contentToSend: contentToSend,
+                    attachmentsToSend: attachmentsToSend,
+                    currentUser: currentUser
+                )
+            }
         } catch {
-            pendingImageError = error.localizedDescription
+            pendingAttachmentError = error.localizedDescription
         }
     }
 
-    private func retryPendingMediaMessage(_ msg: ChatMessage, imagesToSend: [PendingChatImage]) async {
+    private func retryPendingMediaMessage(_ msg: ChatMessage, attachmentsToSend: [PendingChatAttachment]) async {
         guard let clientMsgId = msg.clientMsgId else { return }
+        guard !attachmentsToSend.isEmpty else {
+            socketManager.updateLocalChatMessage(
+                receiverId: friend.id,
+                clientMsgId: clientMsgId,
+                status: .failed,
+                errorMessage: "附件本地副本不存在，请删除后重新选择"
+            )
+            return
+        }
         guard let currentUser = authService.currentUser else {
             socketManager.updateLocalChatMessage(
                 receiverId: friend.id,
@@ -4405,66 +4907,207 @@ private struct ChatDetailView: View {
             return
         }
 
-        let payload = ChatMessagePayload.parse(content: msg.content, msgType: msg.type)
-        let localAttachmentIds = payload.images
-            .filter { $0.isLocalPending }
-            .map { $0.fileId }
-
+        let payload = msg.preparedPayload
         socketManager.updateLocalChatMessage(
             receiverId: friend.id,
             clientMsgId: clientMsgId,
             status: .uploadingMedia,
             errorMessage: nil
         )
+        attachmentTransferStore.updateBatchState(clientMsgId, state: .uploading)
         shouldScrollToBottom = true
 
-        await uploadAndSendPendingMediaMessage(
-            clientMsgId: clientMsgId,
-            contentToSend: payload.text,
-            imagesToSend: imagesToSend,
-            quoteMsgId: msg.quoteMsgId,
-            quoteMsgContent: msg.quoteMsgContent,
-            quoteMsgSenderName: msg.quoteMsgSenderName,
-            avatar: authService.currentUser?.avatar,
-            currentUser: currentUser,
-            localAttachmentIds: localAttachmentIds
-        )
+        for attachment in attachmentsToSend {
+            attachmentTransferStore.updateTransfer(
+                clientMsgId: clientMsgId,
+                localAttachmentId: attachment.localAttachmentId,
+                state: .waiting,
+                errorMessage: nil
+            )
+        }
+        let requestId = "retry:" + attachmentsToSend
+            .map { String($0.localAttachmentId) }
+            .sorted()
+            .joined(separator: ",")
+        attachmentTransferCoordinator.enqueue(batchId: clientMsgId, requestId: requestId) {
+            await self.uploadAndSendPendingMediaMessage(
+                clientMsgId: clientMsgId,
+                contentToSend: payload.text,
+                attachmentsToSend: attachmentsToSend,
+                currentUser: currentUser
+            )
+        }
     }
 
     private func uploadAndSendPendingMediaMessage(
         clientMsgId: String,
         contentToSend: String,
-        imagesToSend: [PendingChatImage],
-        quoteMsgId: Int64?,
-        quoteMsgContent: String?,
-        quoteMsgSenderName: String?,
-        avatar: String?,
-        currentUser: UserDO,
-        localAttachmentIds: [Int64]
+        attachmentsToSend: [PendingChatAttachment],
+        currentUser: UserDO
     ) async {
-        do {
-            let uploadService = ChatAttachmentUploadService()
-            var attachments: [ChatImageAttachment] = []
-            for item in imagesToSend {
-                attachments.append(
-                    try await uploadService.uploadPendingImage(
-                        item,
-                        userId: Int32(currentUser.id),
-                        userName: currentUser.username
-                    )
-                )
+        let session = ChatAttachmentUploadSession(batchId: clientMsgId)
+        let uploadService = ChatAttachmentUploadService(session: session)
+        var failures: [String] = []
+
+        for item in attachmentsToSend {
+            let localId = item.localAttachmentId
+            var uploadStage = "准备附件"
+            if let existing = attachmentTransferStore.transfer(
+                clientMsgId: clientMsgId,
+                localAttachmentId: localId
+            ), existing.state == .succeeded || existing.state == .removed {
+                continue
             }
 
-            let payload = try ChatMixedMessageContent(text: contentToSend, attachments: attachments)
-            let content = try payload.contentString()
+            attachmentTransferStore.updateTransfer(
+                clientMsgId: clientMsgId,
+                localAttachmentId: localId,
+                state: .uploading,
+                progress: 0,
+                errorMessage: nil
+            )
+            do {
+                let uploaded = try await uploadService.uploadPendingAttachment(
+                    item,
+                    userId: Int32(currentUser.id),
+                    userName: currentUser.username,
+                    progressHandler: { progress, _ in
+                        Task { @MainActor in
+                            attachmentTransferStore.updateTransfer(
+                                clientMsgId: clientMsgId,
+                                localAttachmentId: localId,
+                                state: .uploading,
+                                progress: progress,
+                                errorMessage: nil
+                            )
+                        }
+                    },
+                    statusHandler: { stage in
+                        uploadStage = stage
+                    }
+                )
+                attachmentTransferStore.updateTransfer(
+                    clientMsgId: clientMsgId,
+                    localAttachmentId: localId,
+                    state: .succeeded,
+                    progress: 1,
+                    errorMessage: nil,
+                    result: uploaded
+                )
+                try refreshLocalBatchMessage(clientMsgId: clientMsgId, text: contentToSend)
+            } catch {
+                failures.append(item.fileName)
+                let stagedError = "\(uploadStage)：\(error.localizedDescription)"
+                attachmentTransferStore.updateTransfer(
+                    clientMsgId: clientMsgId,
+                    localAttachmentId: localId,
+                    state: .failed,
+                    errorMessage: stagedError
+                )
+                do {
+                    try await session.reconnect()
+                } catch {
+                    print("⚠️ [ChatAttachment] 批次重连失败，下一附件将再次建连: \(error.localizedDescription)")
+                }
+            }
+        }
+        await session.close()
 
-            pendingMediaMessages.removeValue(forKey: clientMsgId)
-            ChatPendingImageStore.shared.remove(localAttachmentIds: localAttachmentIds)
+        if attachmentTransferStore.allRetainedTransfersSucceeded(clientMsgId: clientMsgId) {
+            await sendUploadedBatch(clientMsgId: clientMsgId)
+            ChatPendingImageStore.shared.remove(
+                localAttachmentIds: attachmentTransferStore
+                    .retainedTransfers(clientMsgId: clientMsgId)
+                    .map(\.localAttachmentId)
+            )
+            return
+        }
+
+        let message = failures.isEmpty ? "仍有附件等待上传" : "部分附件上传失败，可单独重试或删除"
+        attachmentTransferStore.updateBatchState(
+            clientMsgId,
+            state: .partialFailure,
+            errorMessage: message
+        )
+        socketManager.updateLocalChatMessage(
+            receiverId: friend.id,
+            clientMsgId: clientMsgId,
+            status: .failed,
+            errorMessage: message
+        )
+    }
+
+    private func refreshLocalBatchMessage(clientMsgId: String, text: String) throws {
+        let attachments = attachmentTransferStore.retainedTransfers(clientMsgId: clientMsgId).map { transfer in
+            transfer.result ?? ChatAttachment(
+                kind: transfer.kind,
+                fileId: transfer.localAttachmentId,
+                fileName: transfer.fileName,
+                fileSize: transfer.fileSize,
+                mimeType: transfer.mimeType
+            )
+        }
+        let payload = try ChatMixedMessageContent(text: text, attachments: attachments)
+        let content = try payload.contentString()
+        attachmentTransferStore.updateBatchContent(clientMsgId, content: content)
+        socketManager.updateLocalChatMessage(
+            receiverId: friend.id,
+            clientMsgId: clientMsgId,
+            content: content,
+            msgType: "MIXED",
+            preparedPayload: .mixed(payload)
+        )
+    }
+
+    private func sendUploadedBatch(clientMsgId: String) async {
+        guard let batch = attachmentTransferStore.batches[clientMsgId] else { return }
+        guard batch.state != .sent && batch.state != .sendingMessage else { return }
+        let attachments = attachmentTransferStore.retainedTransfers(clientMsgId: clientMsgId)
+            .compactMap(\.result)
+        guard !attachments.isEmpty || !batch.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            attachmentTransferStore.updateBatchState(clientMsgId, state: .cancelled)
+            return
+        }
+
+        do {
+            attachmentTransferStore.updateBatchState(clientMsgId, state: .readyToSend)
+            if attachments.isEmpty {
+                attachmentTransferStore.updateBatchContent(clientMsgId, content: batch.text)
+                attachmentTransferStore.updateBatchState(clientMsgId, state: .sendingMessage)
+                socketManager.updateLocalChatMessage(
+                    receiverId: friend.id,
+                    clientMsgId: clientMsgId,
+                    content: batch.text,
+                    msgType: "TEXT",
+                    preparedPayload: .text(batch.text),
+                    status: .sending,
+                    errorMessage: nil
+                )
+                socketManager.sendChatMessage(
+                    receiverId: friend.id,
+                    content: batch.text,
+                    msgType: "TEXT",
+                    preparedPayload: .text(batch.text),
+                    avatar: batch.avatar,
+                    quoteMsgId: batch.quoteMsgId,
+                    quoteMsgContent: batch.quoteMsgContent,
+                    quoteMsgSenderName: batch.quoteMsgSenderName,
+                    clientMsgId: clientMsgId,
+                    appendLocalMessage: false
+                )
+                return
+            }
+
+            let payload = try ChatMixedMessageContent(text: batch.text, attachments: attachments)
+            let content = try payload.contentString()
+            attachmentTransferStore.updateBatchContent(clientMsgId, content: content)
+            attachmentTransferStore.updateBatchState(clientMsgId, state: .sendingMessage)
             socketManager.updateLocalChatMessage(
                 receiverId: friend.id,
                 clientMsgId: clientMsgId,
                 content: content,
                 msgType: "MIXED",
+                preparedPayload: .mixed(payload),
                 status: .sending,
                 errorMessage: nil
             )
@@ -4472,14 +5115,20 @@ private struct ChatDetailView: View {
                 receiverId: friend.id,
                 content: content,
                 msgType: "MIXED",
-                avatar: avatar,
-                quoteMsgId: quoteMsgId,
-                quoteMsgContent: quoteMsgContent,
-                quoteMsgSenderName: quoteMsgSenderName,
+                preparedPayload: .mixed(payload),
+                avatar: batch.avatar,
+                quoteMsgId: batch.quoteMsgId,
+                quoteMsgContent: batch.quoteMsgContent,
+                quoteMsgSenderName: batch.quoteMsgSenderName,
                 clientMsgId: clientMsgId,
                 appendLocalMessage: false
             )
         } catch {
+            attachmentTransferStore.updateBatchState(
+                clientMsgId,
+                state: .failedToSend,
+                errorMessage: error.localizedDescription
+            )
             socketManager.updateLocalChatMessage(
                 receiverId: friend.id,
                 clientMsgId: clientMsgId,
@@ -4489,140 +5138,522 @@ private struct ChatDetailView: View {
         }
     }
     
-    private func loadInitialHistory() async {
-        var currentUnreadCount: Int32 = 0
-        
-        await MainActor.run {
-            currentUnreadCount = Int32(socketManager.unreadCounts[friend.id] ?? 0)
-            
-            // 切换好友时先清空记录，保证 UI 界面是一个干净的状态接收新数据
-            var history = socketManager.chatHistory
-            history[friend.id] = []
-            socketManager.chatHistory = history
-            
-            currentOffset = 0
-            hasMore = true
-            isLoadingHistory = false
-        }
-        
-        await fetchHistory(offset: 0, limit: pageSize, isInitial: true)
-        
-        // 按照需求，如果加载完历史且未读数量大于0，发起0x55帧请求
-        print("🔍 [loadInitialHistory] friend.id=\\(friend.id), currentUnreadCount=\\(currentUnreadCount)")
-        if currentUnreadCount > 0 {
-            do {
-                print("📨 发起清除红点请求 0x55...")
-                let success = try await socketManager.clearUnreadCount(friendId: Int32(friend.id))
-                print("✅ 0x55 请求响应成功标识: \\(success)")
-                
-                if success {
-                    await MainActor.run {
-                        print("🔄 正在更新本地 UI unreadCounts 字典...")
-                        var counts = socketManager.unreadCounts
-                        counts[friend.id] = 0
-                        // 强制赋值全新的字典以触发 @Published
-                        socketManager.unreadCounts = counts
-                        print("✨ unreadCounts 本地更新完成: \\(socketManager.unreadCounts[friend.id] ?? -1)")
-                    }
-                } else {
-                    print("❌ 服务端返回清除红点失败 (业务失败，非抛错)")
-                }
-            } catch {
-                print("❌ 发送清除红点请求 0x55 失败(抛出异常): \\(error)")
-            }
-        }
-    }
-    
-    private func loadMoreHistory() async {
-        guard hasMore, !isLoadingHistory else { return }
-        await MainActor.run {
-            currentOffset += pageSize
-        }
-        await fetchHistory(offset: currentOffset, limit: pageSize, isInitial: false)
-    }
-    
-    private func fetchHistory(offset: Int32, limit: Int32, isInitial: Bool) async {
-        if !isInitial {
-            await MainActor.run {
-                topMessageIdBeforeLoad = messages.first?.id
-            }
-        }
-        await MainActor.run { isLoadingHistory = true }
-        defer { Task { @MainActor in isLoadingHistory = false } }
-        
+    private func clearLocalHistory() async {
+        guard let accountId = authService.currentUser?.id ?? socketManager.currentUserId else { return }
         do {
-            let historyDtos = try await socketManager.getChatHistory(friendId: Int32(friend.id), offset: offset, limit: limit)
-            
+            try await ChatHistoryStore.shared.deleteConversation(accountId: accountId, friendId: friend.id)
             await MainActor.run {
-                if historyDtos.count < limit {
-                    hasMore = false
-                }
-                
-                let newMessages = historyDtos.map { dto in
-                    let amIMe = (dto.senderId != Int32(friend.id))
-                    let status: ChatMessage.SendStatus = dto.retracted ? .retracted : .success
-                    
-                    return ChatMessage(
-                        messageId: Int32(dto.id),
-                        clientMsgId: dto.clientMsgId,
-                        content: dto.content,
-                        isMe: amIMe,
-                        timestamp: Date(),
-                        type: dto.msgType.isEmpty ? "TEXT" : dto.msgType,
-                        sendStatus: status,
-                        quoteMsgId: dto.quoteMsgId,
-                        quoteMsgContent: dto.quoteMsgContent,
-                        quoteMsgSenderName: dto.quoteMsgSenderName,
-                        retracted: dto.retracted,
-                        groupTime: dto.groupTime,
-                        msgTimeStr: dto.msgTimeStr,
-                        avatar: dto.avatar
-                    )
-                }
-                
-                var history = socketManager.chatHistory
-                let currentList = history[friend.id] ?? []
-                
-                // ────────────────────────────────────────────────────────────
-                // 直接从历史消息中提取当前用户自己的 base64 头像（无条件覆盖）
-                // 服务端 avatars 字典里的是 base64，比登录响应的文件路径更可靠
-                // ────────────────────────────────────────────────────────────
-                if let myMsg = newMessages.first(where: { $0.isMe && $0.avatar != nil && !($0.avatar!.isEmpty) }) {
-                    socketManager.myAvatar = myMsg.avatar
-                    print("✅ [fetchHistory] myAvatar 已从历史 base64 头像更新")
-                }
-                
-                // 把头像补充给还在等待中的本地乐观消息（发出去但还没回执的）
-                let effectiveMyAvatar = socketManager.myAvatar
-                let localSendingMessages = currentList.filter { $0.messageId == nil }.map { msg -> ChatMessage in
-                    guard msg.isMe, msg.avatar == nil, let av = effectiveMyAvatar else { return msg }
-                    var updated = msg
-                    updated.avatar = av          // ChatMessage.avatar 需要 var
-                    return updated
-                }
-                
-                var finalMessages: [ChatMessage]
-                
-                if isInitial {
-                    finalMessages = newMessages + localSendingMessages
-                    shouldScrollToBottom = true
-                } else {
-                    let existingServerMessages = currentList.filter { $0.messageId != nil }
-                    // 假设服务端依然按时间正序返回（最早的在前面，或者根据 offset 拼接在最前面最合适）
-                    finalMessages = newMessages + existingServerMessages + localSendingMessages
-                }
-                
-                history[friend.id] = finalMessages
-                socketManager.chatHistory = history
-
+                guard socketManager.currentUserId == accountId else { return }
+                socketManager.chatHistory[friend.id] = []
+                socketManager.latestChatMessages.removeValue(forKey: friend.id)
+                socketManager.chatHistoryStates[friend.id] = .empty
+                hasMore = true
+                hasNewer = false
+                scrollRestoreMessageId = nil
             }
         } catch {
-            print("❌ 获取历史消息失败: \(error)")
-            // To prevent infinite loop of onAppear trying to reload indefinitely if the server crashes
-            await MainActor.run {
-                hasMore = false
+            print("❌ 清空本地聊天记录失败: \(error.localizedDescription)")
+        }
+    }
+
+    private func loadInitialHistory() async {
+        guard let accountId = authService.currentUser?.id ?? socketManager.currentUserId else { return }
+        let currentUnreadCount = await MainActor.run {
+            Int32(socketManager.unreadCounts[friend.id] ?? 0)
+        }
+
+        var currentMessages = await MainActor.run {
+            socketManager.chatHistory[friend.id] ?? []
+        }
+
+        if currentMessages.isEmpty {
+            do {
+                let cached = try await ChatHistoryStore.shared.fetchLatest(
+                    accountId: accountId,
+                    friendId: friend.id,
+                    limit: SocketManager.chatHistoryWindowLimit
+                )
+                if !cached.isEmpty {
+                    await mergeHistoryMessages(
+                        incoming: cached,
+                        accountId: accountId,
+                        direction: .latest,
+                        olderAvailability: nil,
+                        newerAvailability: false
+                    )
+                    currentMessages = await MainActor.run {
+                        socketManager.chatHistory[friend.id] ?? []
+                    }
+                }
+            } catch {
+                print("❌ 读取本地聊天记录失败: \(error.localizedDescription)")
             }
         }
+
+        let localBounds = await Task.detached(priority: .utility) {
+            let visibleMessageIds = currentMessages.compactMap { $0.messageId }
+            return ChatHistoryBounds(
+                oldestMessageId: visibleMessageIds.min(),
+                latestMessageId: visibleMessageIds.max()
+            )
+        }.value
+
+        await MainActor.run {
+            guard socketManager.currentUserId == accountId else { return }
+            if let latest = currentMessages.last {
+                socketManager.recordLatestChatMessage(latest, for: friend.id)
+            }
+            var state = socketManager.chatHistoryStates[friend.id] ?? .empty
+            state.oldestMessageId = localBounds.oldestMessageId ?? state.oldestMessageId
+            state.latestMessageId = localBounds.latestMessageId ?? state.latestMessageId
+            state.isHydrated = true
+            socketManager.chatHistoryStates[friend.id] = state
+            hasMore = state.hasOlder
+            hasNewer = state.hasNewer
+            isLoadingHistory = false
+            restoreUnsentAttachmentBatches()
+        }
+
+        do {
+            if let cachedLatestMessageId = localBounds.latestMessageId {
+                try await synchronizeIncrementalHistory(
+                    afterMessageId: cachedLatestMessageId,
+                    accountId: accountId
+                )
+            } else {
+                let page = try await socketManager.getChatHistory(
+                    friendId: Int32(friend.id),
+                    limit: pageSize
+                )
+                try await persistAndMerge(
+                    page: page,
+                    accountId: accountId,
+                    direction: .latest,
+                    olderAvailability: page.hasMore,
+                    newerAvailability: false
+                )
+            }
+            await MainActor.run {
+                guard socketManager.currentUserId == accountId else { return }
+                shouldScrollToBottom = true
+            }
+        } catch {
+            print("❌ 增量同步聊天记录失败，保留本地记录: \(error.localizedDescription)")
+        }
+
+        let isCurrentAccount = await MainActor.run { socketManager.currentUserId == accountId }
+        if isCurrentAccount, currentUnreadCount > 0 {
+            do {
+                let success = try await socketManager.clearUnreadCount(friendId: Int32(friend.id))
+                if success {
+                    await MainActor.run {
+                        guard socketManager.currentUserId == accountId else { return }
+                        socketManager.unreadCounts[friend.id] = 0
+                    }
+                }
+            } catch {
+                print("❌ 发送清除红点请求 0x55 失败: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func synchronizeIncrementalHistory(
+        afterMessageId: Int64,
+        accountId: Int64
+    ) async throws {
+        var cursor = afterMessageId
+        var pendingWindow: [ChatMessage] = []
+
+        while true {
+            let page = try await socketManager.getChatHistory(
+                friendId: Int32(friend.id),
+                afterMessageId: cursor,
+                limit: pageSize
+            )
+            try await ChatHistoryStore.shared.upsert(
+                accountId: accountId,
+                friendId: friend.id,
+                items: page.list
+            )
+
+            let pageMessages = await Task.detached(priority: .userInitiated) {
+                Self.makeHistoryMessages(from: page.list, accountId: accountId)
+            }.value
+            let accumulatedSnapshot = pendingWindow
+            pendingWindow = await Task.detached(priority: .userInitiated) {
+                ChatHistoryWindowPolicy.merge(
+                    existing: accumulatedSnapshot,
+                    incoming: pageMessages,
+                    direction: .latest,
+                    limit: SocketManager.chatHistoryWindowLimit
+                ).messages
+            }.value
+
+            guard page.hasMore,
+                  let nextMessageId = page.latestMessageId,
+                  nextMessageId > cursor else {
+                break
+            }
+            cursor = nextMessageId
+        }
+
+        if !pendingWindow.isEmpty {
+            await mergeHistoryMessages(
+                incoming: pendingWindow,
+                accountId: accountId,
+                direction: .latest,
+                olderAvailability: nil,
+                newerAvailability: false
+            )
+        }
+    }
+
+    private func loadMoreHistory() async {
+        guard !isLoadingHistory,
+              let accountId = authService.currentUser?.id ?? socketManager.currentUserId,
+              let state = socketManager.chatHistoryStates[friend.id],
+              state.hasOlder,
+              let beforeMessageId = state.oldestMessageId else {
+            return
+        }
+
+        await MainActor.run {
+            scrollRestoreMessageId = messages.first?.id
+            scrollRestoreEdge = .top
+            isLoadingHistory = true
+        }
+        defer { Task { @MainActor in isLoadingHistory = false } }
+
+        do {
+            // 先消费已经同步到本地的更早消息，避免每次滚动到顶部都占用聊天 Socket。
+            // 只有本地游标已经耗尽时，才向服务端补齐剩余历史。
+            let localPage = try await ChatHistoryStore.shared.fetchOlder(
+                accountId: accountId,
+                friendId: friend.id,
+                beforeMessageId: beforeMessageId,
+                limit: Int(pageSize)
+            )
+            if !localPage.messages.isEmpty {
+                await mergeLocalHistory(
+                    localPage,
+                    accountId: accountId,
+                    direction: .older,
+                    olderAvailability: true,
+                    newerAvailability: nil
+                )
+                return
+            }
+
+            let page = try await socketManager.getChatHistory(
+                friendId: Int32(friend.id),
+                beforeMessageId: beforeMessageId,
+                limit: pageSize
+            )
+            try await persistAndMerge(
+                page: page,
+                accountId: accountId,
+                direction: .older,
+                olderAvailability: page.hasMore,
+                newerAvailability: nil
+            )
+        } catch {
+            print("❌ 加载更早聊天记录失败: \(error.localizedDescription)")
+        }
+    }
+
+    private func loadNewerHistory() async {
+        guard !isLoadingHistory,
+              let accountId = authService.currentUser?.id ?? socketManager.currentUserId,
+              let state = socketManager.chatHistoryStates[friend.id],
+              state.hasNewer,
+              let afterMessageId = state.latestMessageId else {
+            return
+        }
+
+        await MainActor.run {
+            scrollRestoreMessageId = messages.last?.id
+            scrollRestoreEdge = .bottom
+            isLoadingHistory = true
+        }
+        defer { Task { @MainActor in isLoadingHistory = false } }
+
+        do {
+            let localPage = try await ChatHistoryStore.shared.fetchNewer(
+                accountId: accountId,
+                friendId: friend.id,
+                afterMessageId: afterMessageId,
+                limit: Int(pageSize)
+            )
+            if !localPage.messages.isEmpty {
+                await mergeLocalHistory(
+                    localPage,
+                    accountId: accountId,
+                    direction: .newer,
+                    olderAvailability: nil,
+                    newerAvailability: localPage.hasMore
+                )
+                return
+            }
+
+            await MainActor.run {
+                guard socketManager.currentUserId == accountId else { return }
+                var latestState = socketManager.chatHistoryStates[friend.id] ?? .empty
+                latestState.hasNewer = false
+                socketManager.chatHistoryStates[friend.id] = latestState
+                hasNewer = false
+                scrollRestoreMessageId = nil
+            }
+        } catch {
+            print("❌ 加载较新聊天记录失败: \(error.localizedDescription)")
+        }
+    }
+
+    private func scheduleLoadMoreHistory() {
+        guard historyLoadTask == nil,
+              !isLoadingHistory,
+              hasMore,
+              !shouldScrollToBottom,
+              !isInitialProcessing else {
+            return
+        }
+
+        historyLoadTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            defer { historyLoadTask = nil }
+            guard !Task.isCancelled,
+                  !isLoadingHistory,
+                  hasMore,
+                  !shouldScrollToBottom,
+                  !isInitialProcessing else {
+                return
+            }
+            await loadMoreHistory()
+        }
+    }
+
+    private func scheduleLoadNewerHistory() {
+        guard historyLoadTask == nil,
+              !isLoadingHistory,
+              hasNewer,
+              !shouldScrollToBottom,
+              !isInitialProcessing else {
+            return
+        }
+
+        historyLoadTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            defer { historyLoadTask = nil }
+            guard !Task.isCancelled,
+                  !isLoadingHistory,
+                  hasNewer,
+                  !shouldScrollToBottom,
+                  !isInitialProcessing else {
+                return
+            }
+            await loadNewerHistory()
+        }
+    }
+
+    private func restoreUnsentAttachmentBatches() {
+        let existingClientIds = Set((socketManager.chatHistory[friend.id] ?? []).compactMap(\.clientMsgId))
+        for batch in attachmentTransferStore.unsentBatches(friendId: friend.id)
+            where !existingClientIds.contains(batch.clientMsgId) {
+            let pending = attachmentTransferStore.pendingAttachments(clientMsgId: batch.clientMsgId)
+            let retainedTransfers = attachmentTransferStore.retainedTransfers(clientMsgId: batch.clientMsgId)
+            ChatPendingImageStore.shared.store(pending)
+            let sendStatus: ChatMessage.SendStatus
+            switch batch.state {
+            case .uploading:
+                sendStatus = .uploadingMedia
+            case .readyToSend, .sendingMessage:
+                sendStatus = .sending
+            case .partialFailure, .failedToSend:
+                sendStatus = .failed
+            case .sent:
+                sendStatus = .success
+            case .cancelled:
+                continue
+            }
+            let messageType: String
+            let preparedPayload: ChatMessagePayload
+            if retainedTransfers.isEmpty {
+                messageType = "TEXT"
+                preparedPayload = .text(batch.content)
+            } else {
+                let attachments = retainedTransfers.map { transfer in
+                    transfer.result ?? ChatAttachment(
+                        kind: transfer.kind,
+                        fileId: transfer.localAttachmentId,
+                        fileName: transfer.fileName,
+                        fileSize: transfer.fileSize,
+                        mimeType: transfer.mimeType
+                    )
+                }
+                guard let mixedPayload = try? ChatMixedMessageContent(
+                    text: batch.text,
+                    attachments: attachments
+                ) else {
+                    print("⚠️ [ChatAttachment] 无法恢复本地批次 payload: clientMsgId=\(batch.clientMsgId)")
+                    continue
+                }
+                messageType = "MIXED"
+                preparedPayload = .mixed(mixedPayload)
+            }
+            socketManager.appendLocalChatMessage(
+                receiverId: friend.id,
+                content: batch.content,
+                msgType: messageType,
+                preparedPayload: preparedPayload,
+                avatar: batch.avatar,
+                quoteMsgId: batch.quoteMsgId,
+                quoteMsgContent: batch.quoteMsgContent,
+                quoteMsgSenderName: batch.quoteMsgSenderName,
+                clientMsgId: batch.clientMsgId,
+                sendStatus: sendStatus
+            )
+            if sendStatus == .failed {
+                socketManager.updateLocalChatMessage(
+                    receiverId: friend.id,
+                    clientMsgId: batch.clientMsgId,
+                    status: .failed,
+                    errorMessage: batch.errorMessage ?? "附件传输已中断，可继续"
+                )
+            }
+        }
+    }
+
+    private func persistAndMerge(
+        page: ChatHistoryResponseDataDto,
+        accountId: Int64,
+        direction: ChatHistoryMergeDirection,
+        olderAvailability: Bool?,
+        newerAvailability: Bool?
+    ) async throws {
+        try await ChatHistoryStore.shared.upsert(accountId: accountId, friendId: friend.id, items: page.list)
+        let incoming = await Task.detached(priority: .userInitiated) {
+            Self.makeHistoryMessages(from: page.list, accountId: accountId)
+        }.value
+
+        await mergeHistoryMessages(
+            incoming: incoming,
+            accountId: accountId,
+            direction: direction,
+            olderAvailability: olderAvailability,
+            newerAvailability: newerAvailability
+        )
+    }
+
+    private func mergeLocalHistory(
+        _ page: ChatHistoryLocalPage,
+        accountId: Int64,
+        direction: ChatHistoryMergeDirection,
+        olderAvailability: Bool?,
+        newerAvailability: Bool?
+    ) async {
+        await mergeHistoryMessages(
+            incoming: page.messages,
+            accountId: accountId,
+            direction: direction,
+            olderAvailability: olderAvailability,
+            newerAvailability: newerAvailability
+        )
+    }
+
+    private func mergeHistoryMessages(
+        incoming: [ChatMessage],
+        accountId: Int64,
+        direction: ChatHistoryMergeDirection,
+        olderAvailability: Bool?,
+        newerAvailability: Bool?
+    ) async {
+        var existing = await MainActor.run {
+            socketManager.chatHistory[friend.id] ?? []
+        }
+        while true {
+            let snapshot = existing
+            let merged = await Task.detached(priority: .userInitiated) {
+                let window = ChatHistoryWindowPolicy.merge(
+                    existing: snapshot,
+                    incoming: incoming,
+                    direction: direction,
+                    limit: SocketManager.chatHistoryWindowLimit
+                )
+                let serverIds = window.messages.compactMap(\.messageId)
+                return (
+                    window: window,
+                    oldestMessageId: serverIds.min(),
+                    latestMessageId: serverIds.max()
+                )
+            }.value
+
+            let retrySnapshot = await MainActor.run { () -> [ChatMessage]? in
+                guard socketManager.currentUserId == accountId else { return nil }
+                let current = socketManager.chatHistory[friend.id] ?? []
+                guard current == snapshot else { return current }
+
+                socketManager.chatHistory[friend.id] = merged.window.messages
+
+                var state = socketManager.chatHistoryStates[friend.id] ?? .empty
+                state.oldestMessageId = merged.oldestMessageId ?? state.oldestMessageId
+                state.latestMessageId = merged.latestMessageId ?? state.latestMessageId
+                if let olderAvailability {
+                    state.hasOlder = olderAvailability
+                }
+                if let newerAvailability {
+                    state.hasNewer = newerAvailability
+                }
+                if merged.window.droppedOlder {
+                    state.hasOlder = true
+                }
+                if merged.window.droppedNewer {
+                    state.hasNewer = true
+                }
+                state.isHydrated = true
+                state.windowRevision &+= 1
+                socketManager.chatHistoryStates[friend.id] = state
+
+                if direction != .older, let latest = merged.window.messages.last {
+                    socketManager.recordLatestChatMessage(latest, for: friend.id)
+                }
+                hasMore = state.hasOlder
+                hasNewer = state.hasNewer
+                return nil
+            }
+
+            guard let retrySnapshot else { break }
+            existing = retrySnapshot
+        }
+    }
+
+    nonisolated private static func makeHistoryMessages(
+        from items: [ChatHistoryItemDto],
+        accountId: Int64
+    ) -> [ChatMessage] {
+        items.compactMap { dto in
+            let timestamp = dto.gmtCreated.map {
+                Date(timeIntervalSince1970: Double($0) / 1_000)
+            } ?? Date.distantPast
+            return ChatMessage(
+                messageId: dto.id,
+                clientMsgId: dto.clientMsgId,
+                content: dto.content,
+                isMe: Int64(dto.senderId) == accountId,
+                timestamp: timestamp,
+                type: dto.msgType.isEmpty ? "TEXT" : dto.msgType,
+                sendStatus: dto.retracted ? .retracted : .success,
+                quoteMsgId: dto.quoteMsgId,
+                quoteMsgContent: dto.quoteMsgContent,
+                quoteMsgSenderName: dto.quoteMsgSenderName,
+                retracted: dto.retracted,
+                groupTime: dto.groupTime,
+                msgTimeStr: dto.msgTimeStr,
+                avatar: dto.avatar
+            )
+        }
+    }
+
+    private func historyMessages(from items: [ChatHistoryItemDto], accountId: Int64) -> [ChatMessage] {
+        Self.makeHistoryMessages(from: items, accountId: accountId)
     }
 }
 
@@ -4895,8 +5926,16 @@ private struct MacAddFriendSheet: View {
                                         user: user,
                                         requestMessage: requestMessage,
                                         onOpenIncomingRequest: {
-                                            isPresented = false
-                                            onOpenRequests?()
+                                            Task {
+                                                _ = try? await socketManager.getPendingRequests()
+                                                await MainActor.run {
+                                                    isPresented = false
+                                                    onOpenRequests?()
+                                                }
+                                            }
+                                        },
+                                        onRequestCompleted: {
+                                            performSearch()
                                         }
                                     )
                                 }
@@ -4970,6 +6009,7 @@ private struct UserResultRow: View {
     let user: UserDto
     let requestMessage: String
     let onOpenIncomingRequest: () -> Void
+    let onRequestCompleted: () -> Void
     @State private var isHovering = false
     @State private var isSending = false
     @State private var requestSent = false
@@ -5107,6 +6147,7 @@ private struct UserResultRow: View {
                         }
                         alertMessage = "好友申请已发送"
                         showingAlert = true
+                        onRequestCompleted()
                     } else {
                         alertMessage = "请求发送失败"
                         showingAlert = true
@@ -5167,10 +6208,10 @@ private struct FriendRow: View {
     
     var lastMessageText: String {
         // 优先使用实时的最新一条记录文本，如果没有再降级到服务端下发的 lastUnreadMsg
-        if let msg = socketManager.chatHistory[friend.id]?.last {
+        if let msg = socketManager.latestChatMessages[friend.id] {
             return msg.displayText
-        } else if let serverMsg = friend.serverLatestMsg, !serverMsg.isEmpty {
-            return ChatMessagePayload.parse(content: serverMsg, msgType: "").displayText
+        } else if let serverMessage = friend.serverLatestDisplayText, !serverMessage.isEmpty {
+            return serverMessage
         }
         return "点击开始聊天"
     }
@@ -5235,7 +6276,7 @@ private struct FriendRow: View {
                         .font(.system(size: 14, weight: .medium))
                         .foregroundColor(isSelected ? .white : .primary)
                     Spacer()
-                    if let lastMsg = socketManager.chatHistory[friend.id]?.last {
+                    if let lastMsg = socketManager.latestChatMessages[friend.id] {
                         Text(formatTime(lastMsg.timestamp))
                             .font(.caption)
                             .foregroundColor(isSelected ? .white.opacity(0.8) : .secondary)
@@ -5272,11 +6313,19 @@ private struct FriendChatSplitView: View {
     @State private var friends: [Friend] = []
     @State private var showingAddFriendSheet = false
     @EnvironmentObject var socketManager: SocketManager
+    @EnvironmentObject var authService: AuthenticationService
 
     private var unreadCount: Int {
         friends.reduce(0) { result, friend in
             result + (socketManager.unreadCounts[friend.id] ?? Int(friend.serverUnreadCount ?? 0))
         }
+    }
+
+    private var currentUserAvatar: String? {
+        if let avatar = socketManager.myAvatar, !avatar.isEmpty {
+            return avatar
+        }
+        return authService.currentUser?.avatar
     }
 
     var body: some View {
@@ -5312,26 +6361,12 @@ private struct FriendChatSplitView: View {
             // 下面的点击直接清除本地状态去掉了，交给 loadInitialHistory 去做真正的 0x55 清除
         }
         .onChange(of: socketManager.friendList) { newFriendDtos in
-            // 当 socketManager.friendList 被更新（如同意好友后 0x35 刷新），同步更新本地 UI friends
-            self.friends = newFriendDtos.map { dto in
-                let displayName = dto.alias ?? (dto.nickName.isEmpty ? dto.userName : dto.nickName)
-                let color = self.colorFor(name: displayName)
-                
-                // 同步未读数到全局状态，以便 ChatDetailView 判断是否需要触发 0x55
-                if let unreadCount = dto.unreadCount {
-                    self.socketManager.unreadCounts[dto.friendId] = Int(unreadCount)
-                }
-                
-                return Friend(
-                    id: dto.friendId,
-                    friendshipId: dto.id,
-                    name: displayName,
-                    status: "在线",
-                    avatarColor: color,
-                    avatarBase64: dto.avatar,
-                    serverUnreadCount: dto.unreadCount,
-                    serverLatestMsg: dto.latestUnreadMsg
-                )
+            Task { @MainActor in
+                let latestPreviews = await Task.detached(priority: .utility) {
+                    Self.makeServerLatestPreviews(from: newFriendDtos)
+                }.value
+                guard socketManager.friendList == newFriendDtos else { return }
+                applyFriendDtos(newFriendDtos, latestPreviews: latestPreviews)
             }
         }
         .sheet(isPresented: $showingAddFriendSheet) {
@@ -5347,9 +6382,12 @@ private struct FriendChatSplitView: View {
 
     private var compactChatActions: some View {
         HStack {
-            Text("聊天")
-                .font(.system(size: 15, weight: .bold))
-                .foregroundColor(TelegramTheme.textPrimary)
+            CurrentUserIdentityView(
+                avatar: currentUserAvatar,
+                username: authService.currentUser?.username,
+                subtitle: "聊天",
+                avatarSize: 32
+            )
 
             Spacer()
 
@@ -5381,7 +6419,7 @@ private struct FriendChatSplitView: View {
                         showingAddFriendSheet = true
                     }
                 } else if let friend = friends.first(where: { $0.id == selectedId }) {
-                    ChatDetailView(friend: friend)
+                    ChatDetailView(friend: friend, currentUserAvatarBase64: currentUserAvatar)
                         .id(friend.id)
                 } else {
                     ChatWorkspaceEmptyState()
@@ -5401,6 +6439,18 @@ private struct FriendChatSplitView: View {
 
     private var recentConversationsCard: some View {
         VStack(alignment: .leading, spacing: 0) {
+            CurrentUserIdentityView(
+                avatar: currentUserAvatar,
+                username: authService.currentUser?.username,
+                subtitle: "聊天",
+                avatarSize: 36
+            )
+            .padding(.horizontal, 16)
+            .padding(.top, 15)
+            .padding(.bottom, 12)
+
+            Divider().overlay(TelegramTheme.textSecondary.opacity(0.12))
+
             HStack {
                 Text("最近会话")
                     .font(.system(size: 16, weight: .bold))
@@ -5524,32 +6574,12 @@ private struct FriendChatSplitView: View {
         Task {
             do {
                 let friendDtos = try await socketManager.getFriendList()
+                let latestPreviews = await Task.detached(priority: .utility) {
+                    Self.makeServerLatestPreviews(from: friendDtos)
+                }.value
                 await MainActor.run {
                     self.socketManager.friendList = friendDtos // 确保全局状态也能记录下拉取到的最新值
-                    self.friends = friendDtos.map { dto in
-                        // Convert FriendDto to UI Model (Friend)
-                        // Use nickName if available, otherwise userName or alias
-                        let displayName = dto.alias ?? (dto.nickName.isEmpty ? dto.userName : dto.nickName)
-                        
-                        // Parse avatar color from name or id hash if needed, or use default
-                        let color = self.colorFor(name: displayName)
-                        
-                        // 同步未读数到全局状态
-                        if let unreadCount = dto.unreadCount {
-                            self.socketManager.unreadCounts[dto.friendId] = Int(unreadCount)
-                        }
-                        
-                        return Friend(
-                            id: dto.friendId,
-                            friendshipId: dto.id,
-                            name: displayName,
-                            status: "在线", // Default status, real status needs another mechanism
-                            avatarColor: color,
-                            avatarBase64: dto.avatar,
-                            serverUnreadCount: dto.unreadCount,
-                            serverLatestMsg: dto.latestUnreadMsg
-                        )
-                    }
+                    self.applyFriendDtos(friendDtos, latestPreviews: latestPreviews)
 
                     if self.selectedFriendId == nil {
                         self.selectedFriendId = self.friends.first?.id
@@ -5562,6 +6592,37 @@ private struct FriendChatSplitView: View {
             // Fetch pending requests count on load
             _ = try? await socketManager.getPendingRequests()
         }
+    }
+
+    private func applyFriendDtos(_ friendDtos: [FriendDto], latestPreviews: [Int64: String]) {
+        friends = friendDtos.map { dto in
+            let displayName = dto.alias ?? (dto.nickName.isEmpty ? dto.userName : dto.nickName)
+            if let unreadCount = dto.unreadCount {
+                socketManager.unreadCounts[dto.friendId] = Int(unreadCount)
+            }
+            return Friend(
+                id: dto.friendId,
+                friendshipId: dto.id,
+                name: displayName,
+                status: "离线",
+                avatarColor: colorFor(name: displayName),
+                avatarBase64: dto.avatar,
+                serverUnreadCount: dto.unreadCount,
+                serverLatestDisplayText: latestPreviews[dto.friendId]
+            )
+        }
+    }
+
+    nonisolated private static func makeServerLatestPreviews(from friendDtos: [FriendDto]) -> [Int64: String] {
+        var previews: [Int64: String] = [:]
+        for dto in friendDtos {
+            guard let latestMessage = dto.latestUnreadMsg, !latestMessage.isEmpty else { continue }
+            previews[dto.friendId] = ChatMessagePayload.parse(
+                content: latestMessage,
+                msgType: ""
+            ).displayText
+        }
+        return previews
     }
     
     private func colorFor(name: String) -> Color {
@@ -5582,11 +6643,11 @@ private struct ChatWorkspaceRecentRow: View {
     }
 
     private var lastMessage: String {
-        if let message = socketManager.chatHistory[friend.id]?.last {
+        if let message = socketManager.latestChatMessages[friend.id] {
             return message.displayText
         }
-        if let serverMessage = friend.serverLatestMsg, !serverMessage.isEmpty {
-            return ChatMessagePayload.parse(content: serverMessage, msgType: "").displayText
+        if let serverMessage = friend.serverLatestDisplayText, !serverMessage.isEmpty {
+            return serverMessage
         }
         return "点击开始聊天"
     }

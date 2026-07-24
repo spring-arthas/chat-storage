@@ -10,6 +10,114 @@ enum ChatAvatarCache {
     static let shared = NSCache<NSString, NSImage>()
 }
 
+enum CurrentUserAvatarDisplay {
+    static func initials(for name: String?) -> String {
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return "用" }
+        return String(trimmed.prefix(2))
+    }
+}
+
+struct CurrentUserAvatarBadge: View {
+    let avatar: String?
+    let username: String?
+    var size: CGFloat = 34
+    var fallbackColor: Color = TelegramTheme.success
+
+    private var fallbackName: String {
+        CurrentUserAvatarDisplay.initials(for: username)
+    }
+
+    var body: some View {
+        Group {
+            if let avatar, !avatar.isEmpty {
+                AvatarDecodeView(
+                    base64: avatar,
+                    fallbacName: fallbackName,
+                    fallbackColor: fallbackColor,
+                    cache: ChatAvatarCache.shared,
+                    customSize: size
+                )
+            } else {
+                Circle()
+                    .fill(fallbackColor.opacity(0.95))
+                    .overlay(
+                        Text(fallbackName)
+                            .font(.system(size: max(11, size * 0.34), weight: .black))
+                            .foregroundColor(.white)
+                            .minimumScaleFactor(0.62)
+                            .lineLimit(1)
+                            .padding(.horizontal, 3)
+                    )
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+    }
+}
+
+struct CurrentUserIdentityView: View {
+    let avatar: String?
+    let username: String?
+    var subtitle: String? = nil
+    var avatarSize: CGFloat = 36
+
+    private var displayName: String {
+        let trimmed = username?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? "当前用户" : trimmed
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            CurrentUserAvatarBadge(avatar: avatar, username: username, size: avatarSize)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(displayName)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(TelegramTheme.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(TelegramTheme.textSecondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+    }
+}
+
+enum AvatarImageEncoder {
+    static func jpegBase64(from image: NSImage, maxPixelSize: CGFloat = 512, compressionQuality: CGFloat = 0.78) -> String? {
+        guard let resized = resizedImage(image, maxPixelSize: maxPixelSize),
+              let tiffData = resized.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData),
+              let jpegData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: compressionQuality]) else {
+            return nil
+        }
+        return jpegData.base64EncodedString()
+    }
+
+    private static func resizedImage(_ image: NSImage, maxPixelSize: CGFloat) -> NSImage? {
+        let sourceSize = image.size
+        guard sourceSize.width > 0, sourceSize.height > 0 else { return nil }
+
+        let scale = min(1, maxPixelSize / max(sourceSize.width, sourceSize.height))
+        let targetSize = NSSize(width: max(1, floor(sourceSize.width * scale)),
+                                height: max(1, floor(sourceSize.height * scale)))
+        let resized = NSImage(size: targetSize)
+        resized.lockFocus()
+        image.draw(in: NSRect(origin: .zero, size: targetSize),
+                   from: NSRect(origin: .zero, size: sourceSize),
+                   operation: .copy,
+                   fraction: 1.0)
+        resized.unlockFocus()
+        return resized
+    }
+}
+
 struct InteractiveAvatarView: View {
     let base64String: String?
     let fallbacName: String

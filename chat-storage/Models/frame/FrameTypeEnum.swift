@@ -97,6 +97,8 @@ enum FrameTypeEnum: UInt8, CaseIterable {
     case fileResponse = 0x43
     /// 文件重命名请求 (0x44)
     case fileRenameReq = 0x44
+    /// 当前用户头像更新请求 (0x45)
+    case userAvatarUpdateReq = 0x45
     
     // ========== 聊天操作帧 (0x50-0x5F) ==========
     /// 发送聊天请求
@@ -166,6 +168,7 @@ enum FrameTypeEnum: UInt8, CaseIterable {
         case .fileDeleteReq: return "文件删除请求"
         case .fileResponse: return "文件操作响应"
         case .fileRenameReq: return "文件重命名请求"
+        case .userAvatarUpdateReq: return "当前用户头像更新请求"
             
         case .chatSendReq: return "发送聊天请求"
         case .chatPushReq: return "接收聊天消息推送"

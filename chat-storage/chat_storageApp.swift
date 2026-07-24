@@ -81,10 +81,21 @@ struct chat_storageApp: App {
     }
     
     init() {
+        Self.refreshDockIcon()
+
         // 应用启动时自动连接远程服务端
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             SocketManager.shared.connect()
         }
+    }
+
+    private static func refreshDockIcon() {
+        guard let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+              let icon = NSImage(contentsOf: iconURL) else {
+            return
+        }
+
+        NSApplication.shared.applicationIconImage = icon
     }
 
     private func configureWindowForCurrentState() {

@@ -16,6 +16,7 @@ struct ChatImagePreviewContext: Identifiable {
 struct ChatMessageRow: View {
     let message: ChatMessage
     let friendName: String
+    let currentUserAvatarBase64: String?
     let friendAvatarBase64: String?
     let friendAvatarColor: Color
     let onCopy: (ChatMessage) -> Void
@@ -23,8 +24,11 @@ struct ChatMessageRow: View {
     let onDeleteLocal: (ChatMessage) -> Void
     let onRetract: (ChatMessage) -> Void
     let onRetry: (ChatMessage) -> Void
+    let onRetryAttachment: (ChatMessage, ChatAttachment) -> Void
+    let onRemoveAttachment: (ChatMessage, ChatAttachment) -> Void
     let onDoubleTap: () -> Void
     let onPreviewImage: (ChatImageAttachment, [ChatImageAttachment]) -> Void
+    let onDownloadAttachment: (ChatAttachment) -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -35,7 +39,10 @@ struct ChatMessageRow: View {
                         message: message,
                         friendName: friendName,
                         onRetry: onRetry,
-                        onPreviewImage: onPreviewImage
+                        onRetryAttachment: { onRetryAttachment(message, $0) },
+                        onRemoveAttachment: { onRemoveAttachment(message, $0) },
+                        onPreviewImage: onPreviewImage,
+                        onDownloadAttachment: onDownloadAttachment
                     )
                         .padding(10)
                         .background(
@@ -49,7 +56,11 @@ struct ChatMessageRow: View {
                         .clipShape(TailChatBubbleShape(isMe: true))
                         .shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1)
                 }
-                renderAvatar(base64String: message.avatar, fallbacName: "我", fallbackColor: .gray)
+                renderAvatar(
+                    base64String: message.avatar ?? currentUserAvatarBase64,
+                    fallbacName: "我",
+                    fallbackColor: .gray
+                )
             } else {
                 renderAvatar(
                     base64String: message.avatar ?? friendAvatarBase64,
@@ -61,7 +72,10 @@ struct ChatMessageRow: View {
                         message: message,
                         friendName: friendName,
                         onRetry: onRetry,
-                        onPreviewImage: onPreviewImage
+                        onRetryAttachment: { onRetryAttachment(message, $0) },
+                        onRemoveAttachment: { onRemoveAttachment(message, $0) },
+                        onPreviewImage: onPreviewImage,
+                        onDownloadAttachment: onDownloadAttachment
                     )
                         .padding(10)
                         .background(Color(NSColor.controlBackgroundColor))
@@ -134,7 +148,10 @@ private struct ChatBubbleView: View {
     let message: ChatMessage
     let friendName: String
     let onRetry: (ChatMessage) -> Void
+    let onRetryAttachment: (ChatAttachment) -> Void
+    let onRemoveAttachment: (ChatAttachment) -> Void
     let onPreviewImage: (ChatImageAttachment, [ChatImageAttachment]) -> Void
+    let onDownloadAttachment: (ChatAttachment) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -159,18 +176,22 @@ private struct ChatBubbleView: View {
 
     @ViewBuilder
     private var messageContentView: some View {
-        let payload = ChatMessagePayload.parse(content: message.content, msgType: message.type)
-        if !payload.images.isEmpty {
+        let payload = message.preparedPayload
+        if !payload.attachments.isEmpty {
             ChatMediaBubbleView(
                 images: payload.images,
+                files: payload.files,
                 text: payload.text,
                 isMe: message.isMe,
-                onPreviewImage: onPreviewImage
+                clientMsgId: message.clientMsgId,
+                onRetryAttachment: onRetryAttachment,
+                onRemoveAttachment: onRemoveAttachment,
+                onPreviewImage: onPreviewImage,
+                onDownloadAttachment: onDownloadAttachment
             )
         } else {
             Text(payload.displayText)
                 .font(.system(size: 14))
-                .textSelection(.enabled)
         }
     }
 
@@ -181,7 +202,6 @@ private struct ChatBubbleView: View {
             Text(quoteContent)
                 .font(.caption2)
                 .lineLimit(2)
-                .textSelection(.enabled)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
@@ -228,28 +248,180 @@ private struct ChatBubbleView: View {
 
 private struct ChatMediaBubbleView: View {
     let images: [ChatImageAttachment]
+    let files: [ChatAttachment]
     let text: String
     let isMe: Bool
+    let clientMsgId: String?
+    let onRetryAttachment: (ChatAttachment) -> Void
+    let onRemoveAttachment: (ChatAttachment) -> Void
     let onPreviewImage: (ChatImageAttachment, [ChatImageAttachment]) -> Void
+    let onDownloadAttachment: (ChatAttachment) -> Void
+    @ObservedObject private var transferStore = ChatAttachmentTransferStore.shared
 
     private var trimmedText: String {
         text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: trimmedText.isEmpty ? 0 : 8) {
-            ChatImageGridView(
-                attachments: images,
-                isMe: isMe,
-                onPreviewImage: onPreviewImage
-            )
+        VStack(alignment: .leading, spacing: 8) {
+            if !images.isEmpty {
+                ChatImageGridView(
+                    attachments: images,
+                    isMe: isMe,
+                    onPreviewImage: onPreviewImage
+                )
+                ForEach(images) { attachment in
+                    if let transfer = transferStore.transfer(clientMsgId: clientMsgId, attachment: attachment),
+                       transfer.state != .succeeded {
+                        ChatAttachmentTransferStatusRow(
+                            attachment: attachment,
+                            transfer: transfer,
+                            isMe: isMe,
+                            onRetry: { onRetryAttachment(attachment) },
+                            onRemove: { onRemoveAttachment(attachment) }
+                        )
+                    }
+                }
+            }
+            if !files.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(files) { attachment in
+                        ChatFileAttachmentCard(
+                            attachment: attachment,
+                            isMe: isMe,
+                            transfer: transferStore.transfer(clientMsgId: clientMsgId, attachment: attachment),
+                            download: transferStore.download(for: attachment.fileId),
+                            onRetry: { onRetryAttachment(attachment) },
+                            onRemove: { onRemoveAttachment(attachment) },
+                            onDownload: { onDownloadAttachment(attachment) }
+                        )
+                    }
+                }
+            }
             if !trimmedText.isEmpty {
                 Text(text)
                     .font(.system(size: 14))
                     .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
             }
         }
+    }
+}
+
+private struct ChatFileAttachmentCard: View {
+    let attachment: ChatAttachment
+    let isMe: Bool
+    let transfer: ChatAttachmentTransferSnapshot?
+    let download: ChatAttachmentDownloadSnapshot?
+    let onRetry: () -> Void
+    let onRemove: () -> Void
+    let onDownload: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Image(systemName: attachment.directoryItem().iconName)
+                    .font(.system(size: 23, weight: .medium))
+                    .foregroundColor(isMe ? .white : .accentColor)
+                    .frame(width: 34, height: 42)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(attachment.fileName)
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    Text(ByteCountFormatter.string(fromByteCount: attachment.fileSize, countStyle: .file))
+                        .font(.caption2)
+                        .opacity(0.72)
+                }
+                .frame(maxWidth: 210, alignment: .leading)
+
+                Spacer(minLength: 4)
+
+                statusControl
+            }
+            if let transfer, transfer.state == .uploading {
+                ProgressView(value: transfer.progress)
+                    .progressViewStyle(.linear)
+            } else if let download, download.state == .downloading {
+                ProgressView(value: download.progress)
+                    .progressViewStyle(.linear)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(minWidth: 220, maxWidth: 300, alignment: .leading)
+        .background((isMe ? Color.white : Color.accentColor).opacity(0.13))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    @ViewBuilder
+    private var statusControl: some View {
+        if let transfer {
+            switch transfer.state {
+            case .waiting, .uploading:
+                ProgressView().controlSize(.small)
+                Button(action: onRemove) { Image(systemName: "xmark.circle") }
+                    .buttonStyle(.borderless)
+            case .paused, .failed:
+                Button(action: onRetry) { Image(systemName: "arrow.clockwise.circle") }
+                    .buttonStyle(.borderless)
+                    .help("重新上传")
+                Button(action: onRemove) { Image(systemName: "trash") }
+                    .buttonStyle(.borderless)
+                    .help("删除附件")
+            case .succeeded:
+                Image(systemName: "checkmark.circle.fill")
+            case .removed:
+                EmptyView()
+            }
+        } else if let download {
+            switch download.state {
+            case .downloading:
+                ProgressView().controlSize(.small)
+            case .failed, .paused:
+                Button(action: onDownload) { Image(systemName: "arrow.clockwise.circle") }
+                    .buttonStyle(.borderless)
+                    .help("重新下载")
+            case .completed:
+                Button(action: onDownload) { Image(systemName: "checkmark.circle.fill") }
+                    .buttonStyle(.borderless)
+                    .help(download.targetPath)
+            case .notDownloaded:
+                Button(action: onDownload) { Image(systemName: "arrow.down.circle") }
+                    .buttonStyle(.borderless)
+            }
+        } else {
+            Button(action: onDownload) { Image(systemName: "arrow.down.circle") }
+                .buttonStyle(.borderless)
+                .disabled(attachment.isLocalPending)
+        }
+    }
+}
+
+private struct ChatAttachmentTransferStatusRow: View {
+    let attachment: ChatAttachment
+    let transfer: ChatAttachmentTransferSnapshot
+    let isMe: Bool
+    let onRetry: () -> Void
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(attachment.fileName)
+                .font(.caption2)
+                .lineLimit(1)
+            if transfer.state == .uploading || transfer.state == .waiting {
+                ProgressView(value: transfer.progress)
+                    .frame(width: 70)
+                Text("\(Int(transfer.progress * 100))%")
+                    .font(.caption2)
+            } else {
+                Image(systemName: "exclamationmark.circle")
+                Button("重试", action: onRetry).buttonStyle(.borderless)
+                Button("删除", action: onRemove).buttonStyle(.borderless)
+            }
+        }
+        .foregroundColor(isMe ? .white.opacity(0.9) : .secondary)
     }
 }
 
@@ -258,54 +430,66 @@ private struct ChatImageGridView: View {
     let isMe: Bool
     let onPreviewImage: (ChatImageAttachment, [ChatImageAttachment]) -> Void
 
-    private var columns: [GridItem] {
-        Array(repeating: GridItem(.fixed(cellSize), spacing: 6), count: columnCount)
-    }
-
-    private var columnCount: Int {
-        min(3, max(1, attachments.count))
-    }
-
-    private var cellSize: CGFloat {
-        attachments.count == 1 ? 172 : 92
-    }
-
     var body: some View {
-        LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
-            ForEach(attachments) { attachment in
-                ChatImageThumbnailCell(
-                    attachment: attachment,
-                    isMe: isMe,
-                    size: cellSize,
-                    onOpen: {
-                        onPreviewImage(attachment, attachments)
-                    }
-                )
+        if let attachment = attachments.first, attachments.count == 1 {
+            ChatImageThumbnailCell(
+                attachment: attachment,
+                isMe: isMe,
+                size: attachment.bubblePreviewSize(),
+                onOpen: {
+                    onPreviewImage(attachment, attachments)
+                }
+            )
+        } else {
+            LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
+                ForEach(attachments) { attachment in
+                    ChatImageThumbnailCell(
+                        attachment: attachment,
+                        isMe: isMe,
+                        size: CGSize(width: 92, height: 92),
+                        onOpen: {
+                            onPreviewImage(attachment, attachments)
+                        }
+                    )
+                }
             }
         }
+    }
+
+    private var columns: [GridItem] {
+        Array(repeating: GridItem(.fixed(92), spacing: 6), count: min(3, max(1, attachments.count)))
     }
 }
 
 private struct ChatImageThumbnailCell: View {
     let attachment: ChatImageAttachment
     let isMe: Bool
-    let size: CGFloat
+    let size: CGSize
     let onOpen: () -> Void
 
     @State private var thumbnail: NSImage? = nil
     @State private var didFailThumbnail = false
+    @State private var reloadToken = 0
+
+    private var bubbleSource: DirectoryItem? {
+        attachment.bubbleThumbnailDirectoryItem()
+    }
+
+    private var thumbnailLoadKey: String {
+        "\(bubbleSource?.id ?? attachment.fileId)-\(reloadToken)"
+    }
 
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 6)
                 .fill((isMe ? Color.white : Color.accentColor).opacity(0.12))
-                .frame(width: size, height: size)
+                .frame(width: size.width, height: size.height)
 
             if let thumbnail {
                 Image(nsImage: thumbnail)
                     .resizable()
                     .scaledToFill()
-                    .frame(width: size, height: size)
+                    .frame(width: size.width, height: size.height)
                     .clipped()
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                     .overlay {
@@ -318,10 +502,23 @@ private struct ChatImageThumbnailCell: View {
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                         }
                     }
+            } else if !attachment.isLocalPending && bubbleSource == nil {
+                VStack(spacing: 6) {
+                    Image(systemName: "photo")
+                        .font(.system(size: 20))
+                    Text("暂无缩略图")
+                        .font(.caption)
+                }
+                .foregroundColor(isMe ? .white.opacity(0.82) : .secondary)
             } else if didFailThumbnail {
-                Text("[图片]")
-                    .font(.caption)
-                    .foregroundColor(isMe ? .white.opacity(0.82) : .secondary)
+                VStack(spacing: 6) {
+                    Text("图片加载失败")
+                        .font(.caption)
+                    Button("重试") { reloadToken += 1 }
+                        .buttonStyle(.borderless)
+                        .font(.caption2)
+                }
+                .foregroundColor(isMe ? .white.opacity(0.82) : .secondary)
             } else {
                 VStack(spacing: 6) {
                     ProgressView()
@@ -332,12 +529,12 @@ private struct ChatImageThumbnailCell: View {
                 .foregroundColor(isMe ? .white.opacity(0.82) : .secondary)
             }
         }
-        .frame(width: size, height: size)
+        .frame(width: size.width, height: size.height)
         .contentShape(Rectangle())
-        .highPriorityGesture(TapGesture(count: 1).onEnded { onOpen() })
+        .onTapGesture(count: 1) { onOpen() }
         .help("查看原图")
         .accessibilityLabel("查看图片")
-        .task(id: attachment.fileId) {
+        .task(id: thumbnailLoadKey) {
             await MainActor.run {
                 self.thumbnail = nil
                 self.didFailThumbnail = false
@@ -350,7 +547,10 @@ private struct ChatImageThumbnailCell: View {
                 }
                 return
             }
-            let loaded = await FileThumbnailService.shared.thumbnail(for: attachment.thumbnailDirectoryItem())
+            guard let bubbleSource = attachment.bubbleThumbnailDirectoryItem() else {
+                return
+            }
+            let loaded = await FileThumbnailService.shared.thumbnail(for: bubbleSource)
             await MainActor.run {
                 self.thumbnail = loaded
                 self.didFailThumbnail = loaded == nil
@@ -402,7 +602,6 @@ struct ChatImagePreviewOverlay: View {
                     }
 
                     previewContent
-                        .allowsHitTesting(didFail)
 
                     if canNavigate {
                         previewNavigationControls
@@ -455,11 +654,7 @@ struct ChatImagePreviewOverlay: View {
     @ViewBuilder
     private var previewContent: some View {
         if let image {
-            Image(nsImage: image)
-                .resizable()
-                .scaledToFit()
-                .padding(.horizontal, 84)
-                .padding(.vertical, 28)
+            ZoomablePreviewImageView(image: image)
         } else if didFail {
             VStack(spacing: 12) {
                 Text("图片加载失败")
@@ -561,14 +756,79 @@ struct ChatImagePreviewOverlay: View {
             }
             return
         }
-        let loaded = await FileThumbnailService.shared.previewImage(
-            for: selectedAttachment.previewDirectoryItem(),
-            forceReload: forceReload
-        )
+        let loaded = await FileThumbnailService.shared.previewImage(for: selectedAttachment, forceReload: forceReload)
         await MainActor.run {
             self.image = loaded
             self.didFail = loaded == nil
         }
+    }
+}
+
+private struct ZoomablePreviewImageView: View {
+    let image: NSImage
+
+    @State private var zoomScale: CGFloat = 1
+    @GestureState private var pinchScale: CGFloat = 1
+
+    private let minZoomScale: CGFloat = 0.2
+    private let maxZoomScale: CGFloat = 6
+
+    var body: some View {
+        GeometryReader { proxy in
+            let viewportSize = proxy.size
+            let displayScale = clamp(zoomScale * pinchScale)
+
+            ScrollView([.horizontal, .vertical]) {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(
+                        width: max(1, image.size.width * displayScale),
+                        height: max(1, image.size.height * displayScale)
+                    )
+                    .padding(.horizontal, 84)
+                    .padding(.vertical, 28)
+                    .frame(minWidth: viewportSize.width, minHeight: viewportSize.height)
+            }
+            .onAppear {
+                zoomScale = initialZoomScale(imageSize: image.size, viewportSize: viewportSize)
+            }
+            .onChange(of: viewportSize) { newValue in
+                zoomScale = initialZoomScale(imageSize: image.size, viewportSize: newValue)
+            }
+            .gesture(
+                MagnificationGesture()
+                    .updating($pinchScale) { value, state, _ in
+                        state = value
+                    }
+                    .onEnded { value in
+                        zoomScale = clamp(zoomScale * value)
+                    }
+            )
+        }
+    }
+
+    private func initialZoomScale(imageSize: CGSize, viewportSize: CGSize) -> CGFloat {
+        guard imageSize.width > 0, imageSize.height > 0, viewportSize.width > 0, viewportSize.height > 0 else {
+            return 1
+        }
+
+        let paddedWidth = max(1, viewportSize.width - 168)
+        let paddedHeight = max(1, viewportSize.height - 56)
+        let widthFit = paddedWidth / imageSize.width
+        let heightFit = paddedHeight / imageSize.height
+        let ratio = imageSize.height / max(1, imageSize.width)
+
+        if ratio >= 3 {
+            return clamp(min(widthFit, 1))
+        }
+
+        return clamp(min(min(widthFit, heightFit), 1))
+    }
+
+    private func clamp(_ value: CGFloat) -> CGFloat {
+        min(maxZoomScale, max(minZoomScale, value))
     }
 }
 

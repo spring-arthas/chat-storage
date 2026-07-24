@@ -25,6 +25,72 @@
             usesScalarValueType="YES" />
         <attribute name="userName" optional="YES" attributeType="String" />
     </entity>
+    <entity name="ChatAttachmentBatchEntity" representedClassName="ChatAttachmentBatchEntity" syncable="YES" codeGenerationType="class">
+        <attribute name="avatar" optional="YES" attributeType="String" />
+        <attribute name="clientMsgId" optional="YES" attributeType="String" />
+        <attribute name="content" optional="YES" attributeType="String" />
+        <attribute name="createdAt" optional="YES" attributeType="Date" usesScalarValueType="NO" />
+        <attribute name="errorMessage" optional="YES" attributeType="String" />
+        <attribute name="friendId" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES" />
+        <attribute name="quoteMsgContent" optional="YES" attributeType="String" />
+        <attribute name="quoteMsgId" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES" />
+        <attribute name="quoteMsgSenderName" optional="YES" attributeType="String" />
+        <attribute name="status" optional="YES" attributeType="String" />
+        <attribute name="text" optional="YES" attributeType="String" />
+    </entity>
+    <entity name="ChatAttachmentTransferEntity" representedClassName="ChatAttachmentTransferEntity" syncable="YES" codeGenerationType="class">
+        <attribute name="attachmentId" optional="YES" attributeType="String" />
+        <attribute name="clientMsgId" optional="YES" attributeType="String" />
+        <attribute name="errorMessage" optional="YES" attributeType="String" />
+        <attribute name="fileName" optional="YES" attributeType="String" />
+        <attribute name="fileSize" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES" />
+        <attribute name="friendId" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES" />
+        <attribute name="kind" optional="YES" attributeType="String" />
+        <attribute name="localAttachmentId" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES" />
+        <attribute name="localPath" optional="YES" attributeType="String" />
+        <attribute name="mimeType" optional="YES" attributeType="String" />
+        <attribute name="orderIndex" optional="YES" attributeType="Integer 32" defaultValueString="0" usesScalarValueType="YES" />
+        <attribute name="progress" optional="YES" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES" />
+        <attribute name="recordId" optional="YES" attributeType="String" />
+        <attribute name="resultJSON" optional="YES" attributeType="Binary" allowsExternalBinaryDataStorage="YES" />
+        <attribute name="status" optional="YES" attributeType="String" />
+        <attribute name="taskId" optional="YES" attributeType="String" />
+    </entity>
+    <entity name="ChatAttachmentDownloadEntity" representedClassName="ChatAttachmentDownloadEntity" syncable="YES" codeGenerationType="class">
+        <attribute name="errorMessage" optional="YES" attributeType="String" />
+        <attribute name="fileId" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES" />
+        <attribute name="fileName" optional="YES" attributeType="String" />
+        <attribute name="fileSize" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES" />
+        <attribute name="progress" optional="YES" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES" />
+        <attribute name="status" optional="YES" attributeType="String" />
+        <attribute name="targetPath" optional="YES" attributeType="String" />
+        <attribute name="taskId" optional="YES" attributeType="String" />
+    </entity>
+    <entity name="ChatMessageEntity" representedClassName="ChatMessageEntity" syncable="YES" codeGenerationType="class">
+        <attribute name="accountId" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES" indexed="YES" />
+        <attribute name="clientMsgId" optional="YES" attributeType="String" />
+        <attribute name="content" optional="YES" attributeType="String" />
+        <attribute name="messageDeleted" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES" />
+        <attribute name="friendId" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES" indexed="YES" />
+        <attribute name="gmtCreated" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES" />
+        <attribute name="groupTime" optional="YES" attributeType="String" />
+        <attribute name="messageId" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES" indexed="YES" />
+        <attribute name="msgTimeStr" optional="YES" attributeType="String" />
+        <attribute name="msgType" optional="YES" attributeType="String" />
+        <attribute name="quoteMsgContent" optional="YES" attributeType="String" />
+        <attribute name="quoteMsgId" optional="YES" attributeType="Integer 64" usesScalarValueType="NO" />
+        <attribute name="quoteMsgSenderName" optional="YES" attributeType="String" />
+        <attribute name="receiverId" attributeType="Integer 32" defaultValueString="0" usesScalarValueType="YES" />
+        <attribute name="recordKey" optional="YES" attributeType="String" indexed="YES" />
+        <attribute name="retracted" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES" />
+        <attribute name="senderId" attributeType="Integer 32" defaultValueString="0" usesScalarValueType="YES" />
+        <attribute name="status" attributeType="Integer 32" defaultValueString="2" usesScalarValueType="YES" />
+        <fetchIndex name="byAccountFriendAndMessage">
+            <fetchIndexElement property="accountId" type="Binary" order="ascending" />
+            <fetchIndexElement property="friendId" type="Binary" order="ascending" />
+            <fetchIndexElement property="messageId" type="Binary" order="ascending" />
+        </fetchIndex>
+    </entity>
     <elements>
         <element name="Item" positionX="-63" positionY="-18" width="128" height="44" />
     </elements>

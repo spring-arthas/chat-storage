@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="140" y1="100" x2="880" y2="930" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#25313A"/>
+      <stop offset="0.5" stop-color="#141C22"/>
+      <stop offset="1" stop-color="#090D10"/>
+    </linearGradient>
+    <linearGradient id="seal" x1="300" y1="260" x2="730" y2="770" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F05A62"/>
+      <stop offset="1" stop-color="#A91F35"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="34" stdDeviation="34" flood-color="#000000" flood-opacity="0.42"/>
+    </filter>
+    <filter id="sealShadow" x="-30%" y="-40%" width="170%" height="190%">
+      <feDropShadow dx="0" dy="26" stdDeviation="24" flood-color="#000000" flood-opacity="0.38"/>
+    </filter>
+  </defs>
+
+  <rect x="72" y="54" width="880" height="880" rx="218" fill="url(#bg)" filter="url(#shadow)"/>
+  <rect x="88" y="70" width="848" height="848" rx="202" fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="4"/>
+
+  <circle cx="512" cy="500" r="300" fill="none" stroke="#E9F3EE" stroke-opacity="0.11" stroke-width="18"/>
+  <circle cx="512" cy="500" r="260" fill="none" stroke="#E9F3EE" stroke-opacity="0.08" stroke-width="4" stroke-dasharray="10 22"/>
+
+  <g filter="url(#sealShadow)" transform="rotate(-4 512 500)">
+    <rect x="278" y="266" width="468" height="468" rx="116" fill="url(#seal)"/>
+    <rect x="296" y="284" width="432" height="432" rx="100" fill="none" stroke="#FFEDEE" stroke-opacity="0.42" stroke-width="12"/>
+    <path d="M330 330C390 290 474 286 540 302" fill="none" stroke="#FFFFFF" stroke-opacity="0.13" stroke-width="20" stroke-linecap="round"/>
+    <text x="512" y="616" text-anchor="middle" font-family="PingFang SC, Heiti SC, STHeiti, sans-serif" font-size="320" font-weight="800" fill="#FFF7F0">毒</text>
+  </g>
+
+  <path d="M755 671C755 671 711 726 711 763C711 801 735 826 768 826C801 826 825 801 825 763C825 726 781 671 781 671C774 662 762 662 755 671Z" fill="#66E99B"/>
+  <path d="M779 716C795 736 802 753 802 767C802 784 792 797 779 803" fill="none" stroke="#E9FFF2" stroke-opacity="0.58" stroke-width="9" stroke-linecap="round"/>
+</svg>

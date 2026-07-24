@@ -6,6 +6,62 @@
 //
 
 import SwiftUI
+import Network
+
+struct ServerEndpoint: Equatable {
+    let host: String
+    let port: UInt32
+}
+
+enum ServerConnectionProbe {
+    static func test(
+        endpoint: ServerEndpoint,
+        timeout: TimeInterval = 5,
+        completion: @escaping (Bool) -> Void
+    ) {
+        guard let port = NWEndpoint.Port(rawValue: UInt16(endpoint.port)) else {
+            completion(false)
+            return
+        }
+
+        let connection = NWConnection(
+            host: NWEndpoint.Host(endpoint.host),
+            port: port,
+            using: .tcp
+        )
+        let queue = DispatchQueue(label: "duyao.chat-storage.server-probe")
+        let completionState = ManagedCriticalState(false)
+
+        let finish: (Bool) -> Void = { success in
+            let shouldComplete = completionState.withCriticalRegion { hasCompleted in
+                guard !hasCompleted else { return false }
+                hasCompleted = true
+                return true
+            }
+            guard shouldComplete else { return }
+
+            connection.cancel()
+            DispatchQueue.main.async {
+                completion(success)
+            }
+        }
+
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                finish(true)
+            case .failed, .cancelled:
+                finish(false)
+            default:
+                break
+            }
+        }
+        connection.start(queue: queue)
+        queue.asyncAfter(deadline: .now() + timeout) {
+            finish(false)
+        }
+    }
+}
 
 struct ConfigServerView: View {
     // MARK: - Environment
@@ -30,15 +86,20 @@ struct ConfigServerView: View {
     /// 新连接是否已就绪
     @State private var isNewConnectionReady: Bool = false
     
-    /// 新连接的配置（测试成功后保存）
-    @State private var newHost: String = ""
-    @State private var newPort: UInt32 = 0
+    /// 最近一次独立探测成功的服务端地址
+    @State private var testedEndpoint: ServerEndpoint?
     
     /// 是否需要自动关闭窗体（点击确定后）
     @State private var shouldAutoDismiss: Bool = false
     
     /// 旋转角度（用于加载图标动画）
     @State private var rotationAngle: Double = 0
+
+    private let onServerChanged: (() -> Void)?
+
+    init(onServerChanged: (() -> Void)? = nil) {
+        self.onServerChanged = onServerChanged
+    }
     
     // MARK: - Body
     
@@ -141,6 +202,7 @@ struct ConfigServerView: View {
                         // 用户修改地址时，清除状态
                         if isNewConnectionReady {
                             isNewConnectionReady = false
+                            testedEndpoint = nil
                             statusMessage = ""
                         }
                     }
@@ -283,9 +345,10 @@ struct ConfigServerView: View {
             statusColor = .red
             return
         }
+        let endpoint = ServerEndpoint(host: host, port: port)
         
         // 禁用按钮，开始测试
-        statusMessage = "正在断开旧连接..."
+        statusMessage = "正在测试连接..."
         statusColor = .blue
         isTesting = true
         isNewConnectionReady = false
@@ -293,95 +356,58 @@ struct ConfigServerView: View {
         // 启动旋转动画
         startRotationAnimation()
         
-        // 如果是直接点击测试按钮，不自动关闭窗体
-        // 只有点击确定按钮才自动关闭
-        
-        // 步骤 1: 先断开现有连接
-        socketManager.disconnect()
-        
-        // 等待断开完成
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            // 步骤 2: 更新状态提示
-            statusMessage = "正在连接新服务器..."
-            statusColor = .blue
-            
-            // 步骤 3: 切换到新服务器（会自动连接）
-            socketManager.switchConnection(host: host, port: port)
-            
-            // 步骤 4: 等待连接结果（最多5秒）
-            var checkCount = 0
-            let maxChecks = 50  // 5秒 = 50 * 100ms
-            
-            Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { timer in
-                checkCount += 1
-                
-                // 检查连接状态
-                if socketManager.connectionState == .connected {
-                    // 连接成功
-                    timer.invalidate()
-                    isTesting = false
-                    isNewConnectionReady = true
-                    statusMessage = "远程服务端连接成功"
-                    statusColor = .green
-                    
-                    // 停止旋转动画
-                    stopRotationAnimation()
-                    
-                    // 保存新配置
-                    newHost = host
-                    newPort = port
-                    
-                    // 如果是点击确定按钮触发的，自动关闭窗体
-                    if shouldAutoDismiss {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                            dismiss()
-                        }
-                    }
-                    
-                } else {
-                     // Check for error state
-                     var isFailed = false
-                     if case .error = socketManager.connectionState {
-                         isFailed = true
-                     }
-                     
-                     if isFailed || checkCount >= maxChecks {
-                        // 连接失败或超时
-                        timer.invalidate()
-                        isTesting = false
-                        isNewConnectionReady = false
-                        
-                        // 停止旋转动画
-                        stopRotationAnimation()
-                        
-                        if checkCount >= maxChecks {
-                            statusMessage = "连接超时，请检查地址和网络"
-                        } else {
-                            if case .error(let msg) = socketManager.connectionState {
-                                statusMessage = "连接失败: \(msg)"
-                            } else {
-                                statusMessage = "连接失败，请检查地址和网络"
-                            }
-                        }
-                        statusColor = .red
-                    }
+        ServerConnectionProbe.test(endpoint: endpoint) { success in
+            isTesting = false
+            stopRotationAnimation()
+
+            if success {
+                testedEndpoint = endpoint
+                isNewConnectionReady = true
+                statusMessage = "远程服务端连接成功"
+                statusColor = .green
+
+                if shouldAutoDismiss {
+                    applyServerChange(endpoint)
                 }
+            } else {
+                testedEndpoint = nil
+                isNewConnectionReady = false
+                shouldAutoDismiss = false
+                statusMessage = "连接失败或超时，请检查地址和网络"
+                statusColor = .red
             }
         }
     }
     
     /// 处理确定按钮
     private func handleConfirm() {
-        if isNewConnectionReady {
-            // 新连接已就绪，直接关闭
-            dismiss()
-        } else {
-            // 设置自动关闭标志
-            shouldAutoDismiss = true
-            
-            // 执行测试连接逻辑（连接成功后会自动关闭）
-            handleTestConnection()
+        guard let (host, port) = validateServerAddress(serverAddress) else {
+            statusMessage = "地址格式错误，请使用 IP:Port 格式"
+            statusColor = .red
+            return
         }
+        let endpoint = ServerEndpoint(host: host, port: port)
+
+        if testedEndpoint == endpoint {
+            applyServerChange(endpoint)
+            return
+        }
+
+        shouldAutoDismiss = true
+        handleTestConnection()
+    }
+
+    private func applyServerChange(_ endpoint: ServerEndpoint) {
+        let current = socketManager.getCurrentServer()
+        let currentEndpoint = ServerEndpoint(host: current.0, port: current.1)
+        guard endpoint != currentEndpoint else {
+            dismiss()
+            return
+        }
+
+        socketManager.switchConnection(host: endpoint.host, port: endpoint.port)
+        onServerChanged?()
+        dismiss()
     }
     
     /// 验证服务器地址格式

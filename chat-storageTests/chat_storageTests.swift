@@ -7,6 +7,7 @@
 
 import XCTest
 import Network
+import CoreData
 @testable import chat_storage
 
 final class chat_storageTests: XCTestCase {
@@ -81,12 +82,12 @@ final class chat_storageTests: XCTestCase {
     }
 
     func testFileDetailLayoutCompactsForMinimumWindowHeight() throws {
-        let compact = FileDetailLayoutMetrics(availableHeight: 650)
-        let regular = FileDetailLayoutMetrics(availableHeight: 900)
+        let compact = FileDetailLayoutMetrics(availableHeight: 650, availableWidth: 320)
+        let regular = FileDetailLayoutMetrics(availableHeight: 900, availableWidth: 460)
 
         XCTAssertLessThan(compact.previewHeight, regular.previewHeight)
         XCTAssertLessThanOrEqual(compact.sectionSpacing, regular.sectionSpacing)
-        XCTAssertEqual(compact.actionButtonHeight, 38)
+        XCTAssertEqual(compact.actionButtonHeight, 34)
     }
 
     func testAppAppearanceModesMapToExpectedColorSchemes() throws {
@@ -96,7 +97,711 @@ final class chat_storageTests: XCTestCase {
     }
 
     func testAppSettingsCategoriesStayStable() throws {
-        XCTAssertEqual(AppSettingsCategory.allCases.map(\.title), ["外观", "文件传输", "网络连接"])
+        XCTAssertEqual(AppSettingsCategory.allCases.map(\.title), ["个人资料", "外观", "文件传输", "存储与缓存", "网络连接"])
+    }
+
+    func testCacheSizeFormatterDisplaysZeroWithoutUnit() throws {
+        XCTAssertEqual(CacheSizeFormatter.string(fromByteCount: 0), "0")
+    }
+
+    func testCacheCleanupServiceDoesNotManageSocketLifecycle() throws {
+        let source = try sourceFileContents("chat-storage/Services/CacheCleanupService.swift")
+
+        XCTAssertFalse(source.contains("SocketManager"))
+        XCTAssertFalse(source.contains(".disconnect("))
+        XCTAssertFalse(source.contains(".connect("))
+        XCTAssertFalse(source.contains(".switchConnection("))
+    }
+
+    func testMacAppIconCatalogReferencesEveryRequiredRaster() throws {
+        let catalogPath = "chat-storage/Assets.xcassets/AppIcon.appiconset/Contents.json"
+        let catalogSource = try sourceFileContents(catalogPath)
+        let catalog = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(catalogSource.utf8)) as? [String: Any]
+        )
+        let images = try XCTUnwrap(catalog["images"] as? [[String: Any]])
+        let expectedFilenames = [
+            "16x16-1x": "icon_16x16.png",
+            "16x16-2x": "icon_16x16@2x.png",
+            "32x32-1x": "icon_32x32.png",
+            "32x32-2x": "icon_32x32@2x.png",
+            "128x128-1x": "icon_128x128.png",
+            "128x128-2x": "icon_128x128@2x.png",
+            "256x256-1x": "icon_256x256.png",
+            "256x256-2x": "icon_256x256@2x.png",
+            "512x512-1x": "icon_512x512.png",
+            "512x512-2x": "icon_512x512@2x.png"
+        ]
+
+        XCTAssertEqual(images.count, expectedFilenames.count)
+
+        for image in images {
+            let size = try XCTUnwrap(image["size"] as? String)
+            let scale = try XCTUnwrap(image["scale"] as? String)
+            let key = "\(size)-\(scale)"
+            let expectedFilename = try XCTUnwrap(expectedFilenames[key])
+            let filename = try XCTUnwrap(image["filename"] as? String)
+
+            XCTAssertEqual(filename, expectedFilename)
+            XCTAssertTrue(
+                FileManager.default.fileExists(
+                    atPath: projectFileURL(
+                        "chat-storage/Assets.xcassets/AppIcon.appiconset/\(filename)"
+                    ).path
+                ),
+                "Missing AppIcon raster: \(filename)"
+            )
+        }
+    }
+
+    func testAppBrandingUsesDuyaoWithoutRenamingProductIdentity() throws {
+        let project = try sourceFileContents("chat-storage.xcodeproj/project.pbxproj")
+        let infoPlistPath = "chat-storage/Info.plist"
+        let infoPlistURL = projectFileURL(infoPlistPath)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: infoPlistURL.path))
+        guard FileManager.default.fileExists(atPath: infoPlistURL.path) else { return }
+
+        let infoPlist = try sourceFileContents(infoPlistPath)
+        let debugConfiguration = try sourceSlice(
+            project,
+            from: "4E15EB442F2B48250093C805 /* Debug */ = {",
+            to: "4E15EB452F2B48250093C805 /* Release */ = {"
+        )
+        let releaseConfiguration = try sourceSlice(
+            project,
+            from: "4E15EB452F2B48250093C805 /* Release */ = {",
+            to: "4E15EB472F2B48250093C805 /* Debug */ = {"
+        )
+
+        for configuration in [debugConfiguration, releaseConfiguration] {
+            XCTAssertTrue(configuration.contains("GENERATE_INFOPLIST_FILE = NO;"))
+            XCTAssertTrue(configuration.contains("INFOPLIST_FILE = \"chat-storage/Info.plist\";"))
+            XCTAssertFalse(configuration.contains("INFOPLIST_KEY_CFBundle"))
+            XCTAssertTrue(configuration.contains("PRODUCT_BUNDLE_IDENTIFIER = \"duyao.chat-storage\";"))
+            XCTAssertTrue(configuration.contains("PRODUCT_NAME = \"$(TARGET_NAME)\";"))
+        }
+
+        XCTAssertTrue(infoPlist.contains("<key>CFBundleDisplayName</key>"))
+        XCTAssertTrue(infoPlist.contains("<key>CFBundleName</key>"))
+        XCTAssertEqual(
+            infoPlist.components(separatedBy: "<string>毒药</string>").count - 1,
+            2
+        )
+        XCTAssertTrue(infoPlist.contains("<string>$(EXECUTABLE_NAME)</string>"))
+        XCTAssertTrue(infoPlist.contains("<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>"))
+
+        XCTAssertEqual(
+            project.components(
+                separatedBy: "TEST_HOST = \"$(BUILT_PRODUCTS_DIR)/chat-storage.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/chat-storage\";"
+            ).count - 1,
+            2
+        )
+    }
+
+    func testAppStartupRefreshesDockIconFromBundledIcns() throws {
+        let source = try sourceFileContents("chat-storage/chat_storageApp.swift")
+
+        XCTAssertTrue(source.contains("Self.refreshDockIcon()"))
+        XCTAssertTrue(
+            source.contains(
+                "Bundle.main.url(forResource: \"AppIcon\", withExtension: \"icns\")"
+            )
+        )
+        XCTAssertTrue(source.contains("NSApplication.shared.applicationIconImage = icon"))
+    }
+
+    func testHistoryRequestEncodesOnlySelectedCursor() throws {
+        let request = ChatHistoryRequestDto(friendId: 7, beforeMessageId: 99, limit: 20)
+        let data = try JSONEncoder().encode(request)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        XCTAssertEqual(json["friendId"] as? Int32, 7)
+        XCTAssertEqual(json["beforeMessageId"] as? Int64, 99)
+        XCTAssertNil(json["afterMessageId"])
+        XCTAssertNil(json["offset"])
+    }
+
+    func testHistoryResponseDecodesCursorMetadataAndLegacyDefaults() throws {
+        let newResponse = """
+        {
+          "list": [{"id": 100, "senderId": 7, "receiverId": 8, "content": "new", "gmtCreated": 1721640000000}],
+          "hasMore": true,
+          "nextBeforeMessageId": 80,
+          "latestMessageId": 100
+        }
+        """.data(using: .utf8)!
+        let newPage = try JSONDecoder().decode(ChatHistoryResponseDataDto.self, from: newResponse)
+
+        XCTAssertTrue(newPage.hasMore)
+        XCTAssertEqual(newPage.nextBeforeMessageId, 80)
+        XCTAssertEqual(newPage.latestMessageId, 100)
+        XCTAssertEqual(newPage.list.first?.gmtCreated, 1_721_640_000_000)
+        XCTAssertNil(newPage.avatars)
+
+        let legacyResponse = """
+        {"list": [{"id": 5}, {"id": 6}]}
+        """.data(using: .utf8)!
+        let legacyPage = try JSONDecoder().decode(ChatHistoryResponseDataDto.self, from: legacyResponse)
+
+        XCTAssertFalse(legacyPage.hasMore)
+        XCTAssertEqual(legacyPage.nextBeforeMessageId, 5)
+        XCTAssertEqual(legacyPage.latestMessageId, 6)
+    }
+
+    func testHistoryMergeDeduplicatesAndKeepsAscendingServerIds() {
+        let existing = [historyMessage(id: 2), historyMessage(id: 3)]
+        let incoming = [historyMessage(id: 1), historyMessage(id: 2, content: "updated")]
+
+        let merged = ChatHistoryMergePolicy.merge(existing: existing, incoming: incoming)
+
+        XCTAssertEqual(merged.compactMap(\.messageId), [1, 2, 3])
+        XCTAssertEqual(merged.first(where: { $0.messageId == 2 })?.content, "updated")
+    }
+
+    func testHistoryMergeReconcilesOptimisticMessageByClientMessageId() {
+        let optimistic = historyMessage(id: nil, clientMsgId: "client-1", content: "sending", status: .sending)
+        let confirmed = historyMessage(id: 42, clientMsgId: "client-1", content: "sent", status: .success)
+
+        let merged = ChatHistoryMergePolicy.merge(existing: [optimistic], incoming: [confirmed])
+
+        XCTAssertEqual(merged.count, 1)
+        XCTAssertEqual(merged.first?.messageId, 42)
+        XCTAssertEqual(merged.first?.content, "sent")
+        XCTAssertEqual(merged.first?.sendStatus, .success)
+    }
+
+    func testHistoryWindowLatestKeepsNewestMessagesAndReportsOlderTrim() {
+        let result = ChatHistoryWindowPolicy.merge(
+            existing: [historyMessage(id: 1), historyMessage(id: 2), historyMessage(id: 3)],
+            incoming: [historyMessage(id: 4), historyMessage(id: 5)],
+            direction: .latest,
+            limit: 3
+        )
+
+        XCTAssertEqual(result.messages.compactMap(\.messageId), [3, 4, 5])
+        XCTAssertTrue(result.droppedOlder)
+        XCTAssertFalse(result.droppedNewer)
+    }
+
+    func testHistoryWindowOlderKeepsLoadedOlderSideAndReportsNewerTrim() {
+        let result = ChatHistoryWindowPolicy.merge(
+            existing: [historyMessage(id: 3), historyMessage(id: 4), historyMessage(id: 5)],
+            incoming: [historyMessage(id: 1), historyMessage(id: 2)],
+            direction: .older,
+            limit: 3
+        )
+
+        XCTAssertEqual(result.messages.compactMap(\.messageId), [1, 2, 3])
+        XCTAssertFalse(result.droppedOlder)
+        XCTAssertTrue(result.droppedNewer)
+    }
+
+    func testHistoryWindowNewerKeepsLoadedNewerSideAndReportsOlderTrim() {
+        let result = ChatHistoryWindowPolicy.merge(
+            existing: [historyMessage(id: 1), historyMessage(id: 2), historyMessage(id: 3)],
+            incoming: [historyMessage(id: 4), historyMessage(id: 5)],
+            direction: .newer,
+            limit: 3
+        )
+
+        XCTAssertEqual(result.messages.compactMap(\.messageId), [3, 4, 5])
+        XCTAssertTrue(result.droppedOlder)
+        XCTAssertFalse(result.droppedNewer)
+    }
+
+    func testEmptyHistoryCursorHasNoNewerWindow() {
+        XCTAssertFalse(ChatHistoryCursorState.empty.hasNewer)
+    }
+
+    func testChatHistoryStoreUpsertsByAccountFriendAndMessageId() async throws {
+        let persistence = PersistenceController(inMemory: true)
+        let store = ChatHistoryStore(container: persistence.container)
+
+        try await store.upsert(
+            accountId: 1,
+            friendId: 2,
+            items: [try historyItem(id: 10, content: "old")]
+        )
+        try await store.upsert(
+            accountId: 1,
+            friendId: 2,
+            items: [try historyItem(id: 10, content: "new")]
+        )
+
+        let records = try await store.fetchLatest(accountId: 1, friendId: 2, limit: 20)
+        XCTAssertEqual(records.map(\.content), ["new"])
+        XCTAssertEqual(records.compactMap(\.messageId), [10])
+    }
+
+    func testChatHistoryStoreIsolatesAccounts() async throws {
+        let persistence = PersistenceController(inMemory: true)
+        let store = ChatHistoryStore(container: persistence.container)
+        try await store.upsert(
+            accountId: 1,
+            friendId: 2,
+            items: [try historyItem(id: 10, content: "account-one")]
+        )
+
+        let otherAccount = try await store.fetchLatest(accountId: 9, friendId: 2, limit: 20)
+        XCTAssertTrue(otherAccount.isEmpty)
+    }
+
+    func testChatHistoryStorePreservesLongServerMessageIds() async throws {
+        let persistence = PersistenceController(inMemory: true)
+        let store = ChatHistoryStore(container: persistence.container)
+        try await store.upsert(
+            accountId: 1,
+            friendId: 2,
+            items: [try historyItem(id: 5_000_000_000, content: "long-id")]
+        )
+
+        let records = try await store.fetchLatest(accountId: 1, friendId: 2, limit: 20)
+        XCTAssertEqual(records.compactMap(\.messageId), [5_000_000_000])
+    }
+
+    func testChatHistoryStoreFetchesOlderMessagesBeforeCursor() async throws {
+        let persistence = PersistenceController(inMemory: true)
+        let store = ChatHistoryStore(container: persistence.container)
+        try await store.upsert(
+            accountId: 1,
+            friendId: 2,
+            items: [
+                try historyItem(id: 1, content: "one"),
+                try historyItem(id: 2, content: "two"),
+                try historyItem(id: 3, content: "three")
+            ]
+        )
+
+        let firstPage = try await store.fetchOlder(
+            accountId: 1,
+            friendId: 2,
+            beforeMessageId: 4,
+            limit: 2
+        )
+        XCTAssertEqual(firstPage.messages.compactMap(\.messageId), [2, 3])
+        XCTAssertTrue(firstPage.hasMore)
+
+        let lastPage = try await store.fetchOlder(
+            accountId: 1,
+            friendId: 2,
+            beforeMessageId: 2,
+            limit: 2
+        )
+        XCTAssertEqual(lastPage.messages.compactMap(\.messageId), [1])
+        XCTAssertFalse(lastPage.hasMore)
+    }
+
+    func testChatHistoryStoreFetchesNewerMessagesAfterCursor() async throws {
+        let persistence = PersistenceController(inMemory: true)
+        let store = ChatHistoryStore(container: persistence.container)
+        try await store.upsert(
+            accountId: 1,
+            friendId: 2,
+            items: [
+                try historyItem(id: 1, content: "one"),
+                try historyItem(id: 2, content: "two"),
+                try historyItem(id: 3, content: "three"),
+                try historyItem(id: 4, content: "four")
+            ]
+        )
+
+        let firstPage = try await store.fetchNewer(
+            accountId: 1,
+            friendId: 2,
+            afterMessageId: 1,
+            limit: 2
+        )
+        XCTAssertEqual(firstPage.messages.compactMap(\.messageId), [2, 3])
+        XCTAssertTrue(firstPage.hasMore)
+
+        let lastPage = try await store.fetchNewer(
+            accountId: 1,
+            friendId: 2,
+            afterMessageId: 3,
+            limit: 2
+        )
+        XCTAssertEqual(lastPage.messages.compactMap(\.messageId), [4])
+        XCTAssertFalse(lastPage.hasMore)
+    }
+
+    func testChatHistoryModelDefinesCompositeConversationCursorIndex() throws {
+        let source = try sourceFileContents(
+            "chat-storage/chat_storage.xcdatamodeld/chat_storage.xcdatamodel/contents"
+        )
+        let indexSource = try sourceSlice(
+            source,
+            from: "<fetchIndex name=\"byAccountFriendAndMessage\">",
+            to: "</fetchIndex>"
+        )
+
+        XCTAssertTrue(indexSource.contains("property=\"accountId\""))
+        XCTAssertTrue(indexSource.contains("property=\"friendId\""))
+        XCTAssertTrue(indexSource.contains("property=\"messageId\""))
+    }
+
+    func testDeletingConversationOnlyDeletesSelectedAccountAndFriend() async throws {
+        let persistence = PersistenceController(inMemory: true)
+        let store = ChatHistoryStore(container: persistence.container)
+        try await store.upsert(
+            accountId: 1,
+            friendId: 2,
+            items: [try historyItem(id: 10, content: "delete")]
+        )
+        try await store.upsert(
+            accountId: 1,
+            friendId: 3,
+            items: [try historyItem(id: 11, content: "keep-friend")]
+        )
+        try await store.upsert(
+            accountId: 9,
+            friendId: 2,
+            items: [try historyItem(id: 12, content: "keep-account")]
+        )
+
+        try await store.deleteConversation(accountId: 1, friendId: 2)
+
+        let deleted = try await store.fetchLatest(accountId: 1, friendId: 2, limit: 20)
+        let keptFriend = try await store.fetchLatest(accountId: 1, friendId: 3, limit: 20)
+        let keptAccount = try await store.fetchLatest(accountId: 9, friendId: 2, limit: 20)
+        XCTAssertTrue(deleted.isEmpty)
+        XCTAssertEqual(keptFriend.compactMap(\.messageId), [11])
+        XCTAssertEqual(keptAccount.compactMap(\.messageId), [12])
+    }
+
+    func testDeletingConversationAlsoRemovesSoftDeletedRows() async throws {
+        let persistence = PersistenceController(inMemory: true)
+        let store = ChatHistoryStore(container: persistence.container)
+        try await store.upsert(
+            accountId: 1,
+            friendId: 2,
+            items: [try historyItem(id: 10, content: "soft-deleted", deleted: true)]
+        )
+
+        try await store.deleteConversation(accountId: 1, friendId: 2)
+
+        let context = persistence.container.viewContext
+        let remaining = try await context.perform {
+            let request = NSFetchRequest<NSManagedObject>(entityName: "ChatMessageEntity")
+            request.predicate = NSPredicate(format: "accountId == 1 AND friendId == 2")
+            return try context.count(for: request)
+        }
+        XCTAssertEqual(remaining, 0)
+    }
+
+    func testHistoryStateKeepsIndependentOlderAvailabilityPerFriend() {
+        var states: [Int64: ChatHistoryCursorState] = [:]
+        states[2] = ChatHistoryCursorState(
+            oldestMessageId: 10,
+            latestMessageId: 20,
+            hasOlder: false,
+            isHydrated: true
+        )
+        states[3] = ChatHistoryCursorState(
+            oldestMessageId: 30,
+            latestMessageId: 40,
+            hasOlder: true,
+            isHydrated: true
+        )
+
+        XCTAssertFalse(states[2]!.hasOlder)
+        XCTAssertTrue(states[3]!.hasOlder)
+        XCTAssertEqual(states[2]!.latestMessageId, 20)
+        XCTAssertEqual(states[3]!.oldestMessageId, 30)
+    }
+
+    func testAccountSwitchClearsInMemoryChatProjection() {
+        let manager = SocketManager()
+        manager.currentUserId = 1
+        manager.chatHistory[7] = [historyMessage(id: 10)]
+        manager.chatHistoryStates[7] = ChatHistoryCursorState(
+            oldestMessageId: 10,
+            latestMessageId: 10,
+            hasOlder: false,
+            isHydrated: true
+        )
+
+        manager.currentUserId = 2
+
+        XCTAssertTrue(manager.chatHistory.isEmpty)
+        XCTAssertTrue(manager.chatHistoryStates.isEmpty)
+    }
+
+    func testAsyncHistoryPublishingRejectsStaleAccount() throws {
+        let socketSource = try sourceFileContents("chat-storage/SocketManager.swift")
+        let pushHandler = try sourceSlice(
+            socketSource,
+            from: "self.registerStreamHandler(for: [.chatPushReq])",
+            to: "// 注册 0x52 消息回执监听"
+        )
+        XCTAssertTrue(pushHandler.contains("guard self.currentUserId == currentUserId else { return }"))
+
+        let chatSource = try sourceFileContents("chat-storage/MainChatStorage.swift")
+        let clearMethod = try sourceSlice(
+            chatSource,
+            from: "private func clearLocalHistory() async",
+            to: "private func loadInitialHistory() async"
+        )
+        let initialMethod = try sourceSlice(
+            chatSource,
+            from: "private func loadInitialHistory() async",
+            to: "private func loadMoreHistory() async"
+        )
+        let mergeMethod = try sourceSlice(
+            chatSource,
+            from: "private func mergeHistoryMessages(",
+            to: "private func historyMessages("
+        )
+
+        XCTAssertTrue(clearMethod.contains("guard socketManager.currentUserId == accountId else { return }"))
+        XCTAssertTrue(initialMethod.contains("guard socketManager.currentUserId == accountId else { return }"))
+        XCTAssertTrue(mergeMethod.contains("guard socketManager.currentUserId == accountId else { return nil }"))
+    }
+
+    func testRealtimeAndActionDtosDecodeLongMessageIds() throws {
+        let push = try JSONDecoder().decode(ChatPushDto.self, from: """
+        {
+          "messageId": 5000000000,
+          "senderId": 7,
+          "content": "push",
+          "msgType": "TEXT",
+          "gmtCreated": 1721640000000
+        }
+        """.data(using: .utf8)!)
+        let receipt = try JSONDecoder().decode(ChatReceiptDto.self, from: """
+        {"messageId": 5000000000, "status": "SUCCESS"}
+        """.data(using: .utf8)!)
+        let action = try JSONDecoder().decode(ChatMessageActionPushDto.self, from: """
+        {"action": "retract", "messageId": 5000000000, "friendId": 7}
+        """.data(using: .utf8)!)
+
+        XCTAssertEqual(push.messageId, 5_000_000_000)
+        XCTAssertEqual(receipt.messageId, 5_000_000_000)
+        XCTAssertEqual(action.messageId, 5_000_000_000)
+    }
+
+    func testInitialHistorySourceDoesNotClearExistingConversation() throws {
+        let source = try sourceFileContents("chat-storage/MainChatStorage.swift")
+        let method = try sourceSlice(
+            source,
+            from: "private func loadInitialHistory() async",
+            to: "private func loadMoreHistory() async"
+        )
+
+        XCTAssertFalse(method.contains("history[friend.id] = []"))
+        XCTAssertTrue(method.contains("ChatHistoryStore.shared.fetchLatest"))
+        XCTAssertTrue(method.contains("afterMessageId"))
+    }
+
+    func testHistoryPageMergeRunsOutsideMainActor() throws {
+        let source = try sourceFileContents("chat-storage/MainChatStorage.swift")
+        let method = try sourceSlice(
+            source,
+            from: "private func persistAndMerge(",
+            to: "private func historyMessages("
+        )
+
+        XCTAssertTrue(method.contains("let merged = await Task.detached"))
+        XCTAssertTrue(method.contains("ChatHistoryWindowPolicy.merge"))
+        XCTAssertTrue(method.contains("SocketManager.chatHistoryWindowLimit"))
+        XCTAssertTrue(method.contains("nonisolated private static func makeHistoryMessages"))
+    }
+
+    func testHistoryProjectionDeclaresBoundedWindowAndIndependentLatestMessage() throws {
+        let source = try sourceFileContents("chat-storage/SocketManager.swift")
+
+        XCTAssertTrue(source.contains("static let chatHistoryWindowLimit = 160"))
+        XCTAssertTrue(source.contains("@Published var latestChatMessages: [Int64: ChatMessage] = [:]"))
+    }
+
+    func testIncrementalHistoryPersistsPagesBeforeSingleWindowPublication() throws {
+        let source = try sourceFileContents("chat-storage/MainChatStorage.swift")
+        let method = try sourceSlice(
+            source,
+            from: "private func synchronizeIncrementalHistory(",
+            to: "private func loadMoreHistory() async"
+        )
+
+        let persistRange = try XCTUnwrap(method.range(of: "ChatHistoryStore.shared.upsert"))
+        let publishRange = try XCTUnwrap(method.range(of: "await mergeHistoryMessages("))
+        XCTAssertLessThan(persistRange.lowerBound, publishRange.lowerBound)
+        XCTAssertEqual(method.components(separatedBy: "await mergeHistoryMessages(").count - 1, 1)
+        XCTAssertTrue(method.contains("Task.detached"))
+    }
+
+    func testHistoryLoadTriggerCoalescesDelayedRequests() throws {
+        let source = try sourceFileContents("chat-storage/MainChatStorage.swift")
+        let detail = try sourceSlice(
+            source,
+            from: "private struct ChatDetailView: View {",
+            to: "// 3. Friend Sidebar View"
+        )
+
+        XCTAssertTrue(detail.contains("@State private var historyLoadTask: Task<Void, Never>?"))
+        XCTAssertTrue(detail.contains("scheduleLoadMoreHistory()"))
+        XCTAssertTrue(detail.contains("historyLoadTask?.cancel()"))
+    }
+
+    func testHistoryLoadUsesLocalOlderPageBeforeNetworkFallback() throws {
+        let source = try sourceFileContents("chat-storage/MainChatStorage.swift")
+        let method = try sourceSlice(
+            source,
+            from: "private func loadMoreHistory() async",
+            to: "private func scheduleLoadMoreHistory()"
+        )
+
+        XCTAssertTrue(method.contains("ChatHistoryStore.shared.fetchOlder"))
+        XCTAssertTrue(method.contains("mergeLocalHistory"))
+
+        let localFetch = try XCTUnwrap(method.range(of: "ChatHistoryStore.shared.fetchOlder"))
+        let networkFetch = try XCTUnwrap(method.range(of: "socketManager.getChatHistory"))
+        XCTAssertLessThan(localFetch.lowerBound, networkFetch.lowerBound)
+    }
+
+    func testHistoryWindowSupportsLocalNewerPagingAndRevisionBasedScrollRestore() throws {
+        let source = try sourceFileContents("chat-storage/MainChatStorage.swift")
+        let detail = try sourceSlice(
+            source,
+            from: "private struct ChatDetailView: View {",
+            to: "// 3. Friend Sidebar View"
+        )
+        let newerMethod = try sourceSlice(
+            source,
+            from: "private func loadNewerHistory() async",
+            to: "private func scheduleLoadMoreHistory()"
+        )
+
+        XCTAssertTrue(detail.contains(".onChange(of: historyWindowRevision)"))
+        XCTAssertFalse(detail.contains(".onChange(of: messages.count)"))
+        XCTAssertTrue(detail.contains("scheduleLoadNewerHistory()"))
+        XCTAssertTrue(newerMethod.contains("ChatHistoryStore.shared.fetchNewer"))
+        XCTAssertTrue(newerMethod.contains("direction: .newer"))
+    }
+
+    func testFriendSummaryUsesLatestMessageProjectionInsteadOfWindowTail() throws {
+        let source = try sourceFileContents("chat-storage/MainChatStorage.swift")
+        let friendRow = try sourceSlice(
+            source,
+            from: "private struct FriendRow: View {",
+            to: "// 4. Friend Chat Split View"
+        )
+
+        XCTAssertTrue(friendRow.contains("socketManager.latestChatMessages[friend.id]"))
+        XCTAssertFalse(friendRow.contains("socketManager.chatHistory[friend.id]?.last"))
+    }
+
+    func testChatHistoryUsesFlatTimelineEntriesForLazyRendering() throws {
+        let source = try sourceFileContents("chat-storage/MainChatStorage.swift")
+        let detail = try sourceSlice(
+            source,
+            from: "private struct ChatDetailView: View {",
+            to: "// 3. Friend Sidebar View"
+        )
+
+        XCTAssertTrue(detail.contains("private enum ChatTimelineEntry"))
+        XCTAssertTrue(detail.contains("ForEach(timelineEntries)"))
+        XCTAssertFalse(detail.contains("ForEach(groupedMessages"))
+    }
+
+    func testHistoryRawPayloadLoggingIsRemoved() throws {
+        let source = try sourceFileContents("chat-storage/SocketManager.swift")
+        XCTAssertFalse(source.contains("[getChatHistory] Raw JSON"))
+    }
+
+    func testConversationClearDoesNotUseSocketLifecycle() throws {
+        let source = try sourceFileContents("chat-storage/MainChatStorage.swift")
+        let method = try sourceSlice(
+            source,
+            from: "private func clearLocalHistory() async",
+            to: "private func loadInitialHistory() async"
+        )
+
+        XCTAssertTrue(method.contains("deleteConversation"))
+        XCTAssertFalse(method.contains("CacheCleanupService"))
+        XCTAssertFalse(method.contains("disconnect"))
+        XCTAssertFalse(method.contains("receiveBuffer"))
+        XCTAssertFalse(method.contains("clearHandlers"))
+    }
+
+    func testServerConnectionTestUsesIndependentProbe() throws {
+        let source = try sourceFileContents("chat-storage/ConfigServerView.swift")
+        let testHandler = try XCTUnwrap(
+            source.range(
+                of: "private func handleTestConnection()",
+                range: source.startIndex..<source.endIndex
+            )
+        )
+        let confirmHandler = try XCTUnwrap(
+            source.range(
+                of: "private func handleConfirm()",
+                range: testHandler.upperBound..<source.endIndex
+            )
+        )
+        let handlerSource = String(source[testHandler.lowerBound..<confirmHandler.lowerBound])
+
+        XCTAssertTrue(handlerSource.contains("ServerConnectionProbe.test"))
+        XCTAssertFalse(handlerSource.contains("socketManager.disconnect("))
+        XCTAssertFalse(handlerSource.contains("socketManager.switchConnection("))
+    }
+
+    func testDirectoryParserRequiresExplicitSuccessBeforeEmptyData() throws {
+        let source = try sourceFileContents("chat-storage/Services/DirectoryService.swift")
+
+        XCTAssertTrue(source.contains("guard hasExplicitSuccess else"))
+        XCTAssertTrue(source.contains("errorCode"))
+        XCTAssertFalse(source.contains("响应中没有 data 字段，视为操作成功但无返回数据"))
+    }
+
+    func testDirectoryParserRejectsNotLoggedInResponseInsteadOfReturningEmptyData() throws {
+        let data = try JSONSerialization.data(withJSONObject: [
+            "errorCode": "NOT_LOGGED_IN",
+            "message": "请先登录"
+        ])
+        let frame = Frame(type: .dirResponse, data: data)
+
+        XCTAssertThrowsError(try DirectoryService.debugParseDirectoryResponse(frame)) { error in
+            guard case DirectoryError.serverError(let code, let message) = error else {
+                return XCTFail("Expected DirectoryError.serverError, got \(error)")
+            }
+            XCTAssertEqual(code, 401)
+            XCTAssertEqual(message, "请先登录")
+        }
+    }
+
+    func testCurrentUserAvatarFallbackUsesAtMostTwoCharacters() throws {
+        XCTAssertEqual(CurrentUserAvatarDisplay.initials(for: "18806504525"), "18")
+        XCTAssertEqual(CurrentUserAvatarDisplay.initials(for: "张三丰"), "张三")
+        XCTAssertEqual(CurrentUserAvatarDisplay.initials(for: "  "), "用")
+    }
+
+    func testStoredSelfMessagesFallBackToCurrentUserAvatar() throws {
+        let rowSource = try sourceFileContents("chat-storage/Views/Chat/ChatMessageRow.swift")
+        let mainSource = try sourceFileContents("chat-storage/MainChatStorage.swift")
+
+        XCTAssertTrue(rowSource.contains("let currentUserAvatarBase64: String?"))
+        XCTAssertTrue(rowSource.contains("base64String: message.avatar ?? currentUserAvatarBase64"))
+        XCTAssertTrue(mainSource.contains("ChatDetailView(friend: friend, currentUserAvatarBase64: currentUserAvatar)"))
+        XCTAssertTrue(mainSource.contains("currentUserAvatarBase64: currentUserAvatarBase64"))
+    }
+
+    func testFriendDtoDecodesUnreadCountFromFlexibleServerFields() throws {
+        let json = """
+        {
+          "id": 1,
+          "userId": 7,
+          "friendId": 5,
+          "alias": "好友",
+          "userName": "15868139672",
+          "nickName": "好友昵称",
+          "unread_count": "6",
+          "latestUnreadMsg": "未读消息"
+        }
+        """.data(using: .utf8)!
+
+        let dto = try JSONDecoder().decode(FriendDto.self, from: json)
+
+        XCTAssertEqual(dto.unreadCount, 6)
+        XCTAssertEqual(dto.latestUnreadMsg, "未读消息")
     }
 
     func testDirectoryTreeTreatsEmptyDirectoryChildrenAsNotExpandable() throws {
@@ -195,6 +900,14 @@ final class chat_storageTests: XCTestCase {
     func testTransferHeaderUsesPrimaryTextContrastInBothThemes() throws {
         XCTAssertEqual(TelegramTheme.transferHeaderTextHex(isDark: true), TelegramTheme.textPrimaryHex)
         XCTAssertEqual(TelegramTheme.transferHeaderTextHex(isDark: false), TelegramTheme.lightTextPrimaryHex)
+    }
+
+    func testTransferCenterDoesNotRenderTaskSearchField() throws {
+        let source = try sourceFileContents("chat-storage/MainChatStorage.swift")
+
+        XCTAssertFalse(source.contains("TextField(\"搜索任务\""))
+        XCTAssertFalse(source.contains("transferSearchField"))
+        XCTAssertFalse(source.contains("transferSearchText"))
     }
 
     func testThumbnailPrefetchRangesUsesHeadAndTailForLargeFile() throws {
@@ -465,6 +1178,216 @@ final class chat_storageTests: XCTestCase {
         XCTAssertEqual(previewItem.fileSize, 1_200_000)
     }
 
+    func testChatImageBubbleSourcePrefersThumbnailThenPreviewAndNeverOriginal() throws {
+        let fullyDerived = ChatImageAttachment(
+            fileId: 90007,
+            fileName: "source.png",
+            fileSize: 8_000_000,
+            mimeType: "image/png",
+            thumbnailFileId: 91007,
+            thumbnailFileSize: 70_000,
+            previewFileId: 92007,
+            previewFileSize: 900_000
+        )
+        let previewOnly = ChatImageAttachment(
+            fileId: 90008,
+            fileName: "preview-only.png",
+            fileSize: 8_000_000,
+            mimeType: "image/png",
+            previewFileId: 92008,
+            previewFileSize: 900_000
+        )
+        let originalOnly = ChatImageAttachment(
+            fileId: 90009,
+            fileName: "original-only.png",
+            fileSize: 8_000_000,
+            mimeType: "image/png"
+        )
+
+        XCTAssertEqual(fullyDerived.bubbleThumbnailDirectoryItem()?.id, 91007)
+        XCTAssertEqual(previewOnly.bubbleThumbnailDirectoryItem()?.id, 92008)
+        XCTAssertNil(originalOnly.bubbleThumbnailDirectoryItem())
+    }
+
+    func testChatImageDerivedPreviewKeepsModernImageFormatsLoadable() throws {
+        let attachment = ChatImageAttachment(
+            fileId: 90004,
+            fileName: "large.heic",
+            fileSize: 20_000_000,
+            mimeType: "image/heic",
+            thumbnailFileId: 91004,
+            thumbnailFileSize: 80_000,
+            previewFileId: 92004,
+            previewFileSize: 1_200_000
+        )
+
+        XCTAssertTrue(attachment.thumbnailDirectoryItem().isImageFile)
+        XCTAssertTrue(attachment.previewDirectoryItem().isImageFile)
+    }
+
+    func testChatImagePreviewCandidatesPreferOriginalAndFallbackToDerivedPreview() throws {
+        let attachment = ChatImageAttachment(
+            fileId: 90005,
+            fileName: "large.webp",
+            fileSize: 20_000_000,
+            mimeType: "image/webp",
+            thumbnailFileId: 91005,
+            thumbnailFileSize: 80_000,
+            previewFileId: 92005,
+            previewFileSize: 1_200_000
+        )
+
+        let candidates = attachment.previewCandidateDirectoryItems()
+
+        XCTAssertEqual(candidates.map(\.id), [90005, 92005])
+        XCTAssertEqual(candidates.map(\.fileSize), [20_000_000, 1_200_000])
+        XCTAssertTrue(candidates.allSatisfy(\.isImageFile))
+    }
+
+    func testTallChatImagePreviewPrefersOriginalBeforeDerivedPreview() throws {
+        let attachment = ChatImageAttachment(
+            fileId: 90006,
+            fileName: "long-receipt.jpg",
+            fileSize: 3_148_898,
+            mimeType: "image/jpeg",
+            width: 1216,
+            height: 21_256,
+            thumbnailFileId: 91006,
+            thumbnailFileSize: 19_270,
+            previewFileId: 92006,
+            previewFileSize: 212_489
+        )
+
+        let candidates = attachment.previewCandidateDirectoryItems()
+        let bubbleSize = attachment.bubblePreviewSize()
+
+        XCTAssertEqual(candidates.map(\.id), [90006, 92006])
+        XCTAssertEqual(bubbleSize.width, 320)
+        XCTAssertEqual(bubbleSize.height, 360)
+    }
+
+    func testChatImagePreviewOverlayUsesAttachmentFallbackLoader() throws {
+        let source = try sourceFileContents("chat-storage/Views/Chat/ChatMessageRow.swift")
+
+        XCTAssertTrue(source.contains("previewImage(for: selectedAttachment"))
+        XCTAssertFalse(source.contains("previewImage(\n            for: selectedAttachment.previewDirectoryItem()"))
+    }
+
+    func testChatSingleImageBubbleUsesThumbnailAndDynamicSize() throws {
+        let source = try sourceFileContents("chat-storage/Views/Chat/ChatMessageRow.swift")
+        let bubbleSource = try sourceSlice(
+            source,
+            from: "private struct ChatImageGridView: View {",
+            to: "struct ChatImagePreviewOverlay: View {"
+        )
+
+        XCTAssertTrue(bubbleSource.contains("attachment.bubblePreviewSize()"))
+        XCTAssertTrue(bubbleSource.contains("attachment.bubbleThumbnailDirectoryItem()"))
+        XCTAssertTrue(bubbleSource.contains("thumbnail(for: bubbleSource)"))
+        XCTAssertTrue(bubbleSource.contains("暂无缩略图"))
+        XCTAssertFalse(bubbleSource.contains("attachment.thumbnailDirectoryItem()"))
+        XCTAssertFalse(bubbleSource.contains("thumbnail(for: attachment.directoryItem())"))
+        XCTAssertFalse(bubbleSource.contains("preferReadablePreview"))
+        XCTAssertFalse(bubbleSource.contains("previewImage(for: attachment"))
+    }
+
+    func testFileThumbnailServiceDecodesCachedBytesThroughImageIOOffMainActor() throws {
+        let source = try sourceFileContents("chat-storage/Services/FileThumbnailService.swift")
+        let thumbnailSource = try sourceSlice(
+            source,
+            from: "func thumbnail(for item: DirectoryItem)",
+            to: "func previewImage(for item: DirectoryItem"
+        )
+
+        XCTAssertTrue(source.contains("actor FileThumbnailService"))
+        XCTAssertTrue(source.contains("kCGImageSourceShouldCacheImmediately"))
+        XCTAssertTrue(thumbnailSource.contains("Data(contentsOf: path)"))
+        XCTAssertTrue(thumbnailSource.contains("Self.decodeImageData"))
+        XCTAssertFalse(thumbnailSource.contains("NSImage(contentsOf: path)"))
+    }
+
+    func testChatImagePreviewOverlaySupportsScrollableZoomableLongImages() throws {
+        let source = try sourceFileContents("chat-storage/Views/Chat/ChatMessageRow.swift")
+
+        XCTAssertTrue(source.contains("ZoomablePreviewImageView"))
+        XCTAssertTrue(source.contains("ScrollView([.horizontal, .vertical])"))
+        XCTAssertTrue(source.contains("initialZoomScale"))
+    }
+
+    func testChatImagePreviewDoesNotDownsampleOriginalRasterAndInvalidatesOldCache() throws {
+        let source = try sourceFileContents("chat-storage/Services/FileThumbnailService.swift")
+
+        XCTAssertFalse(source.contains("let scaledImage = scaled(image, maxDimension: 2048)"))
+        XCTAssertTrue(source.contains("image-previews-v2"))
+        XCTAssertTrue(source.contains("return image"))
+    }
+
+    func testChatImagePreviewAlwaysPrefersOriginalForReadableQuality() throws {
+        let source = try sourceFileContents("chat-storage/Services/Chat/ChatAttachmentModels.swift")
+
+        XCTAssertTrue(source.contains("return [original, preferred]"))
+    }
+
+    func testChatImageUploadSkipsLowResolutionDerivedPreviewForVeryTallImages() throws {
+        let source = try sourceFileContents("chat-storage/Services/Chat/ChatAttachmentUploadService.swift")
+
+        XCTAssertTrue(source.contains("shouldGenerateDerivedPreview"))
+        XCTAssertTrue(source.contains("image.size.height / width < 3"))
+    }
+
+    func testDirectoryItemImageDetectionReusesChatImageFormatSupport() throws {
+        let source = try sourceFileContents("chat-storage/Models/do/FileDto.swift")
+
+        XCTAssertTrue(source.contains("ChatImageFormat.isSupported(fileName: fileName)"))
+    }
+
+    func testDirectoryItemPlayableVideoFallsBackToServerFileType() throws {
+        let dto = FileDto(
+            id: 9,
+            pId: 3,
+            fileName: "重命名后没有扩展名",
+            filePath: "/Users/demo/storages/account/video/task_9_demo.mp4",
+            fileSize: 2048,
+            fileType: "mp4",
+            isFile: "Y",
+            isExist: "Y",
+            hasChild: "N",
+            userName: "demo",
+            gmtCreated: nil,
+            gmtModified: nil,
+            del: "N",
+            delTime: nil,
+            childFileList: nil
+        )
+
+        let item = dto.toDirectoryItem()
+
+        XCTAssertTrue(item.isVideoFile)
+        XCTAssertTrue(item.isPlayableVideoFile)
+        XCTAssertEqual(item.iconName, "film")
+    }
+
+    func testFileRenamePolicyPreservesOriginalExtensionWhenEditedNameOmitsIt() throws {
+        XCTAssertEqual(
+            FileNameRules.editableStem(for: "哈地方都舒服.mp4"),
+            "哈地方都舒服"
+        )
+        XCTAssertEqual(
+            FileNameRules.applyingPreservedExtension(
+                to: "又是一款性感肉丝美腿",
+                originalFileName: "哈地方都舒服.mp4"
+            ),
+            "又是一款性感肉丝美腿.mp4"
+        )
+        XCTAssertEqual(
+            FileNameRules.applyingPreservedExtension(
+                to: "又是一款性感肉丝美腿.mov",
+                originalFileName: "哈地方都舒服.mp4"
+            ),
+            "又是一款性感肉丝美腿.mov"
+        )
+    }
+
     func testChatAttachmentUploadServicePreparesPngTempFile() throws {
         let image = NSImage(size: NSSize(width: 8, height: 8))
         image.lockFocus()
@@ -564,13 +1487,88 @@ final class chat_storageTests: XCTestCase {
         XCTAssertEqual(uploadPurposes, ["CHAT_ATTACHMENT", "CHAT_ATTACHMENT", "CHAT_ATTACHMENT"])
     }
 
-    func testChatInputBarUsesUnifiedSendForTextAndImages() throws {
+    func testChatInputBarUsesUnifiedSendForTextAndMixedAttachments() throws {
         let source = try sourceFileContents("chat-storage/Views/Chat/ChatInputBar.swift")
 
-        XCTAssertTrue(source.contains("@Binding var pendingImages: [PendingChatImage]"))
-        XCTAssertTrue(source.contains("let onRemovePendingImage: (UUID) -> Void"))
+        XCTAssertTrue(source.contains("@Binding var pendingAttachments: [PendingChatAttachment]"))
+        XCTAssertTrue(source.contains("let onPickAttachments: () -> Void"))
+        XCTAssertTrue(source.contains("let onRemovePendingAttachment: (UUID) -> Void"))
+        XCTAssertTrue(source.contains("PendingChatAttachmentCard"))
         XCTAssertTrue(source.contains("Button(action: onSendMessage)"))
         XCTAssertFalse(source.contains("let onSendImage: () -> Void"))
+        XCTAssertFalse(source.contains("pendingImages"))
+    }
+
+    func testChatInputBarUsesFloatingToggleableEmojiPanelAndRemovesUnusedTools() throws {
+        let source = try sourceFileContents("chat-storage/Views/Chat/ChatInputBar.swift")
+
+        XCTAssertTrue(source.contains(".overlay(alignment: .topLeading)"))
+        XCTAssertTrue(source.contains("showEmojiPicker.toggle()"))
+        XCTAssertFalse(source.contains("systemName: \"scissors\""))
+        XCTAssertFalse(source.contains("systemName: \"mic\""))
+        XCTAssertFalse(source.contains("systemName: \"hand.tap\""))
+        XCTAssertFalse(source.contains("systemName: \"phone\""))
+        XCTAssertFalse(source.contains("systemName: \"video\""))
+    }
+
+    func testChatTextViewReadsScreenshotPasteboardFormatsBeforeTextPaste() throws {
+        let source = try sourceFileContents("chat-storage/Views/Chat/MacResponsiveTextView.swift")
+
+        XCTAssertTrue(source.contains("NSPasteboard.PasteboardType.png"))
+        XCTAssertTrue(source.contains("NSPasteboard.PasteboardType.tiff"))
+        XCTAssertTrue(source.contains("NSImage(pasteboard:"))
+        XCTAssertTrue(source.contains("super.paste(sender)"))
+    }
+
+    func testLocalChatMessageDerivesServerCompatibleTimeGrouping() throws {
+        let date = Date(timeIntervalSince1970: 1_721_640_000)
+        let message = ChatMessage(
+            messageId: nil,
+            clientMsgId: "local-time",
+            content: "hello",
+            isMe: true,
+            timestamp: date,
+            type: "TEXT",
+            sendStatus: .sending
+        )
+
+        XCTAssertEqual(message.groupTime, ChatMessageTimeGrouping.groupTime(for: date))
+        XCTAssertEqual(message.msgTimeStr, ChatMessageTimeGrouping.messageTime(for: date))
+    }
+
+    func testChatTimelineDoesNotUseUnknownTimeForValidMessageTimestamp() throws {
+        let source = try sourceFileContents("chat-storage/MainChatStorage.swift")
+
+        XCTAssertTrue(source.contains("ChatMessageTimeGrouping.groupTime(for: message.timestamp)"))
+        XCTAssertFalse(source.contains("message.groupTime ?? \"未知时间\""))
+    }
+
+    func testChatTextViewRecognizesClipboardStringFilePathAsImage() throws {
+        let source = try sourceFileContents("chat-storage/Views/Chat/MacResponsiveTextView.swift")
+
+        XCTAssertTrue(source.contains("string(forType: .fileURL)"))
+        XCTAssertTrue(source.contains("URL(fileURLWithPath:"))
+        XCTAssertTrue(source.contains("ChatImageFormat.isSupported(fileName:"))
+    }
+
+    func testChatInputHidesPlaceholderWhileInputMethodHasMarkedText() throws {
+        let textViewSource = try sourceFileContents("chat-storage/Views/Chat/MacResponsiveTextView.swift")
+
+        XCTAssertTrue(ChatInputPlaceholderPolicy.shouldShow(
+            messageText: "",
+            isComposing: false,
+            hasAttachments: false,
+            hasQuote: false
+        ))
+        XCTAssertFalse(ChatInputPlaceholderPolicy.shouldShow(
+            messageText: "",
+            isComposing: true,
+            hasAttachments: false,
+            hasQuote: false
+        ))
+        XCTAssertTrue(textViewSource.contains("onMarkedTextChanged"))
+        XCTAssertTrue(textViewSource.contains("setMarkedText"))
+        XCTAssertTrue(textViewSource.contains("if !textView.hasMarkedText(), textView.string != text"))
     }
 
     func testChatMixedImageSendUsesOptimisticBubbleBeforeUpload() throws {
@@ -580,8 +1578,22 @@ final class chat_storageTests: XCTestCase {
         XCTAssertTrue(source.contains("appendLocalChatMessage"))
         XCTAssertTrue(source.contains("updateLocalChatMessage"))
         XCTAssertTrue(source.contains("appendLocalMessage: false"))
-        XCTAssertTrue(source.contains("pendingMediaMessages"))
+        XCTAssertTrue(source.contains("attachmentTransferStore.createBatch("))
+        XCTAssertTrue(source.contains("sendStatus: .uploadingMedia"))
+        XCTAssertTrue(source.contains("attachmentTransferCoordinator.enqueue("))
+        XCTAssertFalse(source.contains("isUploadingAttachment"))
         XCTAssertTrue(socketSource.contains("appendLocalMessage: Bool = true"))
+    }
+
+    func testChatAttachmentPickerSupportsMultipleArbitraryFilesAndRetryKeepsFullList() throws {
+        let source = try sourceFileContents("chat-storage/MainChatStorage.swift")
+
+        XCTAssertTrue(source.contains("panel.allowsMultipleSelection = true"))
+        XCTAssertTrue(source.contains("panel.canChooseFiles = true"))
+        XCTAssertTrue(source.contains("PendingChatAttachment.file(url: url)"))
+        XCTAssertTrue(source.contains("attachmentTransferStore.createBatch("))
+        XCTAssertTrue(source.contains("attachments: attachmentsToSend"))
+        XCTAssertTrue(source.contains("attachmentsToSend: attachmentTransferStore.pendingAttachments(clientMsgId: clientMsgId)"))
     }
 
     func testPendingChatImagesUseLocalPreviewStore() throws {
@@ -600,12 +1612,17 @@ final class chat_storageTests: XCTestCase {
 
         XCTAssertTrue(source.contains("ChatMediaBubbleView"))
         XCTAssertTrue(source.contains("ChatImageGridView"))
+        XCTAssertTrue(source.contains("ChatFileAttachmentCard"))
+        XCTAssertTrue(source.contains("onDownloadAttachment"))
+        XCTAssertTrue(detailSource.contains("downloadChatAttachment"))
+        XCTAssertTrue(detailSource.contains("onDownloadAttachment: downloadChatAttachment"))
         XCTAssertFalse(source.contains("message.type == \"IMAGE\" ? \"[图片]\" : message.content"))
         XCTAssertFalse(source.contains("@State private var previewContext: ChatImagePreviewContext?"))
         XCTAssertFalse(source.contains(".sheet(item: $previewContext)"))
         XCTAssertTrue(source.contains("onPreviewImage"))
-        XCTAssertTrue(source.contains(".highPriorityGesture(TapGesture(count: 1)"))
-        XCTAssertTrue(source.contains("previewDirectoryItem()"))
+        XCTAssertTrue(source.contains(".onTapGesture(count: 1)"))
+        XCTAssertTrue(source.contains("previewImage(for: selectedAttachment"))
+        XCTAssertFalse(source.contains("selectedAttachment.previewDirectoryItem()"))
         XCTAssertTrue(source.contains("previewTapNavigationZones"))
         XCTAssertTrue(source.contains("previewNavigationControls"))
         XCTAssertFalse(source.contains(".frame(maxWidth: .infinity, alignment: .trailing)"))
@@ -627,6 +1644,23 @@ final class chat_storageTests: XCTestCase {
         )
 
         XCTAssertEqual(socketManager.chatHistory[7788]?.last?.clientMsgId, clientMsgId)
+    }
+
+    func testSocketManagerDrainsLargeFrameInSingleInputEvent() throws {
+        let payload = Data(repeating: 0x41, count: 32 * 1024)
+        let frameBytes = Frame(type: .userResponse, data: payload).toBytes()
+        let inputStream = InputStream(data: frameBytes)
+        let socketManager = SocketManager()
+
+        inputStream.open()
+        defer { inputStream.close() }
+        socketManager.inputStream = inputStream
+        socketManager.isReceiving = true
+
+        socketManager.receiveAndProcessFrames()
+
+        XCTAssertTrue(socketManager.receiveBuffer.isEmpty)
+        XCTAssertFalse(inputStream.hasBytesAvailable)
     }
 
     func testRetryMessagePassesOriginalClientMessageId() throws {
@@ -823,6 +1857,58 @@ final class chat_storageTests: XCTestCase {
         )
     }
 
+    func testUploadFinalAckRequiresMatchingTaskAndPositiveFileId() throws {
+        let valid = StandardAckResponse(
+            status: "success",
+            taskId: "task-123",
+            message: nil,
+            fileId: 7478051867767984128,
+            uploadedSize: nil,
+            serverState: nil,
+            recommendedChunkSize: nil,
+            recommendedAckWindow: nil,
+            serverWriteMillis: nil,
+            retryAfterMs: nil
+        )
+
+        XCTAssertEqual(
+            try FileTransferService.debugValidateFinalUploadAck(valid, expectedTaskId: "task-123"),
+            7478051867767984128
+        )
+
+        let wrongTask = StandardAckResponse(
+            status: "success",
+            taskId: "task-456",
+            message: nil,
+            fileId: 7478051867767984128,
+            uploadedSize: nil,
+            serverState: nil,
+            recommendedChunkSize: nil,
+            recommendedAckWindow: nil,
+            serverWriteMillis: nil,
+            retryAfterMs: nil
+        )
+        XCTAssertThrowsError(
+            try FileTransferService.debugValidateFinalUploadAck(wrongTask, expectedTaskId: "task-123")
+        )
+
+        let missingFile = StandardAckResponse(
+            status: "success",
+            taskId: "task-123",
+            message: nil,
+            fileId: nil,
+            uploadedSize: nil,
+            serverState: nil,
+            recommendedChunkSize: nil,
+            recommendedAckWindow: nil,
+            serverWriteMillis: nil,
+            retryAfterMs: nil
+        )
+        XCTAssertThrowsError(
+            try FileTransferService.debugValidateFinalUploadAck(missingFile, expectedTaskId: "task-123")
+        )
+    }
+
     func testUploadRecoveryRetriesOnlyTransientNetworkErrors() throws {
         XCTAssertTrue(TransferTaskManager.isRecoverableUploadError(SocketError.timeout))
         XCTAssertTrue(TransferTaskManager.isRecoverableUploadError(SocketError.connectionClosed))
@@ -980,6 +2066,34 @@ final class chat_storageTests: XCTestCase {
         XCTAssertEqual(ChatMessagePayload.parse(content: content, msgType: "MIXED").displayText, "[2张图片] 图片下面的文字")
     }
 
+    func testChatMixedMessageContentRoundTripsImagesAndFiles() throws {
+        let attachments = [
+            ChatAttachment(
+                kind: "image",
+                fileId: 81001,
+                fileName: "photo.png",
+                fileSize: 1024,
+                mimeType: "image/png",
+                width: 100,
+                height: 80
+            ),
+            ChatAttachment(
+                kind: "file",
+                fileId: 81002,
+                fileName: "资料.pdf",
+                fileSize: 2048,
+                mimeType: "application/pdf"
+            )
+        ]
+
+        let payload = try ChatMixedMessageContent(text: "请查收", attachments: attachments)
+        let parsed = try XCTUnwrap(ChatMixedMessageContent.parse(payload.contentString()))
+
+        XCTAssertEqual(parsed.attachments, attachments)
+        XCTAssertEqual(parsed.attachments.filter(\.isImage).count, 1)
+        XCTAssertEqual(parsed.attachments.filter { !$0.isImage }.count, 1)
+    }
+
     func testChatMessagePayloadKeepsExplicitTextJsonAsText() throws {
         let attachment = ChatImageAttachment(
             fileId: 10003,
@@ -992,6 +2106,67 @@ final class chat_storageTests: XCTestCase {
 
         XCTAssertEqual(ChatMessagePayload.parse(content: content, msgType: "TEXT"), .text(content))
         XCTAssertEqual(ChatMessagePayload.parse(content: content, msgType: "").displayText, "[图片] 这是一段 JSON 文本")
+    }
+
+    func testChatMessagePreparedPayloadUpdatesWithControlledContentReplacement() throws {
+        var message = historyMessage(id: 1, content: "before")
+        let attachment = ChatImageAttachment(
+            fileId: 101,
+            fileName: "after.png",
+            fileSize: 2048,
+            mimeType: "image/png"
+        )
+        let mixed = try ChatMixedMessageContent(text: "after", attachments: [attachment])
+        let content = try mixed.contentString()
+
+        message.updateContent(
+            content,
+            type: "MIXED",
+            preparedPayload: .mixed(mixed)
+        )
+
+        XCTAssertEqual(message.content, content)
+        XCTAssertEqual(message.type, "MIXED")
+        XCTAssertEqual(message.preparedPayload, .mixed(mixed))
+        XCTAssertEqual(message.displayText, "[图片] after")
+    }
+
+    func testChatMessageRowUsesPreparedPayloadWithoutTextSelectionOrParsing() throws {
+        let source = try sourceFileContents("chat-storage/Views/Chat/ChatMessageRow.swift")
+
+        XCTAssertTrue(source.contains("let payload = message.preparedPayload"))
+        XCTAssertFalse(source.contains("ChatMessagePayload.parse"))
+        XCTAssertFalse(source.contains(".textSelection(.enabled)"))
+
+        let socketSource = try sourceFileContents("chat-storage/SocketManager.swift")
+        let updateMethod = try sourceSlice(
+            socketSource,
+            from: "func updateLocalChatMessage(",
+            to: "func sendChatMessage("
+        )
+        XCTAssertTrue(updateMethod.contains("preparedPayload: ChatMessagePayload?"))
+        XCTAssertTrue(updateMethod.contains("history[index].updateContent("))
+    }
+
+    func testFriendRowsUsePreparedServerPreviewWithoutBodyParsing() throws {
+        let source = try sourceFileContents("chat-storage/MainChatStorage.swift")
+        let friendRowSource = try sourceSlice(
+            source,
+            from: "private struct FriendRow: View {",
+            to: "// 4. Friend Chat Split View"
+        )
+        let recentRowSource = try sourceSlice(
+            source,
+            from: "private struct ChatWorkspaceRecentRow: View {",
+            to: "private struct ChatWorkspaceAvatar: View {"
+        )
+
+        XCTAssertTrue(source.contains("makeServerLatestPreviews"))
+        XCTAssertTrue(source.contains("Task.detached(priority: .utility)"))
+        XCTAssertTrue(friendRowSource.contains("friend.serverLatestDisplayText"))
+        XCTAssertTrue(recentRowSource.contains("friend.serverLatestDisplayText"))
+        XCTAssertFalse(friendRowSource.contains("ChatMessagePayload.parse"))
+        XCTAssertFalse(recentRowSource.contains("ChatMessagePayload.parse"))
     }
 
     func testChatMixedImageMessageRejectsMoreThanNineImages() throws {
@@ -1014,15 +2189,27 @@ final class chat_storageTests: XCTestCase {
         XCTAssertEqual(ChatImageFormat.mimeType(forFileName: "live.HEIC"), "image/heic")
         XCTAssertEqual(ChatImageFormat.mimeType(forFileName: "graphic.webp"), "image/webp")
         XCTAssertEqual(ChatImageFormat.mimeType(forFileName: "scan.tiff"), "image/tiff")
+        XCTAssertEqual(ChatImageFormat.mimeType(forFileName: "wide.avif"), "image/avif")
+        XCTAssertEqual(ChatImageFormat.mimeType(forFileName: "legacy.jfif"), "image/jpeg")
         XCTAssertTrue(ChatImageFormat.isSupported(fileName: "paste.png"))
+        XCTAssertTrue(ChatImageFormat.isSupported(fileName: "poster.jp2"))
         XCTAssertFalse(ChatImageFormat.isSupported(fileName: "archive.zip"))
     }
 
     private func sourceFileContents(_ relativePath: String) throws -> String {
+        try String(contentsOf: projectFileURL(relativePath), encoding: .utf8)
+    }
+
+    private func projectFileURL(_ relativePath: String) -> URL {
         let testFile = URL(fileURLWithPath: #filePath)
         let projectRoot = testFile.deletingLastPathComponent().deletingLastPathComponent()
-        let fileURL = projectRoot.appendingPathComponent(relativePath)
-        return try String(contentsOf: fileURL, encoding: .utf8)
+        return projectRoot.appendingPathComponent(relativePath)
+    }
+
+    private func sourceSlice(_ source: String, from start: String, to end: String) throws -> String {
+        let startRange = try XCTUnwrap(source.range(of: start))
+        let endRange = try XCTUnwrap(source.range(of: end, range: startRange.upperBound..<source.endIndex))
+        return String(source[startRange.lowerBound..<endRange.lowerBound])
     }
 
     func testAdaptiveUploadControllerStartsWithConservativeParameters() throws {
@@ -1304,6 +2491,50 @@ final class chat_storageTests: XCTestCase {
         )
     }
 
+    private func historyMessage(
+        id: Int64?,
+        clientMsgId: String? = nil,
+        content: String = "message",
+        status: ChatMessage.SendStatus = .success
+    ) -> ChatMessage {
+        ChatMessage(
+            messageId: id,
+            clientMsgId: clientMsgId,
+            content: content,
+            isMe: false,
+            timestamp: Date(),
+            type: "TEXT",
+            sendStatus: status
+        )
+    }
+
+    private func historyItem(
+        id: Int64,
+        senderId: Int32 = 1,
+        receiverId: Int32 = 2,
+        content: String,
+        clientMsgId: String? = nil,
+        deleted: Bool = false
+    ) throws -> ChatHistoryItemDto {
+        var json: [String: Any] = [
+            "id": id,
+            "senderId": senderId,
+            "receiverId": receiverId,
+            "content": content,
+            "msgType": "TEXT",
+            "status": 1,
+            "gmtCreated": 1_721_640_000_000 + id,
+            "deleted": deleted
+        ]
+        if let clientMsgId {
+            json["clientMsgId"] = clientMsgId
+        }
+        return try JSONDecoder().decode(
+            ChatHistoryItemDto.self,
+            from: JSONSerialization.data(withJSONObject: json)
+        )
+    }
+
     func testFileDtoDecodesServerParentDirectoryFields() throws {
         let json = """
         {
@@ -1330,6 +2561,70 @@ final class chat_storageTests: XCTestCase {
     func testOnlyUploadCompletionRequestsFileListRefresh() throws {
         XCTAssertTrue(TransferTaskManager.shouldPostFileListRefresh(for: .upload))
         XCTAssertFalse(TransferTaskManager.shouldPostFileListRefresh(for: .download))
+    }
+
+    func testCloudUploadTargetRejectsMissingInvalidAndRootSelections() throws {
+        let root = DirectoryItem(id: 100, pId: -1, fileName: "user", childFileList: nil)
+        let child = DirectoryItem(id: 200, pId: 100, fileName: "docs", childFileList: nil)
+        let rejectedSelections: [Int64?] = [nil, 0, -1, root.id]
+
+        for selection in rejectedSelections {
+            let resolved = selection == child.id ? child : (selection == root.id ? root : nil)
+            let result = CloudUploadTargetValidator.validate(
+                selectedDirectoryId: selection,
+                rootDirectoryId: root.id,
+                resolvedDirectory: resolved
+            )
+
+            guard case .failure(let error) = result else {
+                return XCTFail("Expected upload target rejection for selection: \(String(describing: selection))")
+            }
+            XCTAssertEqual(error, .invalidTarget)
+            XCTAssertEqual(error.errorDescription, "根目录不允许上传，请先选择一个子目录")
+        }
+    }
+
+    func testCloudUploadTargetRejectsUnknownPositiveDirectory() throws {
+        let result = CloudUploadTargetValidator.validate(
+            selectedDirectoryId: 200,
+            rootDirectoryId: 100,
+            resolvedDirectory: nil
+        )
+
+        guard case .failure(let error) = result else {
+            return XCTFail("Expected unknown directory rejection")
+        }
+        XCTAssertEqual(error, .invalidTarget)
+    }
+
+    func testCloudUploadTargetAllowsResolvedPositiveChildDirectory() throws {
+        let child = DirectoryItem(id: 200, pId: 100, fileName: "docs", childFileList: nil)
+        let result = CloudUploadTargetValidator.validate(
+            selectedDirectoryId: child.id,
+            rootDirectoryId: 100,
+            resolvedDirectory: child
+        )
+
+        guard case .success(let target) = result else {
+            return XCTFail("Expected child directory to be uploadable")
+        }
+        XCTAssertEqual(target.id, child.id)
+    }
+
+    func testCloudUploadEntryRequiresValidatedNonOptionalDirectory() throws {
+        let source = try sourceFileContents("chat-storage/MainChatStorage.swift")
+
+        XCTAssertTrue(source.contains("private func handleCloudUpload(targetDirectory: DirectoryItem? = nil)"))
+        XCTAssertTrue(source.contains("CloudUploadTargetValidator.validate("))
+        XCTAssertTrue(source.contains("handleCloudUpload(targetDirectory: item)"))
+        XCTAssertTrue(source.contains("private func handleSelectFiles(targetDirectory: DirectoryItem)"))
+        let directCalls = source
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.hasPrefix("handleSelectFiles(targetDirectory:") }
+        XCTAssertEqual(directCalls, ["handleSelectFiles(targetDirectory: targetDirectory)"])
+        XCTAssertFalse(source.contains("targetDirectory?.id ?? 0"))
+        XCTAssertFalse(source.contains("targetDirectory?.fileName ?? \"根目录\""))
     }
 
 }

@@ -68,7 +68,7 @@ public struct UserDto: Codable, Identifiable {
 }
 
 /// 好友信息响应 (Data Transfer Object)
-public struct FriendDto: Codable, Identifiable, Equatable {
+public struct FriendDto: Codable, Identifiable, Equatable, Sendable {
     /// 关联ID
     public let id: Int64
     /// 用户ID
@@ -100,6 +100,7 @@ public struct FriendDto: Codable, Identifiable, Equatable {
     // 回退尝试的 CodingKeys，用于兼容后端不同的字段命名
     enum FallbackCodingKeys: String, CodingKey {
         case latestMsg, lastMsg, latestMessage, lastMessage
+        case unread_count, unreadMsgCount, unreadMessageCount
     }
     
     // 手动初始化 (用于本地修改等场景)
@@ -126,13 +127,16 @@ public struct FriendDto: Codable, Identifiable, Equatable {
         self.nickName = (try? container.decodeIfPresent(String.self, forKey: .nickName)) ?? ""
         self.avatar = try? container.decodeIfPresent(String.self, forKey: .avatar)
         
-        // Ensure type mismatch here (e.g., Int instead of Int32) doesn't crash init
-        self.unreadCount = try? container.decodeIfPresent(Int32.self, forKey: .unreadCount)
+        let fallbackContainer = try? decoder.container(keyedBy: FallbackCodingKeys.self)
+        self.unreadCount = Self.decodeInt32(from: container, forKey: .unreadCount)
+            ?? fallbackContainer.flatMap { Self.decodeInt32(from: $0, forKey: .unread_count) }
+            ?? fallbackContainer.flatMap { Self.decodeInt32(from: $0, forKey: .unreadMsgCount) }
+            ?? fallbackContainer.flatMap { Self.decodeInt32(from: $0, forKey: .unreadMessageCount) }
         
         // 核心排查：最新消息解析。不要使用 try 而是 try? 保证不会抛出异常中断
         if let msg = try? container.decodeIfPresent(String.self, forKey: .latestUnreadMsg) {
             self.latestUnreadMsg = msg
-        } else if let fallbackContainer = try? decoder.container(keyedBy: FallbackCodingKeys.self) {
+        } else if let fallbackContainer = fallbackContainer {
             // 避免 Swift 编译器认为表达式过于复杂，分解提取过程
             let v1 = try? fallbackContainer.decodeIfPresent(String.self, forKey: .latestMsg)
             let v2 = try? fallbackContainer.decodeIfPresent(String.self, forKey: .lastMsg)
@@ -142,6 +146,32 @@ public struct FriendDto: Codable, Identifiable, Equatable {
         } else {
             self.latestUnreadMsg = nil
         }
+    }
+
+    private static func decodeInt32<Key: CodingKey>(
+        from container: KeyedDecodingContainer<Key>,
+        forKey key: Key
+    ) -> Int32? {
+        if let value = try? container.decodeIfPresent(Int32.self, forKey: key) {
+            return value
+        }
+        if let value = try? container.decodeIfPresent(Int.self, forKey: key),
+           value >= Int(Int32.min),
+           value <= Int(Int32.max) {
+            return Int32(value)
+        }
+        if let value = try? container.decodeIfPresent(Int64.self, forKey: key),
+           value >= Int64(Int32.min),
+           value <= Int64(Int32.max) {
+            return Int32(value)
+        }
+        if let rawValue = try? container.decodeIfPresent(String.self, forKey: key) {
+            let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let value = Int32(normalized) {
+                return value
+            }
+        }
+        return nil
     }
 }
 
@@ -201,8 +231,8 @@ public struct ChatSendRequestDto: Codable {
 }
 
 /// 接收聊天消息推送 (0x51)
-public struct ChatPushDto: Codable, Identifiable {
-    public let messageId: Int32
+public struct ChatPushDto: Codable, Identifiable, Sendable {
+    public let messageId: Int64
     public let senderId: Int32
     public let content: String
     public let msgType: String
@@ -213,25 +243,38 @@ public struct ChatPushDto: Codable, Identifiable {
     public let quoteMsgContent: String?
     public let quoteMsgSenderName: String?
     
-    public var id: Int32 { messageId }
+    public var id: Int64 { messageId }
 }
 
 /// 接收聊天消息回执 (0x52)
 public struct ChatReceiptDto: Codable {
-    public let messageId: Int32
+    public let messageId: Int64
     public let status: String // "success" or "false"
     public let clientMsgId: String?
     public let message: String?
+    public let errorCode: String?
+    public let attachmentField: String?
+    public let fileId: Int64?
 }
 
 /// 历史聊天记录请求 (0x53)
 public struct ChatHistoryRequestDto: Codable {
     public let friendId: Int32
-    public let offset: Int32
+    public let beforeMessageId: Int64?
+    public let afterMessageId: Int64?
+    public let offset: Int32?
     public let limit: Int32
     
-    public init(friendId: Int32, offset: Int32 = 0, limit: Int32 = 20) {
+    public init(
+        friendId: Int32,
+        beforeMessageId: Int64? = nil,
+        afterMessageId: Int64? = nil,
+        offset: Int32? = nil,
+        limit: Int32 = 20
+    ) {
         self.friendId = friendId
+        self.beforeMessageId = beforeMessageId
+        self.afterMessageId = afterMessageId
         self.offset = offset
         self.limit = limit
     }
@@ -254,6 +297,7 @@ public struct ChatHistoryItemDto: Codable {
     public var quoteMsgSenderName: String?
     public var deleted: Bool = false
     public var retracted: Bool = false
+    public var gmtCreated: Int64?
     
     // 自定义解码器增加容错性，防止某个字段类型不匹配导致整个 0x54 接包失败
     public init(from decoder: Decoder) throws {
@@ -293,6 +337,7 @@ public struct ChatHistoryItemDto: Codable {
         self.quoteMsgSenderName = try? container.decodeIfPresent(String.self, forKey: .quoteMsgSenderName)
         self.deleted = container.decodeLossyBoolIfPresent(forKey: .deleted) ?? false
         self.retracted = container.decodeLossyBoolIfPresent(forKey: .retracted) ?? false
+        self.gmtCreated = container.decodeLossyInt64IfPresent(forKey: .gmtCreated)
     }
 }
 
@@ -336,11 +381,34 @@ private extension KeyedDecodingContainer {
 /// 历史聊天记录响应体 (0x54) 优化后的 Data 包装层
 public struct ChatHistoryResponseDataDto: Codable {
     public let list: [ChatHistoryItemDto]
+    public let hasMore: Bool
+    public let nextBeforeMessageId: Int64?
+    public let latestMessageId: Int64?
     public let avatars: [String: String]?
     
-    public init(list: [ChatHistoryItemDto] = [], avatars: [String: String]? = nil) {
+    public init(
+        list: [ChatHistoryItemDto] = [],
+        hasMore: Bool? = nil,
+        nextBeforeMessageId: Int64? = nil,
+        latestMessageId: Int64? = nil,
+        avatars: [String: String]? = nil
+    ) {
         self.list = list
+        self.hasMore = hasMore ?? (list.count >= 20)
+        self.nextBeforeMessageId = nextBeforeMessageId ?? list.first?.id
+        self.latestMessageId = latestMessageId ?? list.last?.id
         self.avatars = avatars
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        list = try container.decodeIfPresent([ChatHistoryItemDto].self, forKey: .list) ?? []
+        hasMore = try container.decodeIfPresent(Bool.self, forKey: .hasMore) ?? (list.count >= 20)
+        nextBeforeMessageId = container.decodeLossyInt64IfPresent(forKey: .nextBeforeMessageId)
+            ?? list.first?.id
+        latestMessageId = container.decodeLossyInt64IfPresent(forKey: .latestMessageId)
+            ?? list.last?.id
+        avatars = try container.decodeIfPresent([String: String].self, forKey: .avatars)
     }
 }
 
@@ -356,10 +424,10 @@ public struct ChatClearUnreadRequestDto: Codable {
 /// 聊天消息动作请求 (0x59)
 public struct ChatMessageActionRequestDto: Codable {
     public let action: String
-    public let messageId: Int32
+    public let messageId: Int64
     public let friendId: Int32
 
-    public init(action: String, messageId: Int32, friendId: Int32) {
+    public init(action: String, messageId: Int64, friendId: Int32) {
         self.action = action
         self.messageId = messageId
         self.friendId = friendId
@@ -371,14 +439,14 @@ public struct ChatMessageActionResponseDto: Codable {
     public let code: Int?
     public let message: String?
     public let action: String
-    public let messageId: Int32
+    public let messageId: Int64
     public let friendId: Int32
 }
 
 /// 聊天消息动作推送 (0x5B)
 public struct ChatMessageActionPushDto: Codable {
     public let action: String
-    public let messageId: Int32
+    public let messageId: Int64
     public let friendId: Int32
     public let notifyText: String?
 }

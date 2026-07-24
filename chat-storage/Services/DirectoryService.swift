@@ -51,7 +51,7 @@ class DirectoryService: ObservableObject {
         print("📥 收到目录响应，开始解析...")
         
         // 解析响应
-        let directoryItems = try parseDirectoryResponse(responseFrame)
+        let directoryItems = try Self.parseDirectoryResponse(responseFrame)
         
         print("✅ 目录树加载完成，共 \(directoryItems.count) 个顶级项")
         
@@ -71,7 +71,7 @@ class DirectoryService: ObservableObject {
             timeout: 15.0
         )
 
-        let items = try parseDirectoryResponse(responseFrame)
+        let items = try Self.parseDirectoryResponse(responseFrame)
         let children = (items.first?.childFileList ?? items).filter { !$0.isFile }
         print("✅ 子目录加载完成: dirId=\(dirId), directoryCount=\(children.count)")
         return children
@@ -114,7 +114,7 @@ class DirectoryService: ObservableObject {
         )
         
         // 解析响应 (仅检查是否成功)
-        _ = try parseDirectoryResponse(responseFrame)
+        _ = try Self.parseDirectoryResponse(responseFrame)
         // 注意：这里我们忽略了解析后的 DirectoryItem，因为我们会手动刷新整个列表
         
         print("✅ 目录创建成功")
@@ -147,7 +147,7 @@ class DirectoryService: ObservableObject {
             expecting: .dirResponse,
             timeout: 10.0
         )
-        _ = try parseDirectoryResponse(responseFrame)
+        _ = try Self.parseDirectoryResponse(responseFrame)
         print("✅ 目录重命名成功")
     }
     
@@ -175,7 +175,7 @@ class DirectoryService: ObservableObject {
             expecting: .dirResponse,
             timeout: 10.0
         )
-        _ = try parseDirectoryResponse(responseFrame)
+        _ = try Self.parseDirectoryResponse(responseFrame)
         print("✅ 目录删除成功")
     }
     
@@ -419,31 +419,47 @@ class DirectoryService: ObservableObject {
     /// - Parameter frame: 响应帧
     /// - Returns: 目录项数组
     /// - Throws: 解析错误
-    private func parseDirectoryResponse(_ frame: Frame) throws -> [DirectoryItem] {
+    nonisolated static func debugParseDirectoryResponse(_ frame: Frame) throws -> [DirectoryItem] {
+        try parseDirectoryResponse(frame)
+    }
+
+    private nonisolated static func parseDirectoryResponse(_ frame: Frame) throws -> [DirectoryItem] {
         // 解析为字典
         guard let dict = try? FrameParser.decodeAsDictionary(frame) else {
             throw DirectoryError.invalidResponse("无法解析响应为字典")
         }
         
-        // 1. 优先检查 success 字段 (布尔值)
+        // 1. 只有服务端明确声明成功时才继续解析，避免认证错误被误判为空目录。
+        var hasExplicitSuccess = false
         if let success = dict["success"] as? Bool {
             if !success {
                 let message = dict["message"] as? String ?? "未知错误"
-                // 也可以获取 errorCode: dict["errorCode"] as? String
-                throw DirectoryError.serverError(code: 500, message: message)
+                let errorCode = dict["errorCode"] as? String
+                let code = errorCode == "NOT_LOGGED_IN" ? 401 : 500
+                throw DirectoryError.serverError(code: code, message: message)
             }
-        } else {
-            // 兼容旧逻辑：如果没有 success 字段，检查 code
-            if let code = dict["code"] as? Int, code != 200 {
+            hasExplicitSuccess = true
+        } else if let code = dict["code"] as? Int {
+            if code != 200 {
                 let message = dict["message"] as? String ?? "未知错误"
                 throw DirectoryError.serverError(code: code, message: message)
             }
+            hasExplicitSuccess = true
+        } else if let status = dict["status"] as? String,
+                  status.caseInsensitiveCompare("success") == .orderedSame {
+            hasExplicitSuccess = true
+        }
+
+        guard hasExplicitSuccess else {
+            let errorCode = dict["errorCode"] as? String
+            let message = dict["message"] as? String ?? "服务端未返回明确的成功状态"
+            let code = errorCode == "NOT_LOGGED_IN" ? 401 : 500
+            throw DirectoryError.serverError(code: code, message: message)
         }
         
         // 2. 获取 data 字段 (可能为 nil)
         guard let data = dict["data"] else {
-            // 如果成功但没有 data，视为空列表或无返回值操作成功，返回空数组
-            print("⚠️ 响应中没有 data 字段，视为操作成功但无返回数据")
+            // 创建、重命名和删除成功时允许服务端不返回 data。
             return []
         }
         
@@ -460,9 +476,7 @@ class DirectoryService: ObservableObject {
         } else if let dataArray = data as? [[String: Any]] {
             jsonData = try JSONSerialization.data(withJSONObject: dataArray)
         } else {
-            // data 既不是字典也不是数组，可能是字符串或其他，暂时视为无效格式或不需要解析
-            print("⚠️ data 字段格式不是字典或数组: \(type(of: data))")
-            return []
+            throw DirectoryError.invalidResponse("data 字段格式无效: \(type(of: data))")
         }
         
         // 4. 解析为 FileDto
@@ -470,24 +484,23 @@ class DirectoryService: ObservableObject {
         
         do {
             // 尝试解析为 FileDto 数组
-            if let dataArray = data as? [[String: Any]] {
+            if data is [[String: Any]] {
                 let fileDtos = try decoder.decode([FileDto].self, from: jsonData)
                 print("✅ 成功解析为 FileDto 数组，共 \(fileDtos.count) 项")
                 return fileDtos.map { $0.toDirectoryItem() }
             }
             // 尝试解析为单个 FileDto
-            else if let dataDict = data as? [String: Any] {
+            else if data is [String: Any] {
                  let fileDto = try decoder.decode(FileDto.self, from: jsonData)
                  print("✅ 成功解析为单个 FileDto: \(fileDto.fileName)")
                  return [fileDto.toDirectoryItem()]
             }
         } catch {
             print("❌ FileDto 解析失败: \(error)")
+            throw DirectoryError.invalidResponse("无法将 data 解析为目录数据: \(error.localizedDescription)")
         }
-        
-        print("⚠️ 无法将 data 解析为 FileDto 或 [FileDto] (Data Type: \(type(of: data)))")
-        print("🔍 JSON Data String: \(String(data: jsonData, encoding: .utf8) ?? "nil")")
-        return []
+
+        throw DirectoryError.invalidResponse("data 字段不是目录对象或数组")
     }
     
     /// 恢复挂起的任务 (应用启动调用)
@@ -754,6 +767,10 @@ class FileTransferService: ObservableObject {
         try validateUploadAckOffset(uploadedSize: uploadedSize, expectedOffset: expectedOffset)
     }
 
+    static func debugValidateFinalUploadAck(_ ack: StandardAckResponse, expectedTaskId: String) throws -> Int64 {
+        try validateFinalUploadAck(ack, expectedTaskId: expectedTaskId)
+    }
+
     private static func uploadFinalizeTimeout(fileSize: Int64) -> TimeInterval {
         let estimatedHashSeconds = Double(max(0, fileSize)) / Double(20 * 1024 * 1024)
         return min(600, max(60, estimatedHashSeconds + 30))
@@ -768,6 +785,19 @@ class FileTransferService: ObservableObject {
                 "服务端上传进度超前: expected=\(expectedOffset), uploaded=\(uploadedSize)"
             )
         }
+    }
+
+    private static func validateFinalUploadAck(_ ack: StandardAckResponse, expectedTaskId: String) throws -> Int64 {
+        guard ack.status == "success" else {
+            throw FileTransferError.serverError(ack.message ?? "上传最终确认失败")
+        }
+        guard ack.taskId == expectedTaskId else {
+            throw FileTransferError.serverError("服务端上传任务ID不匹配")
+        }
+        guard let fileId = ack.fileId, fileId > 0 else {
+            throw FileTransferError.invalidFinalFileId
+        }
+        return fileId
     }
 
     private static func shouldRequestUploadAck(
@@ -806,6 +836,8 @@ class FileTransferService: ObservableObject {
         userName: String,
         taskId: String,
         uploadPurpose: String = "CLOUD_FILE",
+        connectionReuse: Bool = false,
+        batchId: String? = nil,
         startOffset: Int64 = 0,
         persistTransferTask: Bool = true,
         progressHandler: ((Double, String) -> Void)? = nil,
@@ -890,15 +922,20 @@ class FileTransferService: ObservableObject {
             userName: userName,
             taskId: taskId,
             transferToken: transferToken,
-            uploadPurpose: uploadPurpose
+            uploadPurpose: uploadPurpose,
+            connectionReuse: connectionReuse,
+            batchId: batchId
         )
         
         // 4. 发送断点检查帧 (0x05)
         print("🔍 发送断点检查请求...")
+        if uploadPurpose == "CHAT_ATTACHMENT" {
+            statusHandler?("断点检查")
+        }
         
         // 构建字典类型的请求体，确保 userId 是数字，且可以在此处去掉 taskId 如果服务端不需要
         // 发送上传请求元数据（包含startOffset用于断点续传）
-        let uploadRequest: [String: Any] = [
+        var uploadRequest: [String: Any] = [
             "fileSize": fileSize,
             "dirId": targetDirId,
             "fileName": fileName,
@@ -908,8 +945,12 @@ class FileTransferService: ObservableObject {
             "md5": md5,
             "startOffset": startOffset,
             "transferToken": transferToken,
-            "uploadPurpose": uploadPurpose
+            "uploadPurpose": uploadPurpose,
+            "connectionReuse": connectionReuse
         ]
+        if let batchId, !batchId.isEmpty {
+            uploadRequest["batchId"] = batchId
+        }
         
         // --- DEBUG LOG START ---
         if let jsonData = try? JSONSerialization.data(withJSONObject: uploadRequest), let jsonString = String(data: jsonData, encoding: .utf8) {
@@ -959,6 +1000,9 @@ class FileTransferService: ObservableObject {
             if needFreshUpload {
                 // === 全新上传 ===
                 print("🆕 无断点记录，开始全新上传...")
+                if uploadPurpose == "CHAT_ATTACHMENT" {
+                    statusHandler?("元数据握手")
+                }
                 let metaFrame = try FrameBuilder.build(type: .metaFrame, payload: metaRequest)
                 let metaResponseFrame = try await socketManager.sendFrameAndWait(
                     metaFrame,
@@ -986,7 +1030,7 @@ class FileTransferService: ObservableObject {
             if persistTransferTask {
                 PersistenceManager.shared.updateStatus(taskId: taskId, status: "Uploading")
             }
-            statusHandler?("上传中")
+            statusHandler?(uploadPurpose == "CHAT_ATTACHMENT" ? "数据发送" : "上传中")
             // --- Persistence Update End ---
             
             // 5. 发送文件数据 (0x02)
@@ -1000,6 +1044,7 @@ class FileTransferService: ObservableObject {
                     initialChunkSize: resumeInfo.initialChunkSize,
                     initialAckWindowBytes: resumeInfo.initialAckWindow,
                     persistTransferTask: persistTransferTask,
+                    reportsDetailedStages: uploadPurpose == "CHAT_ATTACHMENT",
                     progressHandler: progressHandler,
                     statusHandler: statusHandler
                 )
@@ -1013,7 +1058,7 @@ class FileTransferService: ObservableObject {
             
             // 6. 发送结束帧 (0x03)
             print("🏁 发送结束帧...")
-            statusHandler?("校验中")
+            statusHandler?(uploadPurpose == "CHAT_ATTACHMENT" ? "完整性校验与最终确认" : "校验中")
             let endRequest = EndUploadRequest(taskId: taskId)
             let endFrame = try FrameBuilder.build(type: .endFrame, payload: endRequest)
             let endResponseFrame = try await socketManager.sendFrameAndWait(
@@ -1023,11 +1068,8 @@ class FileTransferService: ObservableObject {
                 matching: { Self.frame($0, matchesTaskId: taskId) }
             )
             let finalAck = try FrameParser.decodePayload(endResponseFrame, as: StandardAckResponse.self)
-            if finalAck.status == "success" {
-                print("🎉 文件上传成功!")
-            } else {
-                throw FileTransferError.serverError(finalAck.message ?? "上传最终确认失败")
-            }
+            let finalFileId = try Self.validateFinalUploadAck(finalAck, expectedTaskId: taskId)
+            print("🎉 文件上传成功!")
 
             // --- Persistence Complete ---
             // 任务完成，可以选择删除或标记为完成。 根据需求保留记录。
@@ -1037,10 +1079,7 @@ class FileTransferService: ObservableObject {
             // PersistenceManager.shared.deleteTask(taskId: taskId) // 暂时保留
             // --- Persistence End ---
 
-            guard let fileId = finalAck.fileId, fileId > 0 else {
-                throw FileTransferError.invalidFinalFileId
-            }
-            return fileId
+            return finalFileId
 
         } else {
              throw FileTransferError.invalidResponse // Replace with appropriate error if serialization fails
@@ -1056,6 +1095,7 @@ class FileTransferService: ObservableObject {
         initialChunkSize: Int?,
         initialAckWindowBytes: Int?,
         persistTransferTask: Bool,
+        reportsDetailedStages: Bool,
         progressHandler: ((Double, String) -> Void)?,
         statusHandler: ((String) -> Void)?
     ) async throws -> Int64 {
@@ -1118,6 +1158,9 @@ class FileTransferService: ObservableObject {
                 flags: flags
             )
             if dataFrameNeedsAck {
+                if reportsDetailedStages {
+                    statusHandler?("进度确认")
+                }
                 let ackResult = try await waitForUploadProgressAck(
                     dataFrame: dataFrame,
                     taskId: taskId,
@@ -1163,6 +1206,9 @@ class FileTransferService: ObservableObject {
                 }
                 rewindAttempts = 0
                 lastAckOffset = confirmedOffset
+                if reportsDetailedStages {
+                    statusHandler?("数据发送")
+                }
                 if adaptiveDecision.shouldPause {
                     statusHandler?("等待服务端")
                     let retryAfterMs = min(60_000, max(1, adaptiveDecision.retryAfterMs ?? 250))
@@ -1362,6 +1408,29 @@ class FileTransferService: ObservableObject {
         let url = hashCacheFileURL()
         guard let data = try? JSONEncoder().encode(hashCache) else { return }
         try? data.write(to: url, options: .atomic)
+    }
+
+    /// 返回本地上传 MD5 缓存文件大小。该缓存只保存可重新计算的校验值。
+    static func uploadMD5CacheSize() -> Int64 {
+        withHashCacheLock {
+            let url = hashCacheFileURL()
+            guard let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
+                  let fileSize = values.fileSize else { return 0 }
+            return Int64(fileSize)
+        }
+    }
+
+    /// 清除上传 MD5 缓存，不取消正在进行的哈希计算或文件传输。
+    @discardableResult
+    static func clearUploadMD5Cache() -> Int64 {
+        withHashCacheLock {
+            loadHashCacheIfNeededLocked()
+            let url = hashCacheFileURL()
+            let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            hashCache.removeAll()
+            try? FileManager.default.removeItem(at: url)
+            return Int64(bytes)
+        }
     }
 
     private static func withHashCacheLock<T>(_ body: () -> T) -> T {
@@ -1609,6 +1678,8 @@ struct FileMetaRequest: Codable {
     let taskId: String // 新增: 客户端传递的任务ID
     let transferToken: String
     let uploadPurpose: String
+    let connectionReuse: Bool
+    let batchId: String?
 }
 
 struct EndUploadRequest: Codable {

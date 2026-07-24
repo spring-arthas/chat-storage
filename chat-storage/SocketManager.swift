@@ -78,6 +78,7 @@ public class SocketManager: NSObject, ObservableObject {
     // MARK: - Singleton
     
     static let shared = SocketManager()
+    static let chatHistoryWindowLimit = 160
     
     // MARK: - Published Properties
     
@@ -94,6 +95,12 @@ public class SocketManager: NSObject, ObservableObject {
     
     /// 聊天历史记录词典，Key 为 friendId，Value 为该好友的消息数组
     @Published var chatHistory: [Int64: [ChatMessage]] = [:]
+
+    /// 好友列表摘要使用的真正最新消息，不随历史窗口向旧移动而回退。
+    @Published var latestChatMessages: [Int64: ChatMessage] = [:]
+
+    /// 每个好友独立维护历史游标，避免切换会话后分页状态互相污染
+    @Published var chatHistoryStates: [Int64: ChatHistoryCursorState] = [:]
     
     /// 朋友的未读消息计数，Key 为 friendId
     @Published var unreadCounts: [Int64: Int] = [:]
@@ -101,10 +108,18 @@ public class SocketManager: NSObject, ObservableObject {
     /// 当前正在与其聊天的朋友ID（用于控制未读消息红点）
     @Published var activeChatFriendId: Int64? = nil
     
-    /// 当前登录用户的 ID（用于从历史头像字典中定位自己的头像）
-    var currentUserId: Int64? = nil
+    /// 当前登录用户的 ID。账号变化时丢弃内存投影，避免同一 friendId 串出上一账号的消息。
+    var currentUserId: Int64? = nil {
+        didSet {
+            guard oldValue != currentUserId else { return }
+            chatHistory.removeAll()
+            latestChatMessages.removeAll()
+            chatHistoryStates.removeAll()
+            myAvatar = nil
+        }
+    }
     
-    /// 当前登录用户的头像（Base64 字符串），由 getChatHistory 返回的 avatars 字典注入
+    /// 当前登录用户的头像（Base64 字符串）
     var myAvatar: String? = nil
     
     /// 上行速度字符串
@@ -255,9 +270,10 @@ public class SocketManager: NSObject, ObservableObject {
         setupChatHandlers()
         setupFriendHandlers()
         
-        if notifyUI {
-            updateState(.disconnected)
-        }
+        // notifyUI 只保留为调用端兼容参数。连接状态必须始终反映真实传输层，
+        // 否则后续 ensureConnected() 会在输入输出流已置空时误判为已连接。
+        _ = notifyUI
+        updateState(.disconnected)
     }
     
     /// 切换连接 (用于断点续传/多端口)
@@ -476,8 +492,13 @@ public class SocketManager: NSObject, ObservableObject {
     // MARK: - Private Helpers
     
     private func updateState(_ state: SocketConnectionState) {
-        DispatchQueue.main.async {
+        let update = {
             self.connectionState = state
+        }
+        if Thread.isMainThread {
+            update()
+        } else {
+            DispatchQueue.main.async(execute: update)
         }
         
         if case .connected = state {
@@ -550,11 +571,27 @@ public class SocketManager: NSObject, ObservableObject {
         }
         return false
     }
+
+    /// 不仅检查发布状态，还确认当前输出流真实可写。
+    /// 聊天附件批次重连后使用该属性，避免伪 `.connected` 状态。
+    var isTransportReady: Bool {
+        guard case .connected = connectionState,
+              inputStream != nil,
+              let outputStream else {
+            return false
+        }
+        return [.open, .writing].contains(outputStream.streamStatus)
+    }
 }
 
 // MARK: - Stream Delegate
 extension SocketManager: StreamDelegate {
     public func stream(_ aStream: Stream, handle eventCode: Stream.Event) {
+        // 旧连接的 Stream 事件可能在新连接创建后才到达，必须忽略，
+        // 避免旧流把新连接误标记为 connected/error/disconnected。
+        guard aStream === inputStream || aStream === outputStream else {
+            return
+        }
         switch eventCode {
         case .openCompleted:
             print("✅ Stream 打开成功: \(aStream === inputStream ? "Input" : "Output")")
@@ -570,8 +607,9 @@ extension SocketManager: StreamDelegate {
             }
             
         case .errorOccurred:
-            handleConnectionError("Stream 发生错误: \(aStream.streamError?.localizedDescription ?? "未知错误")")
-            disconnect()
+            let message = "Stream 发生错误: \(aStream.streamError?.localizedDescription ?? "未知错误")"
+            disconnect(notifyUI: false)
+            handleConnectionError(message)
             
         case .endEncountered:
             print("⚠️ Stream 结束 (服务端断开)")
@@ -639,32 +677,29 @@ extension SocketManager {
         
         guard inputStream.hasBytesAvailable else { return }
         
-        // 读取数据到缓冲区
-        let bufferSize = 4096
+        // 持续读取当前事件内所有可用数据，避免大帧只读取首个 4KB 后无法完成组帧
+        let bufferSize = 64 * 1024
         var buffer = [UInt8](repeating: 0, count: bufferSize)
-        
-        let bytesRead = inputStream.read(&buffer, maxLength: bufferSize)
-        
-        if bytesRead > 0 {
-            // 记录接收流量
-            recordBytesReceived(Int64(bytesRead))
-        
-            // 成功读取数据
-            receiveBuffer.append(Data(bytes: buffer, count: bytesRead))
-            
-            // 尝试提取并处理完整的帧
-            while let (frame, remaining) = FrameParser.extractFrame(from: receiveBuffer) {
-                receiveBuffer = remaining
-                handleReceivedFrame(frame)
-            }
-            
-        } else if bytesRead == 0 {
-            // 连接已关闭
-            print("⚠️ 读取到 0 字节，连接可能已关闭")
-        } else {
-            // 读取错误
-            if let error = inputStream.streamError {
-                print("❌ 读取数据时发生流错误: \(error.localizedDescription)")
+
+        while !isInputPaused && inputStream.hasBytesAvailable {
+            let bytesRead = inputStream.read(&buffer, maxLength: bufferSize)
+
+            if bytesRead > 0 {
+                recordBytesReceived(Int64(bytesRead))
+                receiveBuffer.append(Data(bytes: buffer, count: bytesRead))
+
+                while let (frame, remaining) = FrameParser.extractFrame(from: receiveBuffer) {
+                    receiveBuffer = remaining
+                    handleReceivedFrame(frame)
+                }
+            } else if bytesRead == 0 {
+                print("⚠️ 读取到 0 字节，连接可能已关闭")
+                break
+            } else {
+                if let error = inputStream.streamError {
+                    print("❌ 读取数据时发生流错误: \(error.localizedDescription)")
+                }
+                break
             }
         }
     }
@@ -822,11 +857,25 @@ extension SocketManager {
     /// 获取历史聊天记录
     /// - Parameters:
     ///   - friendId: 好友用户ID
-    ///   - offset: 偏移量
+    ///   - beforeMessageId: 加载更早消息的游标
+    ///   - afterMessageId: 补齐新消息的游标
+    ///   - offset: 旧服务端兼容偏移量
     ///   - limit: 获取条数
-    /// - Returns: 历史聊天记录列表
-    func getChatHistory(friendId: Int32, offset: Int32 = 0, limit: Int32 = 20) async throws -> [ChatHistoryItemDto] {
-        let request = ChatHistoryRequestDto(friendId: friendId, offset: offset, limit: limit)
+    /// - Returns: 历史消息及分页元数据
+    func getChatHistory(
+        friendId: Int32,
+        beforeMessageId: Int64? = nil,
+        afterMessageId: Int64? = nil,
+        offset: Int32? = nil,
+        limit: Int32 = 20
+    ) async throws -> ChatHistoryResponseDataDto {
+        let request = ChatHistoryRequestDto(
+            friendId: friendId,
+            beforeMessageId: beforeMessageId,
+            afterMessageId: afterMessageId,
+            offset: offset,
+            limit: limit
+        )
         guard let jsonData = try? JSONEncoder().encode(request) else {
             throw SocketError.invalidResponse
         }
@@ -836,12 +885,8 @@ extension SocketManager {
         // 发送 0x53 并等待 0x54 成功或 0x52 失败响应
         let responseFrame = try await sendFrameAndWait(frame, expectingOneOf: [.chatHistoryRes, .chatReceiptReq], timeout: 10.0)
         
-        if let rawJson = String(data: responseFrame.data, encoding: .utf8) {
-            print("🔍 [getChatHistory] Raw JSON: \(rawJson)")
-        }
-        
         if responseFrame.type == .chatReceiptReq {
-            if let receipt = try? JSONDecoder().decode(ChatReceiptDto.self, from: responseFrame.data) {
+            if let receipt = try? parseChatReceiptResponse(responseFrame) {
                 print("❌ 服务端返回 0x52 回执错误: \(receipt.status)")
             } else if let json = try? JSONSerialization.jsonObject(with: responseFrame.data) as? [String: Any],
                       let msg = json["msg"] as? String {
@@ -853,25 +898,8 @@ extension SocketManager {
         }
         
         let responseData: ChatHistoryResponseDataDto = try parseDataResponse(responseFrame)
-        
-        // 组装历史消息并注入从字典提取的压缩头像
-        let history: [ChatHistoryItemDto] = responseData.list.map { item in
-            var mappedItem = item
-            if let avatarsDict = responseData.avatars, let avatarStr = avatarsDict[String(item.senderId)] {
-                mappedItem.avatar = avatarStr
-            }
-            return mappedItem
-        }
-        
-        // 顺带从 avatars 字典中提取当前用户自己的头像并缓存到 myAvatar
-        if let avatarsDict = responseData.avatars, let uid = currentUserId, myAvatar == nil {
-            if let selfAvatar = avatarsDict[String(uid)], !selfAvatar.isEmpty {
-                myAvatar = selfAvatar
-                print("✅ [getChatHistory] myAvatar 已从 avatars 字典更新")
-            }
-        }
-        
-        return history
+        print("ℹ️ [getChatHistory] rows=\(responseData.list.count), hasMore=\(responseData.hasMore)")
+        return responseData
     }
     
     /// 消除未读消息红点 (0x55)
@@ -1154,6 +1182,19 @@ extension SocketManager {
         
         throw SocketError.invalidResponse
     }
+
+    /// 聊天回执在业务失败时仍需解析 data，以获取 clientMsgId 和附件字段。
+    /// 通用 parseDataResponse 会对 success=false 直接抛错，因此单独保留该解析入口。
+    func parseChatReceiptResponse(_ frame: Frame) throws -> ChatReceiptDto {
+        if let wrapper = try? JSONDecoder().decode(ResponseWrapper<ChatReceiptDto>.self, from: frame.data),
+           let receipt = wrapper.data {
+            return receipt
+        }
+        if let receipt = try? JSONDecoder().decode(ChatReceiptDto.self, from: frame.data) {
+            return receipt
+        }
+        throw SocketError.invalidResponse
+    }
 }
 
 private struct FriendEventPayload: Decodable {
@@ -1199,6 +1240,72 @@ extension SocketManager {
 
 // MARK: - Chat Handlers
 extension SocketManager {
+
+    func recordLatestChatMessage(_ message: ChatMessage, for friendId: Int64) {
+        guard let current = latestChatMessages[friendId] else {
+            latestChatMessages[friendId] = message
+            return
+        }
+
+        if let currentId = current.messageId, let candidateId = message.messageId {
+            if candidateId >= currentId {
+                latestChatMessages[friendId] = message
+            }
+        } else if message.timestamp >= current.timestamp {
+            latestChatMessages[friendId] = message
+        }
+    }
+
+    private func mergeIncomingChatMessage(
+        _ message: ChatMessage,
+        friendId: Int64,
+        accountId: Int64
+    ) async {
+        var existing = await MainActor.run {
+            self.chatHistory[friendId] ?? []
+        }
+
+        while true {
+            let snapshot = existing
+            let merged = await Task.detached(priority: .userInitiated) {
+                ChatHistoryWindowPolicy.merge(
+                    existing: snapshot,
+                    incoming: [message],
+                    direction: .latest,
+                    limit: SocketManager.chatHistoryWindowLimit
+                )
+            }.value
+
+            let retrySnapshot = await MainActor.run { () -> [ChatMessage]? in
+                guard self.currentUserId == accountId else { return nil }
+                self.recordLatestChatMessage(message, for: friendId)
+
+                var state = self.chatHistoryStates[friendId] ?? .empty
+                if state.hasNewer {
+                    self.chatHistoryStates[friendId] = state
+                    return nil
+                }
+
+                let current = self.chatHistory[friendId] ?? []
+                guard current == snapshot else { return current }
+
+                self.chatHistory[friendId] = merged.messages
+                let serverIds = merged.messages.compactMap(\.messageId)
+                state.oldestMessageId = serverIds.min() ?? state.oldestMessageId
+                state.latestMessageId = serverIds.max() ?? state.latestMessageId
+                if merged.droppedOlder {
+                    state.hasOlder = true
+                }
+                state.isHydrated = true
+                state.windowRevision &+= 1
+                self.chatHistoryStates[friendId] = state
+                return nil
+            }
+
+            guard let retrySnapshot else { break }
+            existing = retrySnapshot
+        }
+    }
     
     /// 注册后台聊天消息监听（0x51 / 0x52）
     internal func setupChatHandlers() {
@@ -1208,27 +1315,57 @@ extension SocketManager {
             
             do {
                 let pushDto: ChatPushDto = try self.parseDataResponse(frame)
-                let date = Date(timeIntervalSince1970: TimeInterval(pushDto.gmtCreated) / 1000.0)
-                let message = ChatMessage(
-                    messageId: pushDto.messageId,
-                    clientMsgId: pushDto.clientMsgId,
-                    content: pushDto.content,
-                    isMe: false,
-                    timestamp: date,
-                    type: pushDto.msgType,
-                    sendStatus: .success,
-                    quoteMsgId: pushDto.quoteMsgId,
-                    quoteMsgContent: pushDto.quoteMsgContent,
-                    quoteMsgSenderName: pushDto.quoteMsgSenderName,
-                    avatar: pushDto.avatar
-                )
                 let senderId64 = Int64(pushDto.senderId)
-                
-                // 放回主线程同步 UI 状态
-                DispatchQueue.main.async {
-                    var history = self.chatHistory[senderId64] ?? []
-                    history.append(message)
-                    self.chatHistory[senderId64] = history
+
+                guard let currentUserId = self.currentUserId else {
+                    print("⚠️ 忽略未登录状态收到的聊天推送: senderId=\(senderId64)")
+                    return true
+                }
+                guard senderId64 != currentUserId else {
+                    print("⚠️ 拦截发送者收到的异常聊天推送: currentUserId=\(currentUserId)")
+                    return true
+                }
+
+                Task {
+                    let message = await Task.detached(priority: .userInitiated) {
+                        let preparedPayload = ChatMessagePayload.parse(
+                            content: pushDto.content,
+                            msgType: pushDto.msgType
+                        )
+                        return ChatMessage(
+                            messageId: pushDto.messageId,
+                            clientMsgId: pushDto.clientMsgId,
+                            content: pushDto.content,
+                            isMe: false,
+                            timestamp: Date(timeIntervalSince1970: TimeInterval(pushDto.gmtCreated) / 1_000.0),
+                            type: pushDto.msgType,
+                            sendStatus: .success,
+                            quoteMsgId: pushDto.quoteMsgId,
+                            quoteMsgContent: pushDto.quoteMsgContent,
+                            quoteMsgSenderName: pushDto.quoteMsgSenderName,
+                            avatar: pushDto.avatar,
+                            preparedPayload: preparedPayload
+                        )
+                    }.value
+                    let messagePreview = message.displayText
+                    do {
+                        try await ChatHistoryStore.shared.upsert(
+                            accountId: currentUserId,
+                            friendId: senderId64,
+                            messages: [message]
+                        )
+                    } catch {
+                        print("❌ 持久化聊天推送失败: \(error.localizedDescription)")
+                    }
+
+                    await self.mergeIncomingChatMessage(
+                        message,
+                        friendId: senderId64,
+                        accountId: currentUserId
+                    )
+
+                    await MainActor.run {
+                    guard self.currentUserId == currentUserId else { return }
                     
                     if self.activeChatFriendId != senderId64 {
                         self.unreadCounts[senderId64] = (self.unreadCounts[senderId64] ?? 0) + 1
@@ -1239,17 +1376,15 @@ extension SocketManager {
                     if !isAppActive || self.activeChatFriendId != senderId64 {
                         // 寻找发件人名称
                         let senderName = self.friendList.first(where: { $0.id == senderId64 })?.alias ?? "好友"
-                        let msgPreview = pushDto.msgType == "FILE"
-                            ? "[文件]"
-                            : ChatMessagePayload.parse(content: pushDto.content, msgType: pushDto.msgType).displayText
                         NotificationManager.shared.showChatMessageNotification(
                             senderId: senderId64,
                             senderName: senderName,
-                            message: msgPreview
+                            message: pushDto.msgType == "FILE" ? "[文件]" : messagePreview
                         )
                     }
                     
                     // TODO: Trigger a global redraw on the friend list so the last message is visible
+                    }
                 }
             } catch {
                 print("❌ 解析聊天推送 0x51 失败: \(error)")
@@ -1262,17 +1397,70 @@ extension SocketManager {
             guard let self = self else { return false }
             
             do {
-                let receiptDto: ChatReceiptDto = try self.parseDataResponse(frame)
+                let receiptDto = try self.parseChatReceiptResponse(frame)
                 
                 DispatchQueue.main.async {
                     if let clientMsgId = receiptDto.clientMsgId {
                         self.cancelChatSendTimeout(clientMsgId: clientMsgId)
+                        let normalizedStatus = receiptDto.status
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                            .uppercased()
+                        let isSuccess = ["SUCCESS", "SUCCEED", "OK", "TRUE", "200"].contains(normalizedStatus)
+                        Task { @MainActor in
+                            let store = ChatAttachmentTransferStore.shared
+                            guard store.batches[clientMsgId] != nil else { return }
+                            if isSuccess {
+                                store.updateBatchState(clientMsgId, state: .sent, errorMessage: nil)
+                            } else if let fileId = receiptDto.fileId,
+                                      store.markServerRejectedAttachment(
+                                          clientMsgId: clientMsgId,
+                                          fileId: fileId,
+                                          field: receiptDto.attachmentField,
+                                          message: receiptDto.message ?? "附件校验失败"
+                                      ) {
+                                store.updateBatchState(
+                                    clientMsgId,
+                                    state: .partialFailure,
+                                    errorMessage: receiptDto.message ?? "附件校验失败，可重新上传"
+                                )
+                            } else {
+                                store.updateBatchState(
+                                    clientMsgId,
+                                    state: .failedToSend,
+                                    errorMessage: receiptDto.message
+                                )
+                            }
+                        }
                     }
 
                     for (friendId, history) in self.chatHistory {
                         let updatedHistory = ChatReceiptMatcher.apply(receipt: receiptDto, to: history)
                         if updatedHistory != history {
                             self.chatHistory[friendId] = updatedHistory
+                            if let latest = self.latestChatMessages[friendId] {
+                                self.latestChatMessages[friendId] = ChatReceiptMatcher.apply(
+                                    receipt: receiptDto,
+                                    to: [latest]
+                                ).first
+                            }
+                            if let accountId = self.currentUserId,
+                               receiptDto.messageId > 0,
+                               let confirmed = updatedHistory.first(where: {
+                                   $0.messageId == receiptDto.messageId
+                                       || ($0.clientMsgId != nil && $0.clientMsgId == receiptDto.clientMsgId)
+                               }), confirmed.sendStatus == .success {
+                                Task {
+                                    do {
+                                        try await ChatHistoryStore.shared.upsert(
+                                            accountId: accountId,
+                                            friendId: friendId,
+                                            messages: [confirmed]
+                                        )
+                                    } catch {
+                                        print("❌ 持久化发送成功消息失败: \(error.localizedDescription)")
+                                    }
+                                }
+                            }
                             break
                         }
                     }
@@ -1307,6 +1495,7 @@ extension SocketManager {
         receiverId: Int64,
         content: String,
         msgType: String,
+        preparedPayload: ChatMessagePayload,
         avatar: String? = nil,
         quoteMsgId: Int64? = nil,
         quoteMsgContent: String? = nil,
@@ -1326,12 +1515,25 @@ extension SocketManager {
             quoteMsgId: quoteMsgId,
             quoteMsgContent: quoteMsgContent,
             quoteMsgSenderName: quoteMsgSenderName,
-            avatar: effectiveAvatar
+            avatar: effectiveAvatar,
+            preparedPayload: preparedPayload
         )
 
         var history = self.chatHistory[receiverId] ?? []
         history.append(localMessage)
+        if history.count > SocketManager.chatHistoryWindowLimit {
+            history.removeFirst(history.count - SocketManager.chatHistoryWindowLimit)
+        }
         self.chatHistory[receiverId] = history
+        recordLatestChatMessage(localMessage, for: receiverId)
+
+        var state = chatHistoryStates[receiverId] ?? .empty
+        if history.count == SocketManager.chatHistoryWindowLimit {
+            state.hasOlder = true
+        }
+        state.isHydrated = true
+        state.windowRevision &+= 1
+        chatHistoryStates[receiverId] = state
     }
 
     func updateLocalChatMessage(
@@ -1339,6 +1541,7 @@ extension SocketManager {
         clientMsgId: String,
         content: String? = nil,
         msgType: String? = nil,
+        preparedPayload: ChatMessagePayload? = nil,
         status: ChatMessage.SendStatus? = nil,
         errorMessage: String? = nil
     ) {
@@ -1347,23 +1550,33 @@ extension SocketManager {
             return
         }
 
-        if let content {
-            history[index].content = content
-        }
-        if let msgType {
-            history[index].type = msgType
+        if content != nil || msgType != nil {
+            guard let preparedPayload else {
+                assertionFailure("更新聊天内容时必须同步提供 preparedPayload")
+                return
+            }
+            history[index].updateContent(
+                content ?? history[index].content,
+                type: msgType ?? history[index].type,
+                preparedPayload: preparedPayload
+            )
         }
         if let status {
             history[index].sendStatus = status
         }
         history[index].errorMessage = errorMessage
         chatHistory[receiverId] = history
+
+        if let latest = latestChatMessages[receiverId], latest.clientMsgId == clientMsgId {
+            latestChatMessages[receiverId] = history[index]
+        }
     }
 
     func sendChatMessage(
         receiverId: Int64,
         content: String,
         msgType: String = "TEXT",
+        preparedPayload: ChatMessagePayload? = nil,
         avatar: String? = nil,
         quoteMsgId: Int64? = nil,
         quoteMsgContent: String? = nil,
@@ -1377,10 +1590,17 @@ extension SocketManager {
         print("📤 [sendChatMessage] myAvatar=\(myAvatar != nil ? "有值(\(myAvatar!.prefix(20))...)" : "nil"), avatar参数=\(avatar != nil ? "有值" : "nil"), 最终effectiveAvatar=\(effectiveAvatar != nil ? "有值" : "nil")")
         // 1. 本地乐观更新UI气泡
         if appendLocalMessage {
+            let normalizedType = msgType.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            guard let localPayload = preparedPayload
+                ?? (normalizedType.isEmpty || normalizedType == "TEXT" ? .text(content) : nil) else {
+                assertionFailure("非文本聊天消息必须在发送前准备 payload")
+                return
+            }
             appendLocalChatMessage(
                 receiverId: receiverId,
                 content: content,
                 msgType: msgType,
+                preparedPayload: localPayload,
                 avatar: effectiveAvatar,
                 quoteMsgId: quoteMsgId,
                 quoteMsgContent: quoteMsgContent,
@@ -1424,7 +1644,7 @@ extension SocketManager {
         }
     }
 
-    func sendChatMessageAction(action: String, messageId: Int32, friendId: Int64) async throws -> ChatMessageActionResponseDto {
+    func sendChatMessageAction(action: String, messageId: Int64, friendId: Int64) async throws -> ChatMessageActionResponseDto {
         let dto = ChatMessageActionRequestDto(action: action, messageId: messageId, friendId: Int32(friendId))
         guard let jsonData = try? JSONEncoder().encode(dto) else {
             throw SocketError.invalidResponse
@@ -1436,7 +1656,7 @@ extension SocketManager {
         return response
     }
 
-    func applyChatMessageAction(action: String, messageId: Int32, friendId: Int64) {
+    func applyChatMessageAction(action: String, messageId: Int64, friendId: Int64) {
         var matchedFriendId: Int64?
         var matchedIndex: Int?
 
@@ -1471,6 +1691,9 @@ extension SocketManager {
             return
         }
         chatHistory[targetFriendId] = history
+        if latestChatMessages[targetFriendId]?.messageId == messageId {
+            latestChatMessages[targetFriendId] = action == "delete_local" ? history.last : history[index]
+        }
     }
 
     private func scheduleChatSendTimeout(clientMsgId: String, receiverId: Int64) {
@@ -1482,6 +1705,15 @@ extension SocketManager {
                 status: .failed,
                 errorMessage: "发送超时"
             )
+            Task { @MainActor in
+                if ChatAttachmentTransferStore.shared.batches[clientMsgId] != nil {
+                    ChatAttachmentTransferStore.shared.updateBatchState(
+                        clientMsgId,
+                        state: .failedToSend,
+                        errorMessage: "发送超时"
+                    )
+                }
+            }
             self?.chatSendTimeoutWorkItems.removeValue(forKey: clientMsgId)
         }
         chatSendTimeoutWorkItems[clientMsgId] = workItem
@@ -1507,5 +1739,8 @@ extension SocketManager {
         history[index].sendStatus = status
         history[index].errorMessage = errorMessage
         chatHistory[receiverId] = history
+        if let latest = latestChatMessages[receiverId], latest.clientMsgId == clientMsgId {
+            latestChatMessages[receiverId] = history[index]
+        }
     }
 }
