@@ -10,6 +10,143 @@ import AppKit
 import Combine
 import Network
 
+enum SocketTransportParameters {
+    // [修改] 服务端自定义帧端口当前直接承载明文 TCP；保留参数入口供控制、传输和探测统一复用。
+    static func makePlainTCP() -> NWParameters {
+        return NWParameters(tls: nil, tcp: NWProtocolTCP.Options())
+    }
+}
+
+enum SocketTransportState: Equatable {
+    case setup
+    case preparing
+    case ready
+    case waiting(String)
+    case failed(String)
+    case cancelled
+}
+
+protocol SocketTransportConnection: AnyObject {
+    func setStateUpdateHandler(_ handler: ((SocketTransportState) -> Void)?)
+    func start(on queue: DispatchQueue)
+    func send(_ data: Data, completion: @escaping (String?) -> Void)
+    func receive(
+        maximumLength: Int,
+        completion: @escaping (Data?, Bool, String?) -> Void
+    )
+    func cancel()
+}
+
+private final class NetworkSocketTransportConnection: SocketTransportConnection {
+    private let connection: NWConnection
+
+    init(host: NWEndpoint.Host, port: NWEndpoint.Port) {
+        // [修改] 默认传输适配器统一创建明文 TCP 连接，测试通过协议注入假连接。
+        connection = NWConnection(
+            host: host,
+            port: port,
+            using: SocketTransportParameters.makePlainTCP()
+        )
+    }
+
+    func setStateUpdateHandler(_ handler: ((SocketTransportState) -> Void)?) {
+        guard let handler else {
+            connection.stateUpdateHandler = nil
+            return
+        }
+        connection.stateUpdateHandler = { state in
+            handler(Self.map(state))
+        }
+    }
+
+    func start(on queue: DispatchQueue) {
+        connection.start(queue: queue)
+    }
+
+    func send(_ data: Data, completion: @escaping (String?) -> Void) {
+        connection.send(content: data, completion: .contentProcessed { error in
+            completion(error?.localizedDescription)
+        })
+    }
+
+    func receive(
+        maximumLength: Int,
+        completion: @escaping (Data?, Bool, String?) -> Void
+    ) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: maximumLength) {
+            data,
+            _,
+            isComplete,
+            error in
+            completion(data, isComplete, error?.localizedDescription)
+        }
+    }
+
+    func cancel() {
+        connection.cancel()
+    }
+
+    private static func map(_ state: NWConnection.State) -> SocketTransportState {
+        switch state {
+        case .setup:
+            return .setup
+        case .preparing:
+            return .preparing
+        case .ready:
+            return .ready
+        case .waiting(let error):
+            return .waiting(error.localizedDescription)
+        case .failed(let error):
+            return .failed(error.localizedDescription)
+        case .cancelled:
+            return .cancelled
+        @unknown default:
+            return .failed("未知网络状态")
+        }
+    }
+}
+
+private final class SocketSendCompletion: @unchecked Sendable {
+    let semaphore = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var storedErrorMessage: String?
+
+    var errorMessage: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedErrorMessage
+    }
+
+    func finish(errorMessage: String?) {
+        lock.lock()
+        storedErrorMessage = errorMessage
+        lock.unlock()
+        semaphore.signal()
+    }
+}
+
+// [修改] 通用发送许可与业务无关，用于在延迟任务真正写 Socket 前原子作废未发送请求。
+final class SocketSendPermit: @unchecked Sendable {
+    private let lock = NSLock()
+    private var valid = true
+
+    func invalidate() {
+        lock.lock()
+        valid = false
+        lock.unlock()
+    }
+
+    // [修改] 锁顺序固定为 permit -> connectionLock，调用方只能在该边界内取连接并入队。
+    fileprivate func performWhileValid<T>(_ operation: () throws -> T) throws -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        guard valid else {
+            throw SocketError.serverError("发送请求已失效")
+        }
+        return try operation()
+    }
+}
+
 /// Socket 连接状态
 /// Socket 连接状态
 enum SocketConnectionState: Equatable {
@@ -49,7 +186,7 @@ enum SocketConnectionState: Equatable {
 
 /// Socket 管理器错误
 /// Socket 管理器错误
-enum SocketError: LocalizedError {
+enum SocketError: LocalizedError, Equatable {
     case connectionFailed
     case notConnected
     case sendFailed
@@ -74,6 +211,27 @@ enum SocketError: LocalizedError {
 }
 
 public class SocketManager: NSObject, ObservableObject {
+
+    // [修改] 延迟发送绑定 endpoint 和连接代际，快速 A→B→A 也不能命中新建的 A 连接。
+    private struct SocketSendExpectation {
+        let endpoint: ServerEndpoint
+        let connectionGeneration: UInt64
+    }
+
+    // [修改] 心跳协议固定携带 nonce，服务端必须在 0x48 的 data 中原样返回。
+    private struct HeartbeatRequest: Encodable {
+        let nonce: String
+    }
+
+    private struct HeartbeatResponse: Decodable {
+        let success: Bool
+        let message: String?
+        let data: HeartbeatResponseData?
+    }
+
+    private struct HeartbeatResponseData: Decodable {
+        let nonce: String
+    }
     
     // MARK: - Singleton
     
@@ -88,8 +246,18 @@ public class SocketManager: NSObject, ObservableObject {
     /// 接收到的消息 (用于 UI 显示)
     @Published var receivedMessages: [String] = []
     
-    internal var inputStream: InputStream?
-    internal var outputStream: OutputStream?
+    private static let connectionQueueKey = DispatchSpecificKey<String>()
+    private let connectionQueue = DispatchQueue(label: "duyao.chat-storage.socket-connection")
+    private let connectionLock = NSLock()
+    private let connectionFactory: (NWEndpoint.Host, NWEndpoint.Port) -> SocketTransportConnection
+    private let sendTimeout: TimeInterval
+    private let heartbeatInterval: TimeInterval
+    private let heartbeatTimeout: TimeInterval
+    private let reconnectInterval: TimeInterval
+    private var connection: SocketTransportConnection?
+    private var transportReady = false
+    private var connectionGeneration: UInt64 = 0
+    private var receivePending = false
     @Published var pendingFriendRequests: [FriendRequestDto] = []
     @Published var friendList: [FriendDto] = []
     
@@ -116,6 +284,11 @@ public class SocketManager: NSObject, ObservableObject {
             latestChatMessages.removeAll()
             chatHistoryStates.removeAll()
             myAvatar = nil
+            // [修改] 服务端只接受已登录连接的心跳，登录成功后启动，退出后立即取消。
+            stopHeartbeat()
+            if currentUserId != nil, isTransportReady {
+                startHeartbeat()
+            }
         }
     }
     
@@ -163,15 +336,38 @@ public class SocketManager: NSObject, ObservableObject {
     
     /// 心跳定时器
     private var heartbeatTimer: Timer?
+    private var heartbeatTask: Task<Void, Never>?
+    private var heartbeatRequestToken: UUID?
     
     /// 重连定时器
     private var reconnectTimer: Timer?
     
     // MARK: - Initialization
     
-    override init() {
+    override convenience init() {
+        self.init(
+            connectionFactory: { host, port in
+                NetworkSocketTransportConnection(host: host, port: port)
+            },
+            sendTimeout: 30
+        )
+    }
+
+    init(
+        connectionFactory: @escaping (NWEndpoint.Host, NWEndpoint.Port) -> SocketTransportConnection,
+        sendTimeout: TimeInterval = 30,
+        heartbeatInterval: TimeInterval = 30,
+        heartbeatTimeout: TimeInterval = 10,
+        reconnectInterval: TimeInterval = 5
+    ) {
+        self.connectionFactory = connectionFactory
+        self.sendTimeout = max(0.01, sendTimeout)
+        self.heartbeatInterval = max(0.01, heartbeatInterval)
+        self.heartbeatTimeout = max(0.01, heartbeatTimeout)
+        self.reconnectInterval = max(0.01, reconnectInterval)
         super.init()
         sendQueue.setSpecific(key: Self.sendQueueKey, value: "socket-send")
+        connectionQueue.setSpecific(key: Self.connectionQueueKey, value: "socket-connection")
         setupChatHandlers()
         setupFriendHandlers()
     }
@@ -180,8 +376,8 @@ public class SocketManager: NSObject, ObservableObject {
     
     /// 连接到默认服务器
     func connect() {
-        // 本地开发统一通过 localhost 连接 net-server 主控服务。
-        connect(host: "localhost", port: 10086)
+        // [修改] 默认入口统一连接当前局域网服务端地址。
+        connect(host: ServerEndpoint.defaultHost, port: 10_086)
     }
     
     /// 连接到服务器
@@ -189,50 +385,38 @@ public class SocketManager: NSObject, ObservableObject {
     ///   - host: 主机地址
     ///   - port: 端口号
     func connect(host: String, port: UInt32) {
-        self.host = host
-        self.port = port
-        
+        guard let portValue = UInt16(exactly: port),
+              let networkPort = NWEndpoint.Port(rawValue: portValue) else {
+            handleConnectionError("端口无效: \(port)", shouldReconnect: false)
+            return
+        }
+
         print("🔌 开始连接到服务器: \(host):\(port)")
         updateState(.connecting)
         
-        // 创建 Socket 流
-        var readStream: Unmanaged<CFReadStream>?
-        var writeStream: Unmanaged<CFWriteStream>?
-        
-        CFStreamCreatePairWithSocketToHost(
-            kCFAllocatorDefault,
-            host as CFString,
-            port,
-            &readStream,
-            &writeStream
+        // [修改] 使用 Network.framework 建立明文 TCP，连接就绪后直接收发自定义帧。
+        let candidate = connectionFactory(NWEndpoint.Host(host), networkPort)
+        let previous = replaceConnection(
+            with: candidate,
+            endpoint: ServerEndpoint(host: host, port: port)
         )
-        
-        guard let readStreamRef = readStream?.takeRetainedValue(),
-              let writeStreamRef = writeStream?.takeRetainedValue() else {
-            handleConnectionError("无法创建 Socket 流")
-            return
+        if let previous {
+            previous.setStateUpdateHandler(nil)
+            previous.cancel()
+            // [修改] 直接 connect 替换连接时立即结束旧连接一次性等待，禁止它们抢走新连接响应。
+            resetPendingOperations(with: SocketError.connectionClosed)
+            setupChatHandlers()
+            setupFriendHandlers()
         }
-        
-        // 转换为 Foundation 类型
-        let inputStream = readStreamRef as InputStream
-        let outputStream = writeStreamRef as OutputStream
-        
-        self.inputStream = inputStream
-        self.outputStream = outputStream
-        
-        // 设置代理
-        inputStream.delegate = self
-        outputStream.delegate = self
-        
-        // 添加到 RunLoop
-        inputStream.schedule(in: .current, forMode: .common)
-        outputStream.schedule(in: .current, forMode: .common)
-        
-        // 打开流
-        inputStream.open()
-        outputStream.open()
-        
-        print("📡 Socket 流已打开，等待连接...")
+        resetReceiveState()
+
+        candidate.setStateUpdateHandler { [weak self, weak candidate] state in
+            guard let self, let candidate else { return }
+            self.handleConnectionState(state, for: candidate)
+        }
+        candidate.start(on: connectionQueue)
+
+        print("📡 TCP Socket 已启动，等待连接就绪...")
     }
     
     /// 断开连接
@@ -243,35 +427,18 @@ public class SocketManager: NSObject, ObservableObject {
         stopHeartbeat()
         stopReconnect()
         stopReceiveLoop()
-        
-        inputStream?.close()
-        outputStream?.close()
-        
-        inputStream?.remove(from: .current, forMode: .common)
-        outputStream?.remove(from: .current, forMode: .common)
-        
-        inputStream = nil
-        outputStream = nil
-        
-        // 清理所有挂起的请求
-        continuationLock.lock()
-        for (_, continuation) in activeContinuations {
-            continuation.resume(throwing: SocketError.connectionClosed)
-        }
-        activeContinuations.removeAll()
-        continuationTypeMap.removeAll()
-        continuationMatchers.removeAll()
-        streamHandlers.removeAll()
-        streamHandlerTypeMap.removeAll()
-        isInputPaused = false
-        continuationLock.unlock()
+
+        let activeConnection = takeConnection()
+        activeConnection?.setStateUpdateHandler(nil)
+        activeConnection?.cancel()
+
+        resetPendingOperations(with: SocketError.connectionClosed)
         chatSendTimeoutWorkItems.values.forEach { $0.cancel() }
         chatSendTimeoutWorkItems.removeAll()
         setupChatHandlers()
         setupFriendHandlers()
         
-        // notifyUI 只保留为调用端兼容参数。连接状态必须始终反映真实传输层，
-        // 否则后续 ensureConnected() 会在输入输出流已置空时误判为已连接。
+        // notifyUI 只保留为调用端兼容参数。连接状态必须始终反映真实传输层。
         _ = notifyUI
         updateState(.disconnected)
     }
@@ -284,6 +451,8 @@ public class SocketManager: NSObject, ObservableObject {
     
     /// 获取当前服务器信息
     func getCurrentServer() -> (String, UInt32) {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
         return (host, port)
     }
     
@@ -293,25 +462,57 @@ public class SocketManager: NSObject, ObservableObject {
     /// - Parameter frame: 要发送的帧
     /// - Throws: 发送失败时抛出错误
     func sendFrame(_ frame: Frame) throws {
+        // [修改] 在序列化和 transport.send 前拒绝超长帧，保持当前正常连接可继续使用。
+        guard frame.data.count <= Frame.maxPayloadLength else {
+            throw FrameError.invalidLength
+        }
         let data = frame.toBytes()
+        let calledFromConnectionQueue = DispatchQueue.getSpecific(key: Self.connectionQueueKey) != nil
         if DispatchQueue.getSpecific(key: Self.sendQueueKey) != nil {
-            try writeFrameData(data)
+            try writeFrameData(
+                data,
+                waitsForCompletion: !calledFromConnectionQueue,
+                expectation: nil,
+                sendPermit: nil
+            )
             return
         }
 
         try sendQueue.sync {
-            try writeFrameData(data)
+            try writeFrameData(
+                data,
+                waitsForCompletion: !calledFromConnectionQueue,
+                expectation: nil,
+                sendPermit: nil
+            )
         }
         // print("📤 发送帧: \(frame.type.description), 长度: \(data.count) 字节")
     }
 
     /// 异步发送帧，避免同步 sleep 造成线程阻塞。
     func sendFrameAsync(_ frame: Frame) async throws {
+        try await sendFrameAsync(frame, expectation: nil, sendPermit: nil)
+    }
+
+    private func sendFrameAsync(
+        _ frame: Frame,
+        expectation: SocketSendExpectation?,
+        sendPermit: SocketSendPermit?
+    ) async throws {
+        // [修改] 所有异步发送入口共用同一 10 MiB 协议上限。
+        guard frame.data.count <= Frame.maxPayloadLength else {
+            throw FrameError.invalidLength
+        }
         let data = frame.toBytes()
         try await withCheckedThrowingContinuation { continuation in
             sendQueue.async {
                 do {
-                    try self.writeFrameData(data)
+                    try self.writeFrameData(
+                        data,
+                        waitsForCompletion: true,
+                        expectation: expectation,
+                        sendPermit: sendPermit
+                    )
                     continuation.resume()
                 } catch {
                     continuation.resume(throwing: error)
@@ -320,56 +521,57 @@ public class SocketManager: NSObject, ObservableObject {
         }
     }
 
-    private func writeFrameData(_ data: Data) throws {
-        guard connectionState == .connected || connectionState == .connecting else {
-            throw SocketError.notConnected
+    private func writeFrameData(
+        _ data: Data,
+        waitsForCompletion: Bool,
+        expectation: SocketSendExpectation?,
+        sendPermit: SocketSendPermit?
+    ) throws {
+        // [修改] 进入 sendQueue 前保留调用方队列身份，连接回调内发送只排队、不反向等待 completion。
+        if !waitsForCompletion {
+            _ = try enqueueFrameData(
+                data,
+                expectation: expectation,
+                sendPermit: sendPermit
+            ) { [weak self] activeConnection, errorMessage in
+                guard let self, let errorMessage else { return }
+                // [修改] transport 若同步回调，也不能在 connectionLock 内反向进入故障处理。
+                self.connectionQueue.async { [weak self, weak activeConnection] in
+                    guard let self, let activeConnection else { return }
+                    self.handleTransportFailure(
+                        "发送失败: \(errorMessage)",
+                        connection: activeConnection
+                    )
+                }
+            }
+            return
         }
 
-        guard let outputStream = outputStream,
-              [.open, .writing].contains(outputStream.streamStatus) else {
-            throw SocketError.notConnected
+        let completion = SocketSendCompletion()
+        let activeConnection = try enqueueFrameData(
+            data,
+            expectation: expectation,
+            sendPermit: sendPermit
+        ) { _, errorMessage in
+            completion.finish(errorMessage: errorMessage)
         }
 
-        var totalBytesWritten = 0
-        var zeroWriteCount = 0
-        let writeDeadline = Date().addingTimeInterval(30.0)
-
-        while totalBytesWritten < data.count {
-            if Date() >= writeDeadline {
-                print("❌ Socket 写入超时")
-                throw SocketError.timeout
-            }
-            if let streamError = outputStream.streamError {
-                print("❌ Socket 写入流错误: \(streamError.localizedDescription)")
-                throw SocketError.sendFailed
-            }
-            if outputStream.hasSpaceAvailable {
-                let bytesWritten = data.withUnsafeBytes { buffer -> Int in
-                    guard let baseAddress = buffer.baseAddress else { return 0 }
-                    let advancedAddress = baseAddress.assumingMemoryBound(to: UInt8.self).advanced(by: totalBytesWritten)
-                    return outputStream.write(advancedAddress, maxLength: data.count - totalBytesWritten)
-                }
-
-                if bytesWritten < 0 {
-                    print("❌ Socket 写入失败: \(outputStream.streamError?.localizedDescription ?? "未知错误")")
-                    throw SocketError.sendFailed
-                }
-
-                if bytesWritten == 0 {
-                    zeroWriteCount += 1
-                    if zeroWriteCount > 5_000 {
-                        print("❌ Socket 写入持续返回 0 字节，终止发送")
-                        throw SocketError.sendFailed
-                    }
-                    Thread.sleep(forTimeInterval: 0.002)
-                    continue
-                }
-
-                zeroWriteCount = 0
-                totalBytesWritten += bytesWritten
+        guard completion.semaphore.wait(timeout: .now() + sendTimeout) == .success else {
+            print("❌ Socket 写入超时")
+            // [修改] 超时发送的 completion 仍可能晚到，必须淘汰整条连接，禁止调用方重试后重复送达。
+            if isCurrentConnection(activeConnection) {
+                handleTransportFailure("发送超时", connection: activeConnection)
             } else {
-                Thread.sleep(forTimeInterval: 0.002)
+                activeConnection.cancel()
             }
+            throw SocketError.timeout
+        }
+        if let errorMessage = completion.errorMessage {
+            print("❌ Socket 写入失败: \(errorMessage)")
+            if isCurrentConnection(activeConnection) {
+                handleTransportFailure(errorMessage, connection: activeConnection)
+            }
+            throw SocketError.sendFailed
         }
     }
     
@@ -378,8 +580,12 @@ public class SocketManager: NSObject, ObservableObject {
         _ frame: Frame,
         expectingOneOf responseTypes: Set<FrameTypeEnum>,
         timeout: TimeInterval = 10.0,
+        expectedEndpoint: ServerEndpoint? = nil,
+        sendPermit: SocketSendPermit? = nil,
         matching responseMatcher: @escaping (Frame) -> Bool = { _ in true }
     ) async throws -> Frame {
+        // [修改] continuation 注册前捕获连接代际，50ms 延迟任务不能在切服后重新取当前连接。
+        let sendExpectation = try makeSendExpectation(for: expectedEndpoint)
         return try await withCheckedThrowingContinuation { continuation in
             // 1. 先注册监听
             let id = registerContinuation(continuation, for: responseTypes, matching: responseMatcher)
@@ -389,7 +595,11 @@ public class SocketManager: NSObject, ObservableObject {
                 try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
                 
                 do {
-                    try await sendFrameAsync(frame)
+                    try await sendFrameAsync(
+                        frame,
+                        expectation: sendExpectation,
+                        sendPermit: sendPermit
+                    )
                 } catch {
                     removeAndResumeContinuation(for: id, with: error)
                 }
@@ -408,12 +618,16 @@ public class SocketManager: NSObject, ObservableObject {
         _ frame: Frame,
         expecting responseType: FrameTypeEnum,
         timeout: TimeInterval = 10.0,
+        expectedEndpoint: ServerEndpoint? = nil,
+        sendPermit: SocketSendPermit? = nil,
         matching responseMatcher: @escaping (Frame) -> Bool = { _ in true }
     ) async throws -> Frame {
         return try await sendFrameAndWait(
             frame,
             expectingOneOf: [responseType],
             timeout: timeout,
+            expectedEndpoint: expectedEndpoint,
+            sendPermit: sendPermit,
             matching: responseMatcher
         )
     }
@@ -490,6 +704,207 @@ public class SocketManager: NSObject, ObservableObject {
     }
     
     // MARK: - Private Helpers
+
+    private func replaceConnection(
+        with newConnection: SocketTransportConnection,
+        endpoint: ServerEndpoint
+    ) -> SocketTransportConnection? {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
+        let previous = connection
+        connectionGeneration &+= 1
+        host = endpoint.host
+        port = endpoint.port
+        connection = newConnection
+        transportReady = false
+        return previous
+    }
+
+    private func takeConnection() -> SocketTransportConnection? {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
+        let activeConnection = connection
+        // [修改] 即使连接已经为空也推进代际，所有已捕获的延迟发送都立即失效。
+        connectionGeneration &+= 1
+        connection = nil
+        transportReady = false
+        return activeConnection
+    }
+
+    private func readyConnection() -> SocketTransportConnection? {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
+        guard transportReady else { return nil }
+        return connection
+    }
+
+    private func makeSendExpectation(
+        for expectedEndpoint: ServerEndpoint?
+    ) throws -> SocketSendExpectation? {
+        guard let expectedEndpoint else { return nil }
+
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
+        guard host == expectedEndpoint.host, port == expectedEndpoint.port else {
+            throw SocketError.serverError("发送目标服务器已切换")
+        }
+        guard connection != nil, transportReady else {
+            throw SocketError.notConnected
+        }
+        return SocketSendExpectation(
+            endpoint: expectedEndpoint,
+            connectionGeneration: connectionGeneration
+        )
+    }
+
+    private func enqueueFrameData(
+        _ data: Data,
+        expectation: SocketSendExpectation?,
+        sendPermit: SocketSendPermit?,
+        completion: @escaping (SocketTransportConnection, String?) -> Void
+    ) throws -> SocketTransportConnection {
+        let enqueue = { () throws -> SocketTransportConnection in
+            self.connectionLock.lock()
+            defer { self.connectionLock.unlock() }
+
+            let activeConnection = try self.readyConnectionLocked(for: expectation)
+            // [修改] 最终校验和真实 transport.send 入队共用同一 connectionLock 边界。
+            activeConnection.send(data) { errorMessage in
+                completion(activeConnection, errorMessage)
+            }
+            return activeConnection
+        }
+
+        // [修改] 有 permit 时先锁 permit，再进 connectionLock；invalidate 和切服路径不会反向取锁。
+        if let sendPermit {
+            return try sendPermit.performWhileValid(enqueue)
+        }
+        return try enqueue()
+    }
+
+    private func readyConnectionLocked(
+        for expectation: SocketSendExpectation?
+    ) throws -> SocketTransportConnection {
+        guard let activeConnection = connection, transportReady else {
+            throw SocketError.notConnected
+        }
+        if let expectation {
+            guard host == expectation.endpoint.host,
+                  port == expectation.endpoint.port,
+                  connectionGeneration == expectation.connectionGeneration else {
+                throw SocketError.serverError("发送目标服务器已切换")
+            }
+        }
+        return activeConnection
+    }
+
+    private func isCurrentConnection(_ candidate: SocketTransportConnection) -> Bool {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
+        return connection === candidate
+    }
+
+    private func markConnectionReady(_ candidate: SocketTransportConnection) -> Bool {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
+        guard connection === candidate else { return false }
+        transportReady = true
+        return true
+    }
+
+    private func markConnectionWaiting(_ candidate: SocketTransportConnection) -> Bool {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
+        guard connection === candidate else { return false }
+        transportReady = false
+        return true
+    }
+
+    private func clearConnection(_ candidate: SocketTransportConnection) -> Bool {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
+        guard connection === candidate else { return false }
+        connection = nil
+        transportReady = false
+        return true
+    }
+
+    private func performOnConnectionQueue(_ work: @escaping () -> Void) {
+        if DispatchQueue.getSpecific(key: Self.connectionQueueKey) != nil {
+            work()
+        } else {
+            connectionQueue.async(execute: work)
+        }
+    }
+
+    private func performOnConnectionQueueAndWait(_ work: () -> Void) {
+        if DispatchQueue.getSpecific(key: Self.connectionQueueKey) != nil {
+            work()
+        } else {
+            connectionQueue.sync(execute: work)
+        }
+    }
+
+    private func handleConnectionState(
+        _ state: SocketTransportState,
+        for candidate: SocketTransportConnection
+    ) {
+        guard isCurrentConnection(candidate) else { return }
+
+        switch state {
+        case .ready:
+            guard markConnectionReady(candidate) else { return }
+            print("✅ TCP Socket 连接成功")
+            updateState(.connected)
+            stopReconnect()
+            startReceiveLoop()
+        case .failed(let message):
+            handleTransportFailure(
+                "TCP 连接失败: \(message)",
+                connection: candidate
+            )
+        case .cancelled:
+            handleTransportFailure("连接已取消", connection: candidate)
+        case .waiting(let message):
+            guard markConnectionWaiting(candidate) else { return }
+            // [修改] waiting 期间禁止上传、下载和媒体链路继续向不可用连接发帧。
+            stopHeartbeat()
+            updateState(.connecting)
+            print("⚠️ TCP Socket 等待网络恢复: \(message)")
+        default:
+            break
+        }
+    }
+
+    private func handleTransportFailure(
+        _ message: String,
+        connection candidate: SocketTransportConnection
+    ) {
+        guard clearConnection(candidate) else { return }
+        candidate.setStateUpdateHandler(nil)
+        candidate.cancel()
+        stopHeartbeat()
+        stopReceiveLoop()
+        resetPendingOperations(with: SocketError.connectionClosed)
+        setupChatHandlers()
+        setupFriendHandlers()
+        handleConnectionError(message)
+    }
+
+    private func resetPendingOperations(with error: Error) {
+        continuationLock.lock()
+        let continuations = Array(activeContinuations.values)
+        activeContinuations.removeAll()
+        continuationTypeMap.removeAll()
+        continuationMatchers.removeAll()
+        streamHandlers.removeAll()
+        streamHandlerTypeMap.removeAll()
+        continuationLock.unlock()
+
+        for continuation in continuations {
+            continuation.resume(throwing: error)
+        }
+    }
     
     private func updateState(_ state: SocketConnectionState) {
         let update = {
@@ -506,58 +921,160 @@ public class SocketManager: NSObject, ObservableObject {
         }
     }
     
-    private func handleConnectionError(_ message: String) {
+    private func handleConnectionError(_ message: String, shouldReconnect: Bool = true) {
         print("❌ Socket 错误: \(message)")
-        updateState(.error(SocketError.connectionFailed.localizedDescription))
+        updateState(.error(message))
         
         // 触发自动重连
-        startReconnect()
+        if shouldReconnect {
+            startReconnect()
+        }
     }
     
     // MARK: - Heartbeat
     
     private func startHeartbeat() {
-        stopHeartbeat()
-        // 每 30 秒发送一次心跳
-        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.startHeartbeat() }
+            return
+        }
+        // [修改] TCP 未就绪时禁止发送 0x47。
+        guard currentUserId != nil, isTransportReady, heartbeatTimer == nil else { return }
+        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: heartbeatInterval, repeats: true) { [weak self] _ in
             self?.sendHeartbeat()
         }
+        heartbeatTimer?.tolerance = min(1, heartbeatInterval * 0.1)
     }
     
     private func stopHeartbeat() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.stopHeartbeat() }
+            return
+        }
         heartbeatTimer?.invalidate()
         heartbeatTimer = nil
+        heartbeatRequestToken = nil
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
     }
     
     private func sendHeartbeat() {
-        // 心跳包: Magic(2) + Type(1) + Flags(1) + Length(0)
-        // Type 可以定义一个特殊的，或者复用 MetaFrame 且 Length=0
-        // 这里假设使用 MetaFrame (0x01) 且 Length=0 作为心跳
-        // 或者定义一个新的 KeepAlive 帧
-        print("💓 发送心跳包")
-        // TODO: Implement proper heartbeat frame
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.sendHeartbeat() }
+            return
+        }
+        // [修改] 同一连接只允许一个心跳在途，避免连续定时器响应互相串包。
+        guard heartbeatTask == nil,
+              currentUserId != nil,
+              isTransportReady,
+              let activeConnection = readyConnection() else {
+            return
+        }
+
+        let endpointValue = getCurrentServer()
+        let endpoint = ServerEndpoint(host: endpointValue.0, port: endpointValue.1)
+        let nonce = UUID().uuidString.lowercased()
+        let requestToken = UUID()
+        let requestData: Data
+        do {
+            requestData = try JSONEncoder().encode(HeartbeatRequest(nonce: nonce))
+        } catch {
+            print("❌ 心跳编码失败: \(error.localizedDescription)")
+            return
+        }
+
+        heartbeatRequestToken = requestToken
+        let frame = Frame(type: .connectionHeartbeatReq, data: requestData)
+        heartbeatTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let responseFrame = try await self.sendFrameAndWait(
+                    frame,
+                    expecting: .connectionHeartbeatResp,
+                    timeout: self.heartbeatTimeout,
+                    expectedEndpoint: endpoint,
+                    matching: { frame in
+                        Self.decodeHeartbeatResponse(frame)?.data?.nonce == nonce
+                    }
+                )
+                try Task.checkCancellation()
+                guard let response = Self.decodeHeartbeatResponse(responseFrame), response.success else {
+                    let message = Self.decodeHeartbeatResponse(responseFrame)?.message ?? "心跳响应无效"
+                    throw SocketError.serverError(message)
+                }
+                await MainActor.run {
+                    self.finishHeartbeat(
+                        requestToken: requestToken,
+                        connection: activeConnection,
+                        error: nil
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    self.finishHeartbeat(
+                        requestToken: requestToken,
+                        connection: activeConnection,
+                        error: error
+                    )
+                }
+            }
+        }
+    }
+
+    private static func decodeHeartbeatResponse(_ frame: Frame) -> HeartbeatResponse? {
+        try? JSONDecoder().decode(HeartbeatResponse.self, from: frame.data)
+    }
+
+    private func finishHeartbeat(
+        requestToken: UUID,
+        connection candidate: SocketTransportConnection,
+        error: Error?
+    ) {
+        guard heartbeatRequestToken == requestToken else { return }
+        heartbeatRequestToken = nil
+        heartbeatTask = nil
+        guard let error else { return }
+
+        // [修改] 心跳超时、nonce 不匹配或服务端拒绝都说明当前控制连接不可再复用。
+        print("❌ 控制连接心跳失败: \(error.localizedDescription)")
+        performOnConnectionQueue { [weak self] in
+            self?.handleTransportFailure(
+                "控制连接心跳失败: \(error.localizedDescription)",
+                connection: candidate
+            )
+        }
     }
     
     // MARK: - Auto Reconnect
     
     private func startReconnect() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.startReconnect() }
+            return
+        }
         guard reconnectTimer == nil else { return }
         
-        print("🔄 5秒后尝试重连...")
-        reconnectTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+        print("🔄 \(String(format: "%.1f", reconnectInterval))秒后尝试重连...")
+        reconnectTimer = Timer.scheduledTimer(withTimeInterval: reconnectInterval, repeats: true) { [weak self] _ in
             guard let self = self else { return }
-            
-            if self.host.isEmpty || self.port == 0 {
+
+            // [修改] host/port 与连接对象共用 connectionLock，重连读取也必须走线程安全快照。
+            let endpoint = self.getCurrentServer()
+            if endpoint.0.isEmpty || endpoint.1 == 0 {
                 self.stopReconnect()
                 return
             }
-            
+
             print("🔄 正在尝试重连...")
-            self.connect(host: self.host, port: self.port)
+            self.connect(host: endpoint.0, port: endpoint.1)
         }
     }
     
     private func stopReconnect() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.stopReconnect() }
+            return
+        }
         reconnectTimer?.invalidate()
         reconnectTimer = nil
     }
@@ -572,134 +1089,129 @@ public class SocketManager: NSObject, ObservableObject {
         return false
     }
 
-    /// 不仅检查发布状态，还确认当前输出流真实可写。
+    /// 不仅检查发布状态，还确认当前 TCP 连接已经就绪。
     /// 聊天附件批次重连后使用该属性，避免伪 `.connected` 状态。
     var isTransportReady: Bool {
-        guard case .connected = connectionState,
-              inputStream != nil,
-              let outputStream else {
-            return false
-        }
-        return [.open, .writing].contains(outputStream.streamStatus)
-    }
-}
-
-// MARK: - Stream Delegate
-extension SocketManager: StreamDelegate {
-    public func stream(_ aStream: Stream, handle eventCode: Stream.Event) {
-        // 旧连接的 Stream 事件可能在新连接创建后才到达，必须忽略，
-        // 避免旧流把新连接误标记为 connected/error/disconnected。
-        guard aStream === inputStream || aStream === outputStream else {
-            return
-        }
-        switch eventCode {
-        case .openCompleted:
-            print("✅ Stream 打开成功: \(aStream === inputStream ? "Input" : "Output")")
-            if aStream === outputStream {
-                updateState(.connected)
-                stopReconnect()
-                startReceiveLoop()
-            }
-            
-        case .hasBytesAvailable:
-            if aStream === inputStream {
-                receiveAndProcessFrames()
-            }
-            
-        case .errorOccurred:
-            let message = "Stream 发生错误: \(aStream.streamError?.localizedDescription ?? "未知错误")"
-            disconnect(notifyUI: false)
-            handleConnectionError(message)
-            
-        case .endEncountered:
-            print("⚠️ Stream 结束 (服务端断开)")
-            disconnect()
-            
-        default:
-            break
-        }
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
+        return connection != nil && transportReady
     }
 }
 
 // MARK: - Frame Processing
 extension SocketManager {
     
-    /// 启动接收循环（在独立线程中运行，通过 StreamDelegate 回调触发数据读取）
+    /// 启动 Network.framework 接收循环。
     func startReceiveLoop() {
-        guard !isReceiving else { return }
-        isReceiving = true
-        receiveBuffer.removeAll()
-        print("🔄 接收循环已启动（事件驱动模式）")
+        performOnConnectionQueue { [weak self] in
+            guard let self, !self.isReceiving else { return }
+            self.isReceiving = true
+            self.isInputPaused = false
+            self.receivePending = false
+            self.receiveBuffer.removeAll()
+            print("🔄 TCP 接收循环已启动")
+            if let activeConnection = self.readyConnection() {
+                self.receiveNext(on: activeConnection)
+            }
+        }
     }
     
     /// 停止接收循环
     func stopReceiveLoop() {
-        isReceiving = false
-        isInputPaused = false
-        receiveBuffer.removeAll()
+        performOnConnectionQueueAndWait {
+            isReceiving = false
+            isInputPaused = false
+            receivePending = false
+            receiveBuffer.removeAll()
+        }
+    }
+
+    private func resetReceiveState() {
+        performOnConnectionQueueAndWait {
+            isReceiving = false
+            isInputPaused = false
+            receivePending = false
+            receiveBuffer.removeAll()
+        }
     }
 
     func pauseInputEvents() {
-        let pause = {
-            guard !self.isInputPaused, let inputStream = self.inputStream else { return }
+        performOnConnectionQueue { [weak self] in
+            guard let self, self.isReceiving, !self.isInputPaused else { return }
             self.isInputPaused = true
-            inputStream.remove(from: .main, forMode: .common)
-        }
-        if Thread.isMainThread {
-            pause()
-        } else {
-            DispatchQueue.main.async(execute: pause)
         }
     }
 
     func resumeInputEvents() {
-        let resume = {
-            guard self.isInputPaused, let inputStream = self.inputStream else { return }
-            inputStream.schedule(in: .main, forMode: .common)
+        performOnConnectionQueue { [weak self] in
+            guard let self, self.isReceiving, self.isInputPaused else { return }
             self.isInputPaused = false
-        }
-        if Thread.isMainThread {
-            resume()
-        } else {
-            DispatchQueue.main.async(execute: resume)
+            self.drainReceiveBuffer()
+            if let activeConnection = self.readyConnection() {
+                self.receiveNext(on: activeConnection)
+            }
         }
     }
-    
-    /// 接收并处理帧（由 StreamDelegate 的 hasBytesAvailable 事件触发）
-    /// 这个方法会在主线程的 RunLoop 中被调用
-    func receiveAndProcessFrames() {
-        guard isReceiving, !isInputPaused else { return }
-        
-        guard let inputStream = inputStream, 
-              [.open, .reading].contains(inputStream.streamStatus) else {
+
+    private func receiveNext(on activeConnection: SocketTransportConnection) {
+        guard isReceiving,
+              !isInputPaused,
+              !receivePending,
+              isCurrentConnection(activeConnection) else {
             return
         }
-        
-        guard inputStream.hasBytesAvailable else { return }
-        
-        // 持续读取当前事件内所有可用数据，避免大帧只读取首个 4KB 后无法完成组帧
-        let bufferSize = 64 * 1024
-        var buffer = [UInt8](repeating: 0, count: bufferSize)
 
-        while !isInputPaused && inputStream.hasBytesAvailable {
-            let bytesRead = inputStream.read(&buffer, maxLength: bufferSize)
+        receivePending = true
+        activeConnection.receive(maximumLength: 64 * 1024) {
+            [weak self, weak activeConnection] data,
+            isComplete,
+            errorMessage in
+            guard let self, let activeConnection else { return }
+            self.receivePending = false
+            guard self.isCurrentConnection(activeConnection) else { return }
 
-            if bytesRead > 0 {
-                recordBytesReceived(Int64(bytesRead))
-                receiveBuffer.append(Data(bytes: buffer, count: bytesRead))
+            if let data, !data.isEmpty {
+                self.processReceivedData(data)
+            }
 
-                while let (frame, remaining) = FrameParser.extractFrame(from: receiveBuffer) {
-                    receiveBuffer = remaining
-                    handleReceivedFrame(frame)
+            if let errorMessage {
+                self.handleTransportFailure(
+                    "读取失败: \(errorMessage)",
+                    connection: activeConnection
+                )
+            } else if isComplete {
+                self.handleTransportFailure("服务端已关闭连接", connection: activeConnection)
+            } else if !self.isInputPaused {
+                self.receiveNext(on: activeConnection)
+            }
+        }
+    }
+
+    // [修改] Network.framework 的每次数据回调统一进入此处组帧，保留半帧等待下一批数据。
+    func processReceivedData(_ data: Data) {
+        guard isReceiving, !data.isEmpty else { return }
+        recordBytesReceived(Int64(data.count))
+        receiveBuffer.append(data)
+        drainReceiveBuffer()
+    }
+
+    private func drainReceiveBuffer() {
+        while !isInputPaused {
+            do {
+                guard let (frame, remaining) = try FrameParser.extractFrame(from: receiveBuffer) else {
+                    return
                 }
-            } else if bytesRead == 0 {
-                print("⚠️ 读取到 0 字节，连接可能已关闭")
-                break
-            } else {
-                if let error = inputStream.streamError {
-                    print("❌ 读取数据时发生流错误: \(error.localizedDescription)")
-                }
-                break
+                receiveBuffer = remaining
+                handleReceivedFrame(frame)
+            } catch {
+                // [修改] 坏帧会破坏流边界，必须清空缓冲并淘汰当前 TCP 连接后重连。
+                receiveBuffer.removeAll()
+                guard let activeConnection = readyConnection() else { return }
+                handleTransportFailure(
+                    "帧解析失败: \(error.localizedDescription)",
+                    connection: activeConnection
+                )
+                return
             }
         }
     }

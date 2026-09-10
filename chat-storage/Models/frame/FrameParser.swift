@@ -19,32 +19,11 @@ class FrameParser {
         guard data.count >= Frame.HEADER_LENGTH else {
             throw FrameError.insufficientData
         }
-        
-        // 2. 验证魔数 (前2字节)
-        let magic = [data[0], data[1]]
-        guard magic == Frame.MAGIC else {
-            print("❌ 魔数验证失败: [\(String(format: "%02X", magic[0])), \(String(format: "%02X", magic[1]))]")
-            throw FrameError.invalidMagic
-        }
-        
-        // 3. 解析类型 (第3字节)
-        let typeRawValue = data[2]
-        guard let type = FrameTypeEnum(rawValue: typeRawValue) else {
-            print("❌ 未知的帧类型: 0x\(String(format: "%02X", typeRawValue))")
-            throw FrameError.invalidType(typeRawValue)
-        }
-        
-        // 4. 解析标志位 (第4字节)
-        let flags = data[3]
-        
-        // 5. 解析长度 (第5-8字节，大端序)
-        let lengthBytes = data[4..<8]
-        let length = lengthBytes.withUnsafeBytes { bytes in
-            bytes.load(as: UInt32.self).bigEndian
-        }
+
+        let header = try parseHeader(from: data)
         
         // 6. 验证数据长度
-        let expectedTotalLength = Frame.HEADER_LENGTH + Int(length)
+        let expectedTotalLength = Frame.HEADER_LENGTH + header.length
         guard data.count >= expectedTotalLength else {
             print("❌ 数据长度不足: 期望 \(expectedTotalLength), 实际 \(data.count)")
             throw FrameError.insufficientData
@@ -54,7 +33,7 @@ class FrameParser {
         let frameData = data[Frame.HEADER_LENGTH..<expectedTotalLength]
         
         // 8. 构建帧对象
-        let frame = Frame(type: type, data: Data(frameData), flags: flags)
+        let frame = Frame(type: header.type, data: Data(frameData), flags: header.flags)
         
         /*print("✅ 帧解析成功: \(type.description), 数据长度:\(length)")*/
         return frame
@@ -99,19 +78,15 @@ class FrameParser {
     /// 尝试从数据流中提取一个完整的帧
     /// - Parameter buffer: 数据缓冲区
     /// - Returns: (提取的帧, 剩余数据)，如果数据不完整返回 nil
-    static func extractFrame(from buffer: Data) -> (frame: Frame, remaining: Data)? {
+    static func extractFrame(from buffer: Data) throws -> (frame: Frame, remaining: Data)? {
         // 至少需要帧头
         guard buffer.count >= Frame.HEADER_LENGTH else {
             return nil
         }
-        
-        // 读取长度字段
-        let lengthBytes = buffer[4..<8]
-        let length = lengthBytes.withUnsafeBytes { bytes in
-            bytes.load(as: UInt32.self).bigEndian
-        }
-        
-        let totalLength = Frame.HEADER_LENGTH + Int(length)
+
+        // [修改] 先验证完整帧头，超长、错魔数和未知类型不能伪装成“正文还没收完”。
+        let header = try parseHeader(from: buffer)
+        let totalLength = Frame.HEADER_LENGTH + header.length
         
         // 检查是否有完整的帧
         guard buffer.count >= totalLength else {
@@ -122,13 +97,32 @@ class FrameParser {
         let frameData = buffer[0..<totalLength]
         let remaining = buffer[totalLength...]
         
-        // 解析帧
-        do {
-            let frame = try parse(from: Data(frameData))
-            return (frame, Data(remaining))
-        } catch {
-            print("❌ 提取帧失败: \(error)")
-            return nil
+        // [修改] 解析错误交给连接层处理，禁止吞错后永久卡在同一批坏数据上。
+        let frame = try parse(from: Data(frameData))
+        return (frame, Data(remaining))
+    }
+
+    private static func parseHeader(
+        from data: Data
+    ) throws -> (type: FrameTypeEnum, flags: UInt8, length: Int) {
+        let magic = [data[0], data[1]]
+        guard magic == Frame.MAGIC else {
+            throw FrameError.invalidMagic
         }
+
+        let typeRawValue = data[2]
+        guard let type = FrameTypeEnum(rawValue: typeRawValue) else {
+            throw FrameError.invalidType(typeRawValue)
+        }
+
+        let lengthBytes = data[4..<8]
+        let payloadLength = lengthBytes.withUnsafeBytes { bytes in
+            bytes.load(as: UInt32.self).bigEndian
+        }
+        guard payloadLength <= UInt32(Frame.maxPayloadLength) else {
+            throw FrameError.invalidLength
+        }
+
+        return (type, data[3], Int(payloadLength))
     }
 }

@@ -289,6 +289,8 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
     private var setupTask: Task<Void, Never>?
     private var seekNotificationTask: Task<Void, Never>?
     private var playbackSessionId: String?
+    // [修改] 强持有 HTTP 媒体 Asset，保持播放器资源生命周期稳定。
+    private var plainMediaAsset: PlainMediaAsset?
     var onPlaybackSessionTerminated: (() -> Void)?
 
     // seek 状态机：保证同一时间只有一个活跃 player.seek，Chase Time 防抖
@@ -342,9 +344,16 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
     }
 
     private func startPlayer(url: URL) {
-        print("🔗 [StreamingVideoPlayer] 资源调配完成 fileId=\(currentFileId ?? -1) playURL=\(url)")
+        // [修改] 签名播放地址的 query 含短期令牌，日志只保留主机和不含 query 的路径。
+        print("🔗 [StreamingVideoPlayer] 资源调配完成 fileId=\(currentFileId ?? -1) host=\(url.host ?? "unknown") path=\(url.path)")
 
-        let item = AVPlayerItem(url: url)
+        guard let plainMediaAsset = PlainMediaAsset(url: url) else {
+            errorMessage = "播放地址必须使用 HTTP"
+            isLoading = false
+            return
+        }
+        self.plainMediaAsset = plainMediaAsset
+        let item = AVPlayerItem(asset: plainMediaAsset.asset)
         let player = AVPlayer(playerItem: item)
         // 优先响应用户播放/暂停操作，避免继续播放需要较长等待
         player.automaticallyWaitsToMinimizeStalling = false
@@ -547,6 +556,7 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
         player?.pause()
         player?.replaceCurrentItem(with: nil)
         player = nil
+        plainMediaAsset = nil
 
         playerStatusObservation?.invalidate()
         playerStatusObservation = nil

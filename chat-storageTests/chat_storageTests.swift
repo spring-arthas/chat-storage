@@ -8,6 +8,9 @@
 import XCTest
 import Network
 import CoreData
+import AppKit
+import CryptoKit
+import Security
 @testable import chat_storage
 
 final class chat_storageTests: XCTestCase {
@@ -209,6 +212,89 @@ final class chat_storageTests: XCTestCase {
             )
         )
         XCTAssertTrue(source.contains("NSApplication.shared.applicationIconImage = icon"))
+    }
+
+    func testChatBackgroundStoreSeparatesAccountsAndFriends() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ChatBackgroundStore(rootDirectory: root)
+
+        let first = await store.backgroundURL(accountId: 11, friendId: 21)
+        let anotherFriend = await store.backgroundURL(accountId: 11, friendId: 22)
+        let anotherAccount = await store.backgroundURL(accountId: 12, friendId: 21)
+
+        XCTAssertNotEqual(first, anotherFriend)
+        XCTAssertNotEqual(first, anotherAccount)
+        XCTAssertNotEqual(anotherFriend, anotherAccount)
+        XCTAssertTrue(first.path.hasSuffix("11/21/background.jpg"))
+    }
+
+    func testChatBackgroundStorePersistsReplacementAndReset() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ChatBackgroundStore(rootDirectory: root)
+        let redSource = root.appendingPathComponent("red.jpg")
+        let blueSource = root.appendingPathComponent("blue.jpg")
+
+        try writeChatBackgroundJPEG(color: .red, to: redSource)
+        let first = try await store.importBackground(from: redSource, accountId: 11, friendId: 21)
+        try FileManager.default.removeItem(at: redSource)
+        let persisted = await store.loadBackgroundData(accountId: 11, friendId: 21)
+        XCTAssertEqual(persisted, first)
+
+        try writeChatBackgroundJPEG(color: .blue, to: blueSource)
+        let replacement = try await store.importBackground(from: blueSource, accountId: 11, friendId: 21)
+        let otherFriend = try await store.importBackground(from: blueSource, accountId: 11, friendId: 22)
+
+        XCTAssertNotEqual(replacement, first)
+        try await store.removeBackground(accountId: 11, friendId: 21)
+        let removed = await store.loadBackgroundData(accountId: 11, friendId: 21)
+        let persistedOtherFriend = await store.loadBackgroundData(accountId: 11, friendId: 22)
+        XCTAssertNil(removed)
+        XCTAssertEqual(persistedOtherFriend, otherFriend)
+    }
+
+    func testChatBackgroundStoreRejectsInvalidReplacement() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ChatBackgroundStore(rootDirectory: root)
+        let validSource = root.appendingPathComponent("green.jpg")
+        let invalidSource = root.appendingPathComponent("invalid.jpg")
+
+        try writeChatBackgroundJPEG(color: .green, to: validSource)
+        let existing = try await store.importBackground(from: validSource, accountId: 11, friendId: 21)
+        try Data("not-an-image".utf8).write(to: invalidSource, options: .atomic)
+
+        do {
+            _ = try await store.importBackground(from: invalidSource, accountId: 11, friendId: 21)
+            XCTFail("Expected invalid image rejection")
+        } catch let error as ChatBackgroundStore.StoreError {
+            XCTAssertEqual(error, .invalidImage)
+        }
+        let persisted = await store.loadBackgroundData(accountId: 11, friendId: 21)
+        XCTAssertEqual(persisted, existing)
+    }
+
+    func testChatBackgroundStoreTreatsCorruptManagedFileAsMissing() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ChatBackgroundStore(rootDirectory: root)
+        let managedURL = await store.backgroundURL(accountId: 11, friendId: 21)
+
+        try FileManager.default.createDirectory(
+            at: managedURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("corrupt".utf8).write(to: managedURL, options: .atomic)
+
+        let loaded = await store.loadBackgroundData(accountId: 11, friendId: 21)
+        XCTAssertNil(loaded)
     }
 
     func testHistoryRequestEncodesOnlySelectedCursor() throws {
@@ -742,6 +828,615 @@ final class chat_storageTests: XCTestCase {
         XCTAssertTrue(handlerSource.contains("ServerConnectionProbe.test"))
         XCTAssertFalse(handlerSource.contains("socketManager.disconnect("))
         XCTAssertFalse(handlerSource.contains("socketManager.switchConnection("))
+    }
+
+    func testCustomFrameTransportUsesPlainTCP() {
+        let parameters = SocketTransportParameters.makePlainTCP()
+
+        // [修改] 服务端 10086/10087/10088 直接承载自定义帧，客户端不能发起 TLS 握手。
+        XCTAssertFalse(
+            parameters.defaultProtocolStack.applicationProtocols.contains { $0 is NWProtocolTLS.Options }
+        )
+        XCTAssertTrue(parameters.defaultProtocolStack.transportProtocol is NWProtocolTCP.Options)
+    }
+
+    // [修改] App 必须内置与 HAProxy 严格证书配套的 CA，不能依赖系统或用户手工安装证书。
+    func testApplicationBundlesExpectedStrictLocalCA() throws {
+        let url = try XCTUnwrap(Bundle.main.url(
+            forResource: "chat-storage-local-ca",
+            withExtension: "crt"
+        ))
+        let pem = try String(contentsOf: url, encoding: .utf8)
+        let base64 = pem
+            .components(separatedBy: .newlines)
+            .filter { !$0.hasPrefix("-----") }
+            .joined()
+        let data = try XCTUnwrap(Data(base64Encoded: base64))
+        let fingerprint = SHA256.hash(data: data).map { String(format: "%02X", $0) }.joined()
+
+        XCTAssertEqual(fingerprint, "A63D920FF3FCE18C581C694B9DB2517222148893B0FA2413C525570897E4F1A7")
+        let certificate = try XCTUnwrap(SecCertificateCreateWithData(nil, data as CFData))
+        XCTAssertEqual(
+            SecCertificateCopyNormalizedSubjectSequence(certificate),
+            SecCertificateCopyNormalizedIssuerSequence(certificate)
+        )
+    }
+
+    // [修改] 自定义帧 Socket 和服务器探测都必须显式使用明文 TCP 参数。
+    func testCustomFrameTransportDoesNotInstallTLSVerification() throws {
+        let socketSource = try sourceFileContents("chat-storage/SocketManager.swift")
+        let probeSource = try sourceFileContents("chat-storage/ConfigServerView.swift")
+
+        XCTAssertTrue(socketSource.contains("makePlainTCP()"))
+        XCTAssertTrue(socketSource.contains("NWParameters(tls: nil, tcp: NWProtocolTCP.Options())"))
+        XCTAssertFalse(socketSource.contains("sec_protocol_options_set_verify_block"))
+        XCTAssertFalse(socketSource.contains("SecTrustSetAnchorCertificatesOnly(trust, true)"))
+        XCTAssertFalse(socketSource.contains("SecPolicyCreateSSL(true, normalize(host: expectedHost)"))
+        XCTAssertTrue(socketSource.contains("using: SocketTransportParameters.makePlainTCP()"))
+        XCTAssertTrue(probeSource.contains("using: SocketTransportParameters.makePlainTCP()"))
+    }
+
+    func testSocketManagerAndServerProbeSharePlainTCPParameters() throws {
+        let socketSource = try sourceFileContents("chat-storage/SocketManager.swift")
+        let probeSource = try sourceFileContents("chat-storage/ConfigServerView.swift")
+
+        XCTAssertTrue(socketSource.contains("using: SocketTransportParameters.makePlainTCP()"))
+        XCTAssertFalse(socketSource.contains("CFStreamCreatePairWithSocketToHost"))
+        XCTAssertTrue(probeSource.contains("using: SocketTransportParameters.makePlainTCP()"))
+        XCTAssertFalse(socketSource.contains("NWProtocolTLS.Options"))
+        XCTAssertFalse(probeSource.contains("NWProtocolTLS.Options"))
+    }
+
+    // [修改] 控制连接心跳帧号必须和 net-server 的 0x47/0x48 协议保持一致。
+    func testHeartbeatFrameTypesMatchServerProtocol() {
+        XCTAssertEqual(FrameTypeEnum(rawValue: 0x47)?.description, "控制连接心跳请求")
+        XCTAssertEqual(FrameTypeEnum(rawValue: 0x48)?.description, "控制连接心跳响应")
+    }
+
+    // [修改] 心跳只能在 TCP 连接就绪且已登录后发送，并且必须携带服务端回显的 nonce。
+    func testSocketHeartbeatStartsAfterLoginAndAcceptsMatchingNonce() async throws {
+        let transport = FakeSocketTransportConnection()
+        let socketManager = SocketManager(
+            connectionFactory: { _, _ in transport },
+            sendTimeout: 0.25,
+            heartbeatInterval: 0.15,
+            heartbeatTimeout: 0.50
+        )
+        socketManager.connect(host: "drive.example.com", port: 10_086)
+        transport.transition(to: .ready)
+        let readyBeforeLogin = await waitUntil(timeout: 0.5) { socketManager.isTransportReady }
+        XCTAssertTrue(readyBeforeLogin)
+
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        XCTAssertTrue(transport.sentData.isEmpty, "未登录连接不能发送心跳")
+
+        socketManager.currentUserId = 7
+        let heartbeatSent = await waitUntil(timeout: 0.5) { !transport.sentData.isEmpty }
+        XCTAssertTrue(heartbeatSent)
+        let requestFrame = try FrameParser.parse(from: try XCTUnwrap(transport.sentData.first))
+        XCTAssertEqual(requestFrame.type, .connectionHeartbeatReq)
+        let requestBody = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: requestFrame.data) as? [String: Any]
+        )
+        let nonce = try XCTUnwrap(requestBody["nonce"] as? String)
+        XCTAssertFalse(nonce.isEmpty)
+
+        transport.completePendingSends(errorMessage: nil)
+        let responseData = try JSONSerialization.data(withJSONObject: [
+            "success": true,
+            "message": "ok",
+            "data": ["nonce": nonce, "serverTime": 1_700_000_000_000],
+        ])
+        transport.deliver(Frame(type: .connectionHeartbeatResp, data: responseData).toBytes())
+
+        let responseHandled = await waitUntil(timeout: 0.10, pollInterval: 0.001) {
+            !self.hasActiveContinuation(socketManager)
+        }
+        XCTAssertTrue(responseHandled)
+        XCTAssertTrue(socketManager.isTransportReady)
+        XCTAssertFalse(transport.wasCancelled)
+        socketManager.currentUserId = nil
+        socketManager.disconnect()
+    }
+
+    // [修改] nonce 不匹配等同心跳超时，必须淘汰旧连接并进入自动重连。
+    func testSocketHeartbeatTimeoutEvictsConnectionAndReconnects() async throws {
+        let firstTransport = FakeSocketTransportConnection()
+        let secondTransport = FakeSocketTransportConnection()
+        let factoryCallCount = ManagedCriticalState(0)
+        let socketManager = SocketManager(
+            connectionFactory: { _, _ in
+                factoryCallCount.withCriticalRegion { count in
+                    count += 1
+                    return count == 1 ? firstTransport : secondTransport
+                }
+            },
+            sendTimeout: 0.25,
+            heartbeatInterval: 0.02,
+            heartbeatTimeout: 0.05,
+            reconnectInterval: 0.10
+        )
+        socketManager.connect(host: "drive.example.com", port: 10_086)
+        firstTransport.transition(to: .ready)
+        let firstReady = await waitUntil(timeout: 0.5) { socketManager.isTransportReady }
+        XCTAssertTrue(firstReady)
+        socketManager.currentUserId = 7
+        let firstHeartbeatSent = await waitUntil(timeout: 0.5) { !firstTransport.sentData.isEmpty }
+        XCTAssertTrue(firstHeartbeatSent)
+        firstTransport.completePendingSends(errorMessage: nil)
+
+        let wrongResponse = try JSONSerialization.data(withJSONObject: [
+            "success": true,
+            "message": "ok",
+            "data": ["nonce": "wrong-nonce"],
+        ])
+        firstTransport.deliver(Frame(type: .connectionHeartbeatResp, data: wrongResponse).toBytes())
+
+        let firstCancelled = await waitUntil(timeout: 0.5) { firstTransport.wasCancelled }
+        XCTAssertTrue(firstCancelled)
+        XCTAssertFalse(socketManager.isTransportReady)
+        let replacementCreated = await waitUntil(timeout: 0.5) {
+            factoryCallCount.withCriticalRegion { $0 >= 2 }
+        }
+        XCTAssertTrue(replacementCreated)
+        socketManager.currentUserId = nil
+        secondTransport.transition(to: .ready)
+        let secondReady = await waitUntil(timeout: 0.5) { socketManager.isTransportReady }
+        XCTAssertTrue(secondReady)
+        socketManager.disconnect()
+    }
+
+    // [修改] 只收到 8 字节头时就必须拒绝超过 10 MiB 的声明长度，不能继续堆积接收缓冲。
+    func testFrameParserRejectsOversizedLengthFromHeaderImmediately() {
+        let header = makeFrameHeader(
+            type: .metaFrame,
+            payloadLength: UInt32(Frame.maxPayloadLength + 1)
+        )
+
+        XCTAssertThrowsError(try FrameParser.parse(from: header)) { error in
+            guard let frameError = error as? FrameError,
+                  case .invalidLength = frameError else {
+                return XCTFail("应返回 FrameError.invalidLength，实际为 \(error)")
+            }
+        }
+        XCTAssertThrowsError(try FrameParser.extractFrame(from: header)) { error in
+            guard let frameError = error as? FrameError,
+                  case .invalidLength = frameError else {
+                return XCTFail("流式解析应立即返回 FrameError.invalidLength，实际为 \(error)")
+            }
+        }
+    }
+
+    // [修改] 收到恶意超长帧头后必须清空缓冲并淘汰当前连接。
+    func testSocketManagerClosesTransportOnOversizedFrameHeader() async {
+        let transport = FakeSocketTransportConnection()
+        let socketManager = SocketManager(connectionFactory: { _, _ in transport })
+        socketManager.connect(host: "drive.example.com", port: 10_086)
+        transport.transition(to: .ready)
+        let ready = await waitUntil(timeout: 0.5) { socketManager.isTransportReady }
+        XCTAssertTrue(ready)
+
+        transport.deliver(makeFrameHeader(
+            type: .metaFrame,
+            payloadLength: UInt32(Frame.maxPayloadLength + 1)
+        ))
+
+        let cancelled = await waitUntil(timeout: 0.5) { transport.wasCancelled }
+        XCTAssertTrue(cancelled)
+        XCTAssertFalse(socketManager.isTransportReady)
+        XCTAssertTrue(socketManager.receiveBuffer.isEmpty)
+        socketManager.disconnect()
+    }
+
+    // [修改] 本地构造的超长帧也不能进入 transport.send，避免客户端主动打爆服务端。
+    func testSocketManagerRejectsOversizedOutgoingFrame() async {
+        let transport = FakeSocketTransportConnection()
+        let socketManager = SocketManager(
+            connectionFactory: { _, _ in transport },
+            sendTimeout: 0.02
+        )
+        socketManager.connect(host: "drive.example.com", port: 10_086)
+        transport.transition(to: .ready)
+        let ready = await waitUntil(timeout: 0.5) { socketManager.isTransportReady }
+        XCTAssertTrue(ready)
+
+        do {
+            try socketManager.sendFrame(Frame(
+                type: .dataFrame,
+                data: Data(repeating: 0xAB, count: Frame.maxPayloadLength + 1)
+            ))
+            XCTFail("超长出站帧必须被拒绝")
+        } catch let frameError as FrameError {
+            guard case .invalidLength = frameError else {
+                return XCTFail("应返回 FrameError.invalidLength，实际为 \(frameError)")
+            }
+        } catch {
+            XCTFail("应返回 FrameError.invalidLength，实际为 \(error)")
+        }
+
+        XCTAssertTrue(transport.sentData.isEmpty)
+        XCTAssertTrue(socketManager.isTransportReady)
+        socketManager.disconnect()
+    }
+
+    func testSocketHandlerSendDoesNotBlockConnectionQueue() async throws {
+        let transport = FakeSocketTransportConnection()
+        let secondReceiveRegistered = expectation(description: "handler 返回后继续接收")
+        transport.onReceiveRegistered = { count in
+            if count == 2 { secondReceiveRegistered.fulfill() }
+        }
+        let socketManager = SocketManager(
+            connectionFactory: { _, _ in transport },
+            sendTimeout: 0.25
+        )
+        socketManager.connect(host: "drive.example.com", port: 10_086)
+        transport.transition(to: .ready)
+        let becameReady = await waitUntil(timeout: 0.5) { socketManager.isTransportReady }
+        XCTAssertTrue(becameReady)
+        socketManager.registerStreamHandler(for: [.ackFrame]) { frame in
+            do {
+                try socketManager.sendFrame(Frame(type: .metaFrame, data: Data("ready".utf8)))
+            } catch {
+                XCTFail("连接回调内发送不应同步等待 completion: \(error)")
+            }
+            return false
+        }
+
+        transport.deliver(Frame(type: .ackFrame, data: Data()).toBytes())
+
+        await fulfillment(of: [secondReceiveRegistered], timeout: 0.10)
+    }
+
+    func testSocketWaitingStateTemporarilyClearsTransportReadiness() async {
+        let transport = FakeSocketTransportConnection()
+        let socketManager = SocketManager(connectionFactory: { _, _ in transport })
+        socketManager.connect(host: "drive.example.com", port: 10_086)
+        transport.transition(to: .ready)
+        let becameReady = await waitUntil(timeout: 0.5) { socketManager.isTransportReady }
+        XCTAssertTrue(becameReady)
+
+        transport.transition(to: .waiting("network changed"))
+
+        let becameUnavailable = await waitUntil(timeout: 0.5) { !socketManager.isTransportReady }
+        XCTAssertTrue(becameUnavailable)
+        transport.transition(to: .ready)
+        let recovered = await waitUntil(timeout: 0.5) { socketManager.isTransportReady }
+        XCTAssertTrue(recovered)
+    }
+
+    func testSocketSendTimeoutCancelsConnectionAndIgnoresLateCompletion() async throws {
+        let transport = FakeSocketTransportConnection()
+        let socketManager = SocketManager(
+            connectionFactory: { _, _ in transport },
+            sendTimeout: 0.05
+        )
+        socketManager.connect(host: "drive.example.com", port: 10_086)
+        transport.transition(to: .ready)
+        let becameReady = await waitUntil(timeout: 0.5) { socketManager.isTransportReady }
+        XCTAssertTrue(becameReady)
+
+        let result = await Task.detached {
+            Result { try socketManager.sendFrame(Frame(type: .metaFrame, data: Data("request".utf8))) }
+        }.value
+
+        guard case .failure(let error) = result else {
+            return XCTFail("Expected send timeout")
+        }
+        XCTAssertEqual(error as? SocketError, .timeout)
+        XCTAssertTrue(transport.wasCancelled)
+        XCTAssertFalse(socketManager.isTransportReady)
+
+        transport.completePendingSends(errorMessage: nil)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertFalse(socketManager.isTransportReady)
+    }
+
+    // [修改] endpoint 相同也要校验连接代际，旧 A 延迟任务不能命中 A→B→A 后的新 A 连接。
+    func testSocketManagerExpectedEndpointRejectsReplacementGenerationBeforeDelayedSend() async throws {
+        let endpoint = ServerEndpoint(host: "drive.example.com", port: 10_086)
+        let firstTransport = FakeSocketTransportConnection()
+        let middleTransport = FakeSocketTransportConnection()
+        let replacementTransport = FakeSocketTransportConnection()
+        let transports = ManagedCriticalState([
+            firstTransport,
+            middleTransport,
+            replacementTransport,
+        ])
+        let socketManager = SocketManager(
+            connectionFactory: { _, _ in
+                transports.withCriticalRegion { $0.removeFirst() }
+            },
+            sendTimeout: 0.25
+        )
+
+        socketManager.connect(host: endpoint.host, port: endpoint.port)
+        firstTransport.transition(to: .ready)
+        let firstReady = await waitUntil(timeout: 0.5) { socketManager.isTransportReady }
+        XCTAssertTrue(firstReady)
+
+        let request = Task { () -> Result<Frame, Error> in
+            do {
+                let response = try await socketManager.sendFrameAndWait(
+                    Frame(type: .metaFrame, data: Data("old-a".utf8)),
+                    expecting: .ackFrame,
+                    timeout: 0.5,
+                    expectedEndpoint: endpoint
+                )
+                return .success(response)
+            } catch {
+                return .failure(error)
+            }
+        }
+        let continuationRegistered = await waitUntil(timeout: 0.04, pollInterval: 0.0005) {
+            self.hasActiveContinuation(socketManager)
+        }
+        XCTAssertTrue(continuationRegistered)
+
+        socketManager.connect(host: "middle.example.com", port: endpoint.port)
+        socketManager.connect(host: endpoint.host, port: endpoint.port)
+        replacementTransport.transition(to: .ready)
+        let replacementReady = await waitUntil(timeout: 0.5) { socketManager.isTransportReady }
+        XCTAssertTrue(replacementReady)
+
+        let result = await request.value
+        guard case .failure(let error) = result else {
+            return XCTFail("旧延迟请求不应在新 A 连接成功")
+        }
+        // [修改] direct connect 现在先结束旧 one-shot continuation，对外错误统一为 connectionClosed。
+        XCTAssertEqual(error as? SocketError, .connectionClosed)
+        // [修改] 等过 50ms 延迟边界，继续证明内部发送任务被 generation 拒绝。
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertTrue(middleTransport.sentData.isEmpty)
+        XCTAssertTrue(replacementTransport.sentData.isEmpty)
+        XCTAssertFalse(hasActiveContinuation(socketManager))
+    }
+
+    // [修改] 直接 connect 替换活动连接时，旧 A 的一次性等待不能抢走 B 的同类型响应。
+    func testSocketManagerDirectConnectReplacementFailsOldPendingRequestBeforeNewResponse() async throws {
+        let firstTransport = FakeSocketTransportConnection()
+        let secondTransport = FakeSocketTransportConnection()
+        let transports = ManagedCriticalState([
+            firstTransport,
+            secondTransport,
+        ])
+        let socketManager = SocketManager(
+            connectionFactory: { _, _ in
+                transports.withCriticalRegion { $0.removeFirst() }
+            },
+            sendTimeout: 0.25
+        )
+
+        socketManager.connect(host: "first.example.com", port: 10_086)
+        firstTransport.transition(to: .ready)
+        let firstReady = await waitUntil(timeout: 0.5) { socketManager.isTransportReady }
+        XCTAssertTrue(firstReady)
+
+        let firstRequest = Task { () -> Result<Frame, Error> in
+            do {
+                return .success(
+                    try await socketManager.sendFrameAndWait(
+                        Frame(type: .metaFrame, data: Data("request-a".utf8)),
+                        expecting: .ackFrame,
+                        timeout: 0.8
+                    )
+                )
+            } catch {
+                return .failure(error)
+            }
+        }
+        let firstSent = await waitUntil(timeout: 0.5) { !firstTransport.sentData.isEmpty }
+        XCTAssertTrue(firstSent)
+        firstTransport.completePendingSends(errorMessage: nil)
+
+        // [修改] 故意不走 switchConnection，覆盖 connect(host:port:) 直接替换连接的路径。
+        socketManager.connect(host: "second.example.com", port: 10_086)
+        secondTransport.transition(to: .ready)
+        let secondReady = await waitUntil(timeout: 0.5) { socketManager.isTransportReady }
+        XCTAssertTrue(secondReady)
+
+        let secondRequest = Task { () -> Result<Frame, Error> in
+            do {
+                return .success(
+                    try await socketManager.sendFrameAndWait(
+                        Frame(type: .metaFrame, data: Data("request-b".utf8)),
+                        expecting: .ackFrame,
+                        timeout: 0.35
+                    )
+                )
+            } catch {
+                return .failure(error)
+            }
+        }
+        let secondSent = await waitUntil(timeout: 0.5) { !secondTransport.sentData.isEmpty }
+        XCTAssertTrue(secondSent)
+        secondTransport.completePendingSends(errorMessage: nil)
+
+        let secondResponse = Frame(type: .ackFrame, data: Data("response-b".utf8))
+        secondTransport.deliver(secondResponse.toBytes())
+
+        let firstResult = await firstRequest.value
+        let secondResult = await secondRequest.value
+
+        switch firstResult {
+        case .failure(let error):
+            XCTAssertEqual(error as? SocketError, .connectionClosed)
+        case .success(let frame):
+            XCTFail("A 抢到 B 响应: \(String(data: frame.data, encoding: .utf8) ?? "nil")")
+        }
+
+        switch secondResult {
+        case .success(let frame):
+            XCTAssertEqual(frame.data, secondResponse.data)
+        case .failure(let error):
+            XCTFail("B 未收到自己的响应: \(error.localizedDescription)")
+        }
+
+        socketManager.continuationLock.lock()
+        let defaultStreamHandlersRestored = !socketManager.streamHandlers.isEmpty
+        socketManager.continuationLock.unlock()
+        XCTAssertTrue(defaultStreamHandlersRestored, "连接替换后默认 chat/friend stream handlers 不能为空")
+    }
+
+    func testVideoPlaybackRequestUsesConfiguredHTTPAndBearerToken() async throws {
+        let capturedRequest = ManagedCriticalState<URLRequest?>(nil)
+        let service = makeVideoPlaybackService(host: "drive.example.com", transferToken: "transfer-token")
+        VideoPlaybackURLProtocolStub.install { request in
+            capturedRequest.withCriticalRegion { $0 = request }
+            return try Self.videoPlaybackResponse(
+                request: request,
+                playURL: "http://drive.example.com:10188/media/stream/77?token=media-token"
+            )
+        }
+        defer { VideoPlaybackURLProtocolStub.reset() }
+
+        _ = try await service.requestPlayUrl(fileId: 77, sessionId: "session-1")
+
+        let request = try XCTUnwrap(capturedRequest.withCriticalRegion { $0 })
+        XCTAssertEqual(request.url?.scheme, "http")
+        XCTAssertEqual(request.url?.host, "drive.example.com")
+        XCTAssertEqual(request.url?.port, 10_188)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer transfer-token")
+        XCTAssertNil(URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == "userName" }))
+    }
+
+    func testVideoPlaybackNormalizesLoopbackStreamHost() async throws {
+        let service = makeVideoPlaybackService(host: "drive.example.com", transferToken: "transfer-token")
+        VideoPlaybackURLProtocolStub.install { request in
+            try Self.videoPlaybackResponse(
+                request: request,
+                playURL: "http://localhost:10188/media/stream/77?token=media-token"
+            )
+        }
+        defer { VideoPlaybackURLProtocolStub.reset() }
+
+        let info = try await service.requestPlayUrl(fileId: 77)
+
+        XCTAssertEqual(info.playUrl.host, "drive.example.com")
+        XCTAssertEqual(info.playUrl.scheme, "http")
+        XCTAssertEqual(info.playUrl.port, 10_188)
+    }
+
+    func testVideoSeekUsesBearerTokenWithoutUsernameQuery() async throws {
+        let capturedRequest = ManagedCriticalState<URLRequest?>(nil)
+        let service = makeVideoPlaybackService(host: "drive.example.com", transferToken: "transfer-token")
+        VideoPlaybackURLProtocolStub.install { request in
+            capturedRequest.withCriticalRegion { $0 = request }
+            let response = HTTPURLResponse(
+                url: try XCTUnwrap(request.url),
+                statusCode: 204,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data())
+        }
+        defer { VideoPlaybackURLProtocolStub.reset() }
+
+        await service.notifySeek(fileId: 77, sessionId: "session-1", targetSeconds: 12.3456)
+
+        let request = try XCTUnwrap(capturedRequest.withCriticalRegion { $0 })
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer transfer-token")
+        let queryItems = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.queryItems
+        XCTAssertEqual(queryItems?.first(where: { $0.name == "sessionId" })?.value, "session-1")
+        XCTAssertEqual(queryItems?.first(where: { $0.name == "targetSeconds" })?.value, "12.346")
+        XCTAssertNil(queryItems?.first(where: { $0.name == "userName" }))
+    }
+
+    func testVideoPlaybackRejectsMissingTransferTokenBeforeNetworkRequest() async throws {
+        let service = makeVideoPlaybackService(host: "drive.example.com", transferToken: nil)
+        VideoPlaybackURLProtocolStub.install { request in
+            XCTFail("缺少传输令牌时不应发出请求: \(request)")
+            throw VideoPlaybackError.missingCredential
+        }
+        defer { VideoPlaybackURLProtocolStub.reset() }
+
+        do {
+            _ = try await service.requestPlayUrl(fileId: 77)
+            XCTFail("Expected missing credential rejection")
+        } catch let error as VideoPlaybackError {
+            XCTAssertEqual(error, .missingCredential)
+        }
+    }
+
+    func testVideoPlaybackRejectsTLSStreamURL() async throws {
+        let service = makeVideoPlaybackService(host: "drive.example.com", transferToken: "transfer-token")
+        VideoPlaybackURLProtocolStub.install { request in
+            try Self.videoPlaybackResponse(
+                request: request,
+                playURL: "https://localhost:10188/media/stream/77?token=media-token"
+            )
+        }
+        defer { VideoPlaybackURLProtocolStub.reset() }
+
+        do {
+            _ = try await service.requestPlayUrl(fileId: 77)
+            XCTFail("Expected TLS playback URL rejection")
+        } catch let error as VideoPlaybackError {
+            XCTAssertEqual(error, .invalidPlayUrl)
+        }
+    }
+
+    // [修改] 媒体服务当前使用 HTTP，默认 URLSession 不再安装证书校验 delegate。
+    func testVideoPlaybackDefaultSessionUsesPlainHTTP() throws {
+        let service = VideoPlaybackService(endpointProvider: {
+            ServerEndpoint(host: "drive.example.com", port: 10_188)
+        })
+        let session = try XCTUnwrap(
+            Mirror(reflecting: service).children
+                .first(where: { $0.label == "session" })?.value as? URLSession
+        )
+
+        XCTAssertNil(session.delegate)
+        let source = try sourceFileContents("chat-storage/Services/VideoPlaybackService.swift")
+        XCTAssertFalse(source.contains("tlsMinimumSupportedProtocolVersion"))
+        XCTAssertFalse(source.contains("PinnedMediaSessionDelegate"))
+    }
+
+    // [修改] 只放行局域网 HTTP，不能为了媒体访问开放全局任意明文请求。
+    func testMacAppTransportSecurityAllowsLocalHTTPOnly() throws {
+        let data = try Data(contentsOf: projectFileURL("chat-storage/Info.plist"))
+        let plist = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: data, options: [], format: nil)
+                as? [String: Any]
+        )
+        let transportSecurity = try XCTUnwrap(
+            plist["NSAppTransportSecurity"] as? [String: Any]
+        )
+
+        XCTAssertEqual(transportSecurity["NSAllowsLocalNetworking"] as? Bool, true)
+        XCTAssertNil(transportSecurity["NSAllowsArbitraryLoads"])
+    }
+
+    // [修改] AVPlayer 和缩略图生成统一使用只接受 HTTP 地址的媒体 Asset 包装。
+    func testRemoteMediaConsumersUsePlainAsset() throws {
+        let playerSource = try sourceFileContents("chat-storage/Views/StreamingVideoPlayer.swift")
+        let thumbnailSource = try sourceFileContents("chat-storage/Services/FileThumbnailService.swift")
+
+        XCTAssertTrue(playerSource.contains("PlainMediaAsset(url: url)"))
+        XCTAssertFalse(playerSource.contains("AVPlayerItem(url: url)"))
+        XCTAssertTrue(thumbnailSource.contains("PlainMediaAsset(url: playInfo.playUrl)"))
+        XCTAssertFalse(thumbnailSource.contains("AVURLAsset(url: playInfo.playUrl)"))
+    }
+
+    func testUploadMetadataLoggingDoesNotExposeTransferToken() throws {
+        let source = try sourceFileContents("chat-storage/Services/DirectoryService.swift")
+
+        XCTAssertFalse(source.contains("Meta Request JSON (Dict)"))
+        XCTAssertTrue(source.contains("准备上传元数据"))
+    }
+
+    func testStreamingPlayerLoggingDoesNotExposeSignedPlaybackURL() throws {
+        let source = try sourceFileContents("chat-storage/Views/StreamingVideoPlayer.swift")
+        let startPlayer = try sourceSlice(
+            source,
+            from: "private func startPlayer(url: URL)",
+            to: "// MARK: - 播放控制"
+        )
+
+        XCTAssertFalse(startPlayer.contains("playURL=\\(url)"))
+        XCTAssertTrue(startPlayer.contains("host=\\(url.host ?? \"unknown\")"))
+        XCTAssertTrue(startPlayer.contains("path=\\(url.path)"))
     }
 
     func testDirectoryParserRequiresExplicitSuccessBeforeEmptyData() throws {
@@ -1649,18 +2344,14 @@ final class chat_storageTests: XCTestCase {
     func testSocketManagerDrainsLargeFrameInSingleInputEvent() throws {
         let payload = Data(repeating: 0x41, count: 32 * 1024)
         let frameBytes = Frame(type: .userResponse, data: payload).toBytes()
-        let inputStream = InputStream(data: frameBytes)
         let socketManager = SocketManager()
 
-        inputStream.open()
-        defer { inputStream.close() }
-        socketManager.inputStream = inputStream
         socketManager.isReceiving = true
 
-        socketManager.receiveAndProcessFrames()
+        // [修改] Network.framework 收到的数据直接进入统一组帧入口，不再依赖 InputStream。
+        socketManager.processReceivedData(frameBytes)
 
         XCTAssertTrue(socketManager.receiveBuffer.isEmpty)
-        XCTAssertFalse(inputStream.hasBytesAvailable)
     }
 
     func testRetryMessagePassesOriginalClientMessageId() throws {
@@ -1922,6 +2613,193 @@ final class chat_storageTests: XCTestCase {
         )
     }
 
+    // [修改] 连接、校验、断点检查、握手和服务端确认都属于真实传输过程，传输中心不能把它们隐藏。
+    func testTransferTaskStageTreatsEveryUploadPhaseAsActive() {
+        let activeStages: [TransferTaskStage] = [
+            .queuedUpload,
+            .connecting,
+            .hashing,
+            .resumeChecking,
+            .metadataHandshake,
+            .uploading,
+            .waitingForServer,
+            .verifying,
+            .recovering,
+        ]
+
+        XCTAssertTrue(activeStages.allSatisfy(\.isActive))
+        XCTAssertFalse(TransferTaskStage.paused.isActive)
+        XCTAssertFalse(TransferTaskStage.failed.isActive)
+        XCTAssertFalse(TransferTaskStage.completed.isActive)
+        XCTAssertEqual(TransferTaskStage.resolve("Hashing", taskType: .upload), .hashing)
+        XCTAssertEqual(TransferTaskStage.resolve("Uploading", taskType: .upload), .uploading)
+        XCTAssertEqual(TransferTaskStage.resolve("Completed", taskType: .upload), .completed)
+    }
+
+    // [修改] 文件一进入队列就必须落库；即使上传端口尚未连接，任务也能恢复并在 UI 中可见。
+    @MainActor
+    func testTransferTaskManagerPersistsTaskBeforeScheduling() throws {
+        let persistence = RecordingTransferTaskPersistence()
+        let manager = TransferTaskManager(
+            persistence: persistence,
+            maxConcurrentTasks: 0,
+            restorePersistedTasks: false
+        )
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("upload-\(UUID().uuidString).bin")
+        try Data([0x01, 0x02, 0x03]).write(to: fileURL)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let task = StorageTransferTask(
+            taskType: .upload,
+            name: fileURL.lastPathComponent,
+            fileUrl: fileURL,
+            targetDirId: 88,
+            userId: 7,
+            userName: "demo",
+            fileSize: 3,
+            directoryName: "docs"
+        )
+
+        manager.submit(task: task)
+
+        XCTAssertEqual(persistence.persistedTaskIds, [task.id.uuidString])
+        XCTAssertEqual(persistence.persistedStages, [.queuedUpload])
+        XCTAssertEqual(manager.getAllTasks().map(\.id), [task.id])
+        let update = try XCTUnwrap(manager.taskUpdates[task.id.uuidString])
+        XCTAssertEqual(update.stage, .queuedUpload)
+        XCTAssertEqual(update.transferredBytes, 0)
+        XCTAssertNil(update.errorMessage)
+    }
+
+    // [修改] 用假传输连接跑完整上传闭环，直接验证 RESUME_CHECK、META、DATA 和 END 帧都实际发出。
+    func testUploadSendsFileBytesAndPublishesVisibleStages() async throws {
+        let previousUser = AuthenticationService.shared.currentUser
+        defer { AuthenticationService.shared.currentUser = previousUser }
+        AuthenticationService.shared.currentUser = UserDO(
+            id: 7,
+            username: "demo",
+            nickname: nil,
+            avatar: nil,
+            email: nil,
+            phone: nil,
+            createTime: nil,
+            updateTime: nil,
+            status: nil,
+            transferToken: "transfer-token"
+        )
+
+        let fileData = Data([0x10, 0x20, 0x30, 0x40])
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("upload-\(UUID().uuidString).bin")
+        try fileData.write(to: fileURL)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        let transport = FakeSocketTransportConnection()
+        let socketManager = SocketManager(
+            connectionFactory: { _, _ in transport },
+            sendTimeout: 1.0
+        )
+        socketManager.connect(host: "drive.example.com", port: 20_087)
+        transport.transition(to: .ready)
+        let transportReady = await waitUntil(timeout: 0.5) { socketManager.isTransportReady }
+        XCTAssertTrue(transportReady)
+
+        let taskId = UUID().uuidString
+        let stages = ManagedCriticalState<[String]>([])
+        let uploadTask = Task {
+            try await FileTransferService(socketManager: socketManager).uploadFile(
+                fileUrl: fileURL,
+                targetDirId: 88,
+                userId: 7,
+                userName: "demo",
+                taskId: taskId,
+                persistTransferTask: false,
+                progressHandler: { progress, _ in
+                    if progress == 1 {
+                        stages.withCriticalRegion { $0.append("progress=1") }
+                    }
+                },
+                statusHandler: { status in
+                    stages.withCriticalRegion { $0.append(status) }
+                }
+            )
+        }
+
+        let resumeSent = await waitUntil(timeout: 1.0) { transport.sentData.count >= 1 }
+        XCTAssertTrue(resumeSent)
+        let resumeFrame = try FrameParser.parse(from: try XCTUnwrap(transport.sentData[safe: 0]))
+        XCTAssertEqual(resumeFrame.type, .resumeCheck)
+        transport.completePendingSends(errorMessage: nil)
+        transport.deliver(
+            try Frame(
+                type: .resumeAck,
+                data: JSONSerialization.data(withJSONObject: [
+                    "status": "new",
+                    "taskId": taskId,
+                ])
+            ).toBytes()
+        )
+
+        let metadataSent = await waitUntil(timeout: 1.0) { transport.sentData.count >= 2 }
+        XCTAssertTrue(metadataSent)
+        let metaFrame = try FrameParser.parse(from: try XCTUnwrap(transport.sentData[safe: 1]))
+        XCTAssertEqual(metaFrame.type, .metaFrame)
+        transport.completePendingSends(errorMessage: nil)
+        transport.deliver(
+            try Frame(
+                type: .ackFrame,
+                data: JSONSerialization.data(withJSONObject: [
+                    "status": "ready",
+                    "taskId": taskId,
+                    "uploadedSize": 0,
+                ])
+            ).toBytes()
+        )
+
+        let dataSent = await waitUntil(timeout: 1.0) { transport.sentData.count >= 3 }
+        XCTAssertTrue(dataSent)
+        let dataFrame = try FrameParser.parse(from: try XCTUnwrap(transport.sentData[safe: 2]))
+        XCTAssertEqual(dataFrame.type, .dataFrame)
+        XCTAssertEqual(Array(dataFrame.data.suffix(fileData.count)), Array(fileData))
+        transport.completePendingSends(errorMessage: nil)
+        transport.deliver(
+            try Frame(
+                type: .ackFrame,
+                data: JSONSerialization.data(withJSONObject: [
+                    "status": "progress",
+                    "taskId": taskId,
+                    "uploadedSize": fileData.count,
+                ])
+            ).toBytes()
+        )
+
+        let endSent = await waitUntil(timeout: 1.0) { transport.sentData.count >= 4 }
+        XCTAssertTrue(endSent)
+        let endFrame = try FrameParser.parse(from: try XCTUnwrap(transport.sentData[safe: 3]))
+        XCTAssertEqual(endFrame.type, .endFrame)
+        transport.completePendingSends(errorMessage: nil)
+        transport.deliver(
+            try Frame(
+                type: .ackFrame,
+                data: JSONSerialization.data(withJSONObject: [
+                    "status": "success",
+                    "taskId": taskId,
+                    "fileId": 123,
+                ])
+            ).toBytes()
+        )
+
+        let result = try await uploadTask.value
+        XCTAssertEqual(result, 123)
+        let observedStages = stages.withCriticalRegion { $0 }
+        XCTAssertTrue(observedStages.contains(TransferTaskStage.hashing.rawValue))
+        XCTAssertTrue(observedStages.contains(TransferTaskStage.resumeChecking.rawValue))
+        XCTAssertTrue(observedStages.contains(TransferTaskStage.metadataHandshake.rawValue))
+        XCTAssertTrue(observedStages.contains(TransferTaskStage.uploading.rawValue))
+        XCTAssertTrue(observedStages.contains(TransferTaskStage.verifying.rawValue))
+        XCTAssertTrue(observedStages.contains("progress=1"))
+    }
+
     func testUserResponseDecodesTransferToken() throws {
         let json = """
         {"userId":1001,"userName":"18806504525","transferToken":"signed-transfer-token"}
@@ -1932,12 +2810,997 @@ final class chat_storageTests: XCTestCase {
         XCTAssertEqual(user.transferToken, "signed-transfer-token")
     }
 
-    func testSocketManagerSupportsResponseMatcherAndWriteDeadline() throws {
+    func testUserResponseDecodesSessionToken() throws {
+        let json = """
+        {"userId":1001,"userName":"demo","sessionToken":"signed-session-token"}
+        """.data(using: .utf8)!
+
+        let user = try JSONDecoder().decode(UserDO.self, from: json)
+
+        XCTAssertEqual(user.sessionToken, "signed-session-token")
+    }
+
+    func testSessionResumeFrameUsesServerContractValue() {
+        XCTAssertEqual(FrameTypeEnum.userSessionResumeReq.rawValue, 0x46)
+    }
+
+    func testKeychainSessionStoreSeparatesServerEndpoints() throws {
+        let store = KeychainSessionCredentialStore(
+            baseService: "chat-storageTests.session.\(UUID().uuidString)"
+        )
+        let firstEndpoint = ServerEndpoint(host: "one.example.com", port: 10_086)
+        let secondEndpoint = ServerEndpoint(host: "two.example.com", port: 10_086)
+        defer {
+            try? store.clear(for: firstEndpoint)
+            try? store.clear(for: secondEndpoint)
+        }
+        let first = StoredAuthenticationSession(
+            sessionToken: "session-one",
+            user: makeSessionUser(sessionToken: "session-one", transferToken: "transfer-one")
+        )
+        let second = StoredAuthenticationSession(
+            sessionToken: "session-two",
+            user: makeSessionUser(sessionToken: "session-two", transferToken: "transfer-two")
+        )
+
+        try store.save(first, for: firstEndpoint)
+        try store.save(second, for: secondEndpoint)
+
+        XCTAssertEqual(try store.load(for: firstEndpoint), first)
+        XCTAssertEqual(try store.load(for: secondEndpoint), second)
+        try store.clear(for: firstEndpoint)
+        XCTAssertNil(try store.load(for: firstEndpoint))
+        XCTAssertEqual(try store.load(for: secondEndpoint), second)
+    }
+
+    func testAuthenticationServiceRestoresSessionAndReplacesTransferToken() async throws {
+        let endpoint = ServerEndpoint(host: "drive.example.com", port: 10_086)
+        let store = InMemorySessionCredentialStore()
+        try store.save(
+            StoredAuthenticationSession(
+                sessionToken: "old-session",
+                user: makeSessionUser(sessionToken: "old-session", transferToken: "old-transfer")
+            ),
+            for: endpoint
+        )
+        let capturedFrame = ManagedCriticalState<Frame?>(nil)
+        let service = AuthenticationService(
+            socketManager: SocketManager(),
+            credentialStore: store,
+            endpointProvider: { endpoint },
+            requestHandler: { frame, _, _ in
+                capturedFrame.withCriticalRegion { $0 = frame }
+                return try Self.authenticationResponseFrame(
+                    sessionToken: "new-session",
+                    transferToken: "new-transfer"
+                )
+            },
+            connectionReadyHandler: {}
+        )
+
+        let restored = await service.restoreSession()
+
+        XCTAssertTrue(restored)
+        XCTAssertEqual(capturedFrame.withCriticalRegion { $0 }?.type, .userSessionResumeReq)
+        let payload = try XCTUnwrap(capturedFrame.withCriticalRegion { $0 }?.data)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: payload) as? [String: String])
+        XCTAssertEqual(json["sessionToken"], "old-session")
+        XCTAssertEqual(service.currentUser?.transferToken, "new-transfer")
+        XCTAssertEqual(try store.load(for: endpoint)?.sessionToken, "new-session")
+    }
+
+    // [修改] 回归切换服务器时旧恢复操作把 A 的 sessionToken 发给 B，且 B 被全局恢复状态阻塞的问题。
+    func testAuthenticationServiceSwitchingEndpointInvalidatesOldResumeWithoutBlockingNewEndpoint() async throws {
+        let firstEndpoint = ServerEndpoint(host: "first.example.com", port: 10_086)
+        let secondEndpoint = ServerEndpoint(host: "second.example.com", port: 10_086)
+        let endpoint = ManagedCriticalState(firstEndpoint)
+        let store = InMemorySessionCredentialStore()
+        try store.save(
+            StoredAuthenticationSession(
+                sessionToken: "session-first",
+                user: makeSessionUser(sessionToken: "session-first", transferToken: "transfer-first")
+            ),
+            for: firstEndpoint
+        )
+        try store.save(
+            StoredAuthenticationSession(
+                sessionToken: "session-second",
+                user: makeSessionUser(sessionToken: "session-second", transferToken: "transfer-second")
+            ),
+            for: secondEndpoint
+        )
+        let firstConnectionReadyEntered = expectation(description: "first resume waits for connection")
+        let releaseFirstConnectionReady = expectation(description: "release first connection wait")
+        let connectionReadyCount = ManagedCriticalState(0)
+        let sentRequests = ManagedCriticalState<[String]>([])
+        let service = AuthenticationService(
+            socketManager: SocketManager(),
+            credentialStore: store,
+            endpointProvider: { endpoint.withCriticalRegion { $0 } },
+            requestHandler: { frame, _, _ in
+                let payload = try XCTUnwrap(frame.data)
+                let json = try XCTUnwrap(
+                    JSONSerialization.jsonObject(with: payload) as? [String: String]
+                )
+                let sessionToken = try XCTUnwrap(json["sessionToken"])
+                let currentEndpoint = endpoint.withCriticalRegion { $0 }
+                sentRequests.withCriticalRegion {
+                    $0.append("\(currentEndpoint.host):\(currentEndpoint.port)|\(sessionToken)")
+                }
+                return try Self.authenticationResponseFrame(
+                    sessionToken: "renewed-\(sessionToken)",
+                    transferToken: "renewed-transfer"
+                )
+            },
+            connectionReadyHandler: {
+                let attempt = connectionReadyCount.withCriticalRegion { count -> Int in
+                    count += 1
+                    return count
+                }
+                if attempt == 1 {
+                    firstConnectionReadyEntered.fulfill()
+                    await self.fulfillment(of: [releaseFirstConnectionReady], timeout: 2.0)
+                }
+            }
+        )
+
+        let firstRestore = Task { await service.restoreSession() }
+        await fulfillment(of: [firstConnectionReadyEntered], timeout: 1.0)
+
+        endpoint.withCriticalRegion { $0 = secondEndpoint }
+        await service.invalidateLocalSession()
+        let secondRestore = Task { await service.restoreSession() }
+
+        let secondRequestWasNotBlocked = await waitUntil(timeout: 0.5) {
+            sentRequests.withCriticalRegion {
+                $0.contains("second.example.com:10086|session-second")
+            }
+        }
+        XCTAssertTrue(
+            secondRequestWasNotBlocked,
+            "B 的恢复被 A 共用的 sessionResumeInFlight 阻塞"
+        )
+
+        releaseFirstConnectionReady.fulfill()
+        let firstRestored = await firstRestore.value
+        let secondRestored = await secondRestore.value
+
+        XCTAssertFalse(firstRestored)
+        XCTAssertTrue(secondRestored)
+        XCTAssertEqual(
+            sentRequests.withCriticalRegion { $0 },
+            ["second.example.com:10086|session-second"],
+            "旧 A sessionToken 被发送到了当前 B 服务器"
+        )
+        XCTAssertEqual(service.currentUser?.sessionToken, "renewed-session-second")
+        XCTAssertNil(service.restorationError)
+        XCTAssertEqual(try store.load(for: firstEndpoint)?.sessionToken, "session-first")
+        XCTAssertEqual(try store.load(for: secondEndpoint)?.sessionToken, "renewed-session-second")
+    }
+
+    // [修改] 回归旧请求已发出但响应晚到时，失效响应不能清凭据或覆盖新服务器认证状态。
+    func testAuthenticationServiceIgnoresInvalidatedResumeResponseAfterEndpointSwitch() async throws {
+        let firstEndpoint = ServerEndpoint(host: "first.example.com", port: 10_086)
+        let secondEndpoint = ServerEndpoint(host: "second.example.com", port: 10_086)
+        let endpoint = ManagedCriticalState(firstEndpoint)
+        let store = InMemorySessionCredentialStore()
+        try store.save(
+            StoredAuthenticationSession(
+                sessionToken: "session-first",
+                user: makeSessionUser(sessionToken: "session-first", transferToken: "transfer-first")
+            ),
+            for: firstEndpoint
+        )
+        try store.save(
+            StoredAuthenticationSession(
+                sessionToken: "session-second",
+                user: makeSessionUser(sessionToken: "session-second", transferToken: "transfer-second")
+            ),
+            for: secondEndpoint
+        )
+        let firstRequestSent = expectation(description: "first resume request sent")
+        let releaseFirstResponse = expectation(description: "release first resume response")
+        let sentRequests = ManagedCriticalState<[String]>([])
+        let service = AuthenticationService(
+            socketManager: SocketManager(),
+            credentialStore: store,
+            endpointProvider: { endpoint.withCriticalRegion { $0 } },
+            requestHandler: { frame, _, _ in
+                let payload = try XCTUnwrap(frame.data)
+                let json = try XCTUnwrap(
+                    JSONSerialization.jsonObject(with: payload) as? [String: String]
+                )
+                let sessionToken = try XCTUnwrap(json["sessionToken"])
+                let currentEndpoint = endpoint.withCriticalRegion { $0 }
+                sentRequests.withCriticalRegion {
+                    $0.append("\(currentEndpoint.host):\(currentEndpoint.port)|\(sessionToken)")
+                }
+
+                if sessionToken == "session-first" {
+                    firstRequestSent.fulfill()
+                    await self.fulfillment(of: [releaseFirstResponse], timeout: 2.0)
+                    let data = try JSONSerialization.data(withJSONObject: [
+                        "code": 401,
+                        "message": "登录状态已失效，请重新登录",
+                        "errorCode": "SESSION_EXPIRED",
+                    ])
+                    return Frame(type: .userResponse, data: data)
+                }
+                return try Self.authenticationResponseFrame(
+                    sessionToken: "renewed-session-second",
+                    transferToken: "renewed-transfer-second"
+                )
+            },
+            connectionReadyHandler: {},
+            refreshRetryDelay: 0.05
+        )
+
+        let firstRestore = Task { await service.restoreSession() }
+        await fulfillment(of: [firstRequestSent], timeout: 1.0)
+
+        endpoint.withCriticalRegion { $0 = secondEndpoint }
+        await service.invalidateLocalSession()
+        let secondRestore = Task { await service.restoreSession() }
+        let secondRequestWasNotBlocked = await waitUntil(timeout: 0.5) {
+            sentRequests.withCriticalRegion {
+                $0.contains("second.example.com:10086|session-second")
+            }
+        }
+        XCTAssertTrue(secondRequestWasNotBlocked)
+
+        releaseFirstResponse.fulfill()
+        let firstRestored = await firstRestore.value
+        let secondRestored = await secondRestore.value
+
+        XCTAssertFalse(firstRestored)
+        XCTAssertTrue(secondRestored)
+        XCTAssertEqual(service.currentUser?.sessionToken, "renewed-session-second")
+        XCTAssertTrue(service.isAuthenticated)
+        XCTAssertNil(service.restorationError)
+        XCTAssertEqual(try store.load(for: firstEndpoint)?.sessionToken, "session-first")
+        XCTAssertEqual(try store.load(for: secondEndpoint)?.sessionToken, "renewed-session-second")
+        XCTAssertEqual(
+            sentRequests.withCriticalRegion { $0 },
+            [
+                "first.example.com:10086|session-first",
+                "second.example.com:10086|session-second",
+            ]
+        )
+    }
+
+    // [修改] 使用默认 SocketManager 发送链复现延迟任务把 A sessionToken 真正写到 B 连接的问题。
+    func testAuthenticationServiceDefaultTransportDoesNotSendInvalidatedSessionToNewEndpoint() async throws {
+        let firstEndpoint = ServerEndpoint(host: "first.example.com", port: 10_086)
+        let secondEndpoint = ServerEndpoint(host: "second.example.com", port: 10_086)
+        let firstTransport = FakeSocketTransportConnection()
+        let secondTransport = FakeSocketTransportConnection()
+        let connectionIndex = ManagedCriticalState(0)
+        let socketManager = SocketManager(
+            connectionFactory: { _, _ in
+                connectionIndex.withCriticalRegion { index -> SocketTransportConnection in
+                    index += 1
+                    return index == 1 ? firstTransport : secondTransport
+                }
+            },
+            sendTimeout: 0.25
+        )
+        let store = InMemorySessionCredentialStore()
+        try store.save(
+            StoredAuthenticationSession(
+                sessionToken: "session-first",
+                user: makeSessionUser(sessionToken: "session-first", transferToken: "transfer-first")
+            ),
+            for: firstEndpoint
+        )
+        let service = AuthenticationService(
+            socketManager: socketManager,
+            credentialStore: store
+        )
+
+        socketManager.connect(host: firstEndpoint.host, port: firstEndpoint.port)
+        firstTransport.transition(to: .ready)
+        let firstConnectionReady = await waitUntil(timeout: 0.5) { socketManager.isTransportReady }
+        XCTAssertTrue(firstConnectionReady)
+
+        let restore = Task { await service.restoreSession() }
+        let continuationRegistered = await waitUntil(timeout: 0.04, pollInterval: 0.0005) {
+            self.hasActiveContinuation(socketManager)
+        }
+        XCTAssertTrue(continuationRegistered)
+        XCTAssertTrue(firstTransport.sentData.isEmpty)
+
+        socketManager.switchConnection(host: secondEndpoint.host, port: secondEndpoint.port)
+        await service.invalidateLocalSession()
+        secondTransport.transition(to: .ready)
+        let secondConnectionReady = await waitUntil(timeout: 0.5) { socketManager.isTransportReady }
+        XCTAssertTrue(secondConnectionReady)
+
+        _ = await waitUntil(timeout: 0.2, pollInterval: 0.001) {
+            !secondTransport.sentData.isEmpty
+        }
+        let leakedFrame = try secondTransport.sentData.first.map(FrameParser.parse(from:))
+        let leakedToken: String?
+        if let leakedFrame, leakedFrame.type == .userSessionResumeReq {
+            let json = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: leakedFrame.data) as? [String: String]
+            )
+            leakedToken = json["sessionToken"]
+        } else {
+            leakedToken = nil
+        }
+        secondTransport.completePendingSends(errorMessage: nil)
+        _ = await restore.value
+
+        XCTAssertNil(
+            leakedToken,
+            "B 真实收到 userSessionResumeReq, sessionToken=\(leakedToken ?? "nil")"
+        )
+    }
+
+    // [修改] 只作废本地恢复操作时，50ms 延迟任务也不能再向原 A 连接发送旧 sessionToken。
+    func testAuthenticationServiceDefaultTransportInvalidationCancelsDelayedSessionResumeSend() async throws {
+        let endpoint = ServerEndpoint(host: "first.example.com", port: 10_086)
+        let transport = FakeSocketTransportConnection()
+        let socketManager = SocketManager(
+            connectionFactory: { _, _ in transport },
+            sendTimeout: 0.25
+        )
+        let store = InMemorySessionCredentialStore()
+        try store.save(
+            StoredAuthenticationSession(
+                sessionToken: "session-first",
+                user: makeSessionUser(sessionToken: "session-first", transferToken: "transfer-first")
+            ),
+            for: endpoint
+        )
+        let service = AuthenticationService(
+            socketManager: socketManager,
+            credentialStore: store
+        )
+
+        socketManager.connect(host: endpoint.host, port: endpoint.port)
+        transport.transition(to: .ready)
+        let connectionReady = await waitUntil(timeout: 0.5) { socketManager.isTransportReady }
+        XCTAssertTrue(connectionReady)
+
+        let restore = Task { await service.restoreSession() }
+        let continuationRegistered = await waitUntil(timeout: 0.04, pollInterval: 0.0005) {
+            self.hasActiveContinuation(socketManager)
+        }
+        XCTAssertTrue(continuationRegistered)
+        XCTAssertTrue(transport.sentData.isEmpty)
+
+        await service.invalidateLocalSession()
+        _ = await waitUntil(timeout: 0.2, pollInterval: 0.001) {
+            !transport.sentData.isEmpty
+        }
+
+        let leakedFrame = try transport.sentData.first.map(FrameParser.parse(from:))
+        let leakedToken: String?
+        if let leakedFrame, leakedFrame.type == .userSessionResumeReq {
+            let json = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: leakedFrame.data) as? [String: String]
+            )
+            leakedToken = json["sessionToken"]
+            transport.completePendingSends(errorMessage: nil)
+            transport.deliver(
+                try Self.authenticationResponseFrame(
+                    sessionToken: "renewed-session-first",
+                    transferToken: "renewed-transfer-first"
+                ).toBytes()
+            )
+        } else {
+            leakedToken = nil
+        }
+
+        let restored = await restore.value
+        XCTAssertFalse(restored)
+        XCTAssertNil(
+            leakedToken,
+            "A 仍收到已作废的 userSessionResumeReq, sessionToken=\(leakedToken ?? "nil")"
+        )
+    }
+
+    func testAuthenticationServiceClearsExpiredStoredSession() async throws {
+        let endpoint = ServerEndpoint(host: "drive.example.com", port: 10_086)
+        let store = InMemorySessionCredentialStore()
+        try store.save(
+            StoredAuthenticationSession(
+                sessionToken: "expired-session",
+                user: makeSessionUser(sessionToken: "expired-session", transferToken: "old-transfer")
+            ),
+            for: endpoint
+        )
+        let service = AuthenticationService(
+            socketManager: SocketManager(),
+            credentialStore: store,
+            endpointProvider: { endpoint },
+            requestHandler: { _, _, _ in
+                let data = try JSONSerialization.data(withJSONObject: [
+                    "code": 401,
+                    "message": "登录状态已失效，请重新登录",
+                    "errorCode": "SESSION_EXPIRED",
+                ])
+                return Frame(type: .userResponse, data: data)
+            },
+            connectionReadyHandler: {}
+        )
+
+        let restored = await service.restoreSession()
+
+        XCTAssertFalse(restored)
+        XCTAssertFalse(service.isAuthenticated)
+        XCTAssertNil(try store.load(for: endpoint))
+    }
+
+    func testAuthenticationServiceRefreshesTransferTokenBeforeExpiry() async throws {
+        let endpoint = ServerEndpoint(host: "drive.example.com", port: 10_086)
+        let store = InMemorySessionCredentialStore()
+        let resumeCount = ManagedCriticalState(0)
+        let expiresAt = Date().addingTimeInterval(0.35)
+        let expiringToken = makeTransferToken(expiresAt: expiresAt)
+        let service = AuthenticationService(
+            socketManager: SocketManager(),
+            credentialStore: store,
+            endpointProvider: { endpoint },
+            requestHandler: { frame, _, _ in
+                if frame.type == .userLoginReq {
+                    return try Self.authenticationResponseFrame(
+                        sessionToken: "login-session",
+                        transferToken: expiringToken
+                    )
+                }
+                resumeCount.withCriticalRegion { $0 += 1 }
+                return try Self.authenticationResponseFrame(
+                    sessionToken: "refreshed-session",
+                    transferToken: "refreshed-transfer"
+                )
+            },
+            connectionReadyHandler: {},
+            transferTokenRefreshLeadTime: 0.20,
+            refreshRetryDelay: 0.05
+        )
+
+        _ = try await service.login(userName: "demo", password: "password")
+        let refreshed = await waitUntil(timeout: 1.5) {
+            resumeCount.withCriticalRegion { $0 } == 1
+        }
+
+        XCTAssertTrue(refreshed)
+        XCTAssertEqual(service.currentUser?.transferToken, "refreshed-transfer")
+    }
+
+    func testAuthenticationServiceRetriesTransientRefreshFailure() async throws {
+        let endpoint = ServerEndpoint(host: "drive.example.com", port: 10_086)
+        let store = InMemorySessionCredentialStore()
+        let resumeCount = ManagedCriticalState(0)
+        let expiringToken = makeTransferToken(expiresAt: Date().addingTimeInterval(0.30))
+        let service = AuthenticationService(
+            socketManager: SocketManager(),
+            credentialStore: store,
+            endpointProvider: { endpoint },
+            requestHandler: { frame, _, _ in
+                if frame.type == .userLoginReq {
+                    return try Self.authenticationResponseFrame(
+                        sessionToken: "login-session",
+                        transferToken: expiringToken
+                    )
+                }
+
+                let attempt = resumeCount.withCriticalRegion { value -> Int in
+                    value += 1
+                    return value
+                }
+                if attempt == 1 {
+                    throw SocketError.connectionClosed
+                }
+                return try Self.authenticationResponseFrame(
+                    sessionToken: "retried-session",
+                    transferToken: "retried-transfer"
+                )
+            },
+            connectionReadyHandler: {},
+            transferTokenRefreshLeadTime: 0.20,
+            refreshRetryDelay: 0.05
+        )
+
+        _ = try await service.login(userName: "demo", password: "password")
+        let retried = await waitUntil(timeout: 1.5) {
+            resumeCount.withCriticalRegion { $0 } == 2
+                && service.currentUser?.transferToken == "retried-transfer"
+        }
+
+        XCTAssertTrue(retried)
+        XCTAssertEqual(try store.load(for: endpoint)?.sessionToken, "retried-session")
+    }
+
+    func testAuthenticationServiceLogoutClearsStoredSession() async throws {
+        let endpoint = ServerEndpoint(host: "drive.example.com", port: 10_086)
+        let store = InMemorySessionCredentialStore()
+        let service = AuthenticationService(
+            socketManager: SocketManager(),
+            credentialStore: store,
+            endpointProvider: { endpoint },
+            requestHandler: { frame, _, _ in
+                XCTAssertEqual(frame.type, .userLoginReq)
+                return try Self.authenticationResponseFrame(
+                    sessionToken: "login-session",
+                    transferToken: "login-transfer"
+                )
+            },
+            connectionReadyHandler: {}
+        )
+
+        _ = try await service.login(userName: "demo", password: "password")
+        XCTAssertNotNil(try store.load(for: endpoint))
+
+        try await service.logout()
+
+        XCTAssertNil(try store.load(for: endpoint))
+        XCTAssertFalse(service.isAuthenticated)
+        XCTAssertNil(service.currentUser)
+    }
+
+    // [修改] Keychain 删除失败不能被吞掉，也不能把仍持有持久化凭据的用户伪装成已退出。
+    func testAuthenticationServiceLogoutThrowsAndPreservesAuthenticationWhenCredentialClearFails() async throws {
+        let endpoint = ServerEndpoint(host: "drive.example.com", port: 10_086)
+        let store = InMemorySessionCredentialStore()
+        let socketManager = SocketManager()
+        let service = AuthenticationService(
+            socketManager: socketManager,
+            credentialStore: store,
+            endpointProvider: { endpoint },
+            requestHandler: { frame, _, _ in
+                XCTAssertEqual(frame.type, .userLoginReq)
+                return try Self.authenticationResponseFrame(
+                    sessionToken: "login-session",
+                    transferToken: "login-transfer"
+                )
+            },
+            connectionReadyHandler: {}
+        )
+
+        _ = try await service.login(userName: "demo", password: "password")
+        let storedSession = try XCTUnwrap(store.load(for: endpoint))
+        store.setClearError(TestSessionCredentialStoreError.clearFailed)
+
+        var logoutError: Error?
+        do {
+            try await service.logout()
+        } catch {
+            logoutError = error
+        }
+
+        XCTAssertNotNil(logoutError, "本地凭据删除失败必须向调用方抛错")
+        XCTAssertEqual(try store.load(for: endpoint), storedSession)
+        XCTAssertTrue(service.isAuthenticated)
+        XCTAssertEqual(service.currentUser?.id, 7)
+        XCTAssertEqual(socketManager.currentUserId, 7)
+    }
+
+    // [修改] 本地凭据删除是退出提交点；失败时不能先向服务端发送 0x33。
+    func testAuthenticationServiceDoesNotNotifyServerWhenCredentialClearFails() async throws {
+        let endpoint = ServerEndpoint(host: "drive.example.com", port: 10_086)
+        let transport = FakeSocketTransportConnection()
+        let socketManager = SocketManager(connectionFactory: { _, _ in transport })
+        socketManager.connect(host: endpoint.host, port: endpoint.port)
+        transport.transition(to: .ready)
+        let connectionReady = await waitUntil(timeout: 0.5) { socketManager.isTransportReady }
+        XCTAssertTrue(connectionReady)
+
+        let store = InMemorySessionCredentialStore()
+        let sentFrameTypes = ManagedCriticalState<[FrameTypeEnum]>([])
+        let service = AuthenticationService(
+            socketManager: socketManager,
+            credentialStore: store,
+            endpointProvider: { endpoint },
+            requestHandler: { frame, _, _ in
+                sentFrameTypes.withCriticalRegion { $0.append(frame.type) }
+                switch frame.type {
+                case .userLoginReq:
+                    return try Self.authenticationResponseFrame(
+                        sessionToken: "login-session",
+                        transferToken: "login-transfer"
+                    )
+                case .userLogoutReq:
+                    let data = try JSONSerialization.data(withJSONObject: [
+                        "code": 200,
+                        "message": "success",
+                    ])
+                    return Frame(type: .userResponse, data: data)
+                default:
+                    XCTFail("Unexpected authentication frame: \(frame.type)")
+                    throw SocketError.invalidResponse
+                }
+            },
+            connectionReadyHandler: {}
+        )
+
+        _ = try await service.login(userName: "demo", password: "password")
+        store.setClearError(TestSessionCredentialStoreError.clearFailed)
+
+        do {
+            try await service.logout()
+            XCTFail("本地凭据删除失败必须终止退出")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("无法删除本地登录凭据"))
+        }
+
+        XCTAssertEqual(sentFrameTypes.withCriticalRegion { $0 }, [.userLoginReq])
+        XCTAssertNotNil(try store.load(for: endpoint))
+        XCTAssertTrue(service.isAuthenticated)
+        XCTAssertFalse(transport.wasCancelled)
+    }
+
+    // [修改] clear 失败不能顺手取消既有刷新任务，认证状态保留时令牌仍要按原计划续期。
+    func testAuthenticationServiceCredentialClearFailureKeepsTokenRefreshScheduled() async throws {
+        let endpoint = ServerEndpoint(host: "drive.example.com", port: 10_086)
+        let store = InMemorySessionCredentialStore()
+        let resumeCount = ManagedCriticalState(0)
+        let expiringToken = makeTransferToken(expiresAt: Date().addingTimeInterval(0.35))
+        let service = AuthenticationService(
+            socketManager: SocketManager(),
+            credentialStore: store,
+            endpointProvider: { endpoint },
+            requestHandler: { frame, _, _ in
+                if frame.type == .userLoginReq {
+                    return try Self.authenticationResponseFrame(
+                        sessionToken: "login-session",
+                        transferToken: expiringToken
+                    )
+                }
+                resumeCount.withCriticalRegion { $0 += 1 }
+                return try Self.authenticationResponseFrame(
+                    sessionToken: "refreshed-session",
+                    transferToken: "refreshed-transfer"
+                )
+            },
+            connectionReadyHandler: {},
+            transferTokenRefreshLeadTime: 0.20,
+            refreshRetryDelay: 0.05
+        )
+
+        _ = try await service.login(userName: "demo", password: "password")
+        store.setClearError(TestSessionCredentialStoreError.clearFailed)
+
+        do {
+            try await service.logout()
+            XCTFail("本地凭据删除失败必须终止退出")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("无法删除本地登录凭据"))
+        }
+
+        let refreshed = await waitUntil(timeout: 1.5) {
+            resumeCount.withCriticalRegion { $0 } == 1
+                && service.currentUser?.transferToken == "refreshed-transfer"
+        }
+        XCTAssertTrue(refreshed)
+        XCTAssertEqual(try store.load(for: endpoint)?.sessionToken, "refreshed-session")
+    }
+
+    // [修改] clear 失败不能作废已经进行中的 resume；失败退出后原恢复链仍应正常收尾。
+    func testAuthenticationServiceCredentialClearFailureKeepsInFlightResumeValid() async throws {
+        let endpoint = ServerEndpoint(host: "drive.example.com", port: 10_086)
+        let store = InMemorySessionCredentialStore()
+        try store.save(
+            StoredAuthenticationSession(
+                sessionToken: "stored-session",
+                user: makeSessionUser(
+                    sessionToken: "stored-session",
+                    transferToken: "stored-transfer"
+                )
+            ),
+            for: endpoint
+        )
+        store.setClearError(TestSessionCredentialStoreError.clearFailed)
+        let resumeRequestSent = expectation(description: "resume request sent")
+        let releaseResumeResponse = expectation(description: "release resume response")
+        let socketManager = SocketManager()
+        let service = AuthenticationService(
+            socketManager: socketManager,
+            credentialStore: store,
+            endpointProvider: { endpoint },
+            requestHandler: { frame, _, _ in
+                XCTAssertEqual(frame.type, .userSessionResumeReq)
+                resumeRequestSent.fulfill()
+                await self.fulfillment(of: [releaseResumeResponse], timeout: 2.0)
+                return try Self.authenticationResponseFrame(
+                    sessionToken: "renewed-session",
+                    transferToken: "renewed-transfer"
+                )
+            },
+            connectionReadyHandler: {}
+        )
+
+        let restoreTask = Task { await service.restoreSession() }
+        await fulfillment(of: [resumeRequestSent], timeout: 1.0)
+
+        do {
+            try await service.logout()
+            XCTFail("本地凭据删除失败必须终止退出")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("无法删除本地登录凭据"))
+        }
+
+        releaseResumeResponse.fulfill()
+        let restored = await restoreTask.value
+
+        XCTAssertTrue(restored)
+        XCTAssertEqual(try store.load(for: endpoint)?.sessionToken, "renewed-session")
+        XCTAssertTrue(service.isAuthenticated)
+        XCTAssertEqual(service.currentUser?.sessionToken, "renewed-session")
+        XCTAssertEqual(socketManager.currentUserId, 7)
+    }
+
+    // [修改] 退出提交成功后必须作废旧恢复操作，旧响应不能重新写回凭据或认证状态。
+    func testAuthenticationServiceLogoutInvalidatesInFlightSessionResume() async throws {
+        let endpoint = ServerEndpoint(host: "drive.example.com", port: 10_086)
+        let store = InMemorySessionCredentialStore()
+        try store.save(
+            StoredAuthenticationSession(
+                sessionToken: "stored-session",
+                user: makeSessionUser(
+                    sessionToken: "stored-session",
+                    transferToken: "stored-transfer"
+                )
+            ),
+            for: endpoint
+        )
+        let resumeRequestSent = expectation(description: "resume request sent")
+        let releaseResumeResponse = expectation(description: "release resume response")
+        let socketManager = SocketManager()
+        let service = AuthenticationService(
+            socketManager: socketManager,
+            credentialStore: store,
+            endpointProvider: { endpoint },
+            requestHandler: { frame, _, _ in
+                XCTAssertEqual(frame.type, .userSessionResumeReq)
+                resumeRequestSent.fulfill()
+                await self.fulfillment(of: [releaseResumeResponse], timeout: 2.0)
+                return try Self.authenticationResponseFrame(
+                    sessionToken: "renewed-session",
+                    transferToken: "renewed-transfer"
+                )
+            },
+            connectionReadyHandler: {}
+        )
+
+        let restoreTask = Task { await service.restoreSession() }
+        await fulfillment(of: [resumeRequestSent], timeout: 1.0)
+
+        try await service.logout()
+        XCTAssertNil(try store.load(for: endpoint))
+
+        releaseResumeResponse.fulfill()
+        let restored = await restoreTask.value
+
+        XCTAssertFalse(restored)
+        XCTAssertNil(try store.load(for: endpoint))
+        XCTAssertFalse(service.isAuthenticated)
+        XCTAssertNil(service.currentUser)
+        XCTAssertNil(socketManager.currentUserId)
+    }
+
+    // [修改] 服务端退出确认失败属于断连兜底，不能回滚已经成功提交的本地退出。
+    func testAuthenticationServiceCompletesLocalLogoutWhenServerLogoutFails() async throws {
+        let endpoint = ServerEndpoint(host: "drive.example.com", port: 10_086)
+        let firstTransport = FakeSocketTransportConnection()
+        let replacementTransport = FakeSocketTransportConnection()
+        let connectionCount = ManagedCriticalState(0)
+        let socketManager = SocketManager(connectionFactory: { _, _ in
+            connectionCount.withCriticalRegion { count -> SocketTransportConnection in
+                count += 1
+                return count == 1 ? firstTransport : replacementTransport
+            }
+        })
+        socketManager.connect(host: endpoint.host, port: endpoint.port)
+        firstTransport.transition(to: .ready)
+        let connectionReady = await waitUntil(timeout: 0.5) { socketManager.isTransportReady }
+        XCTAssertTrue(connectionReady)
+
+        let store = InMemorySessionCredentialStore()
+        let service = AuthenticationService(
+            socketManager: socketManager,
+            credentialStore: store,
+            endpointProvider: { endpoint },
+            requestHandler: { frame, _, _ in
+                switch frame.type {
+                case .userLoginReq:
+                    return try Self.authenticationResponseFrame(
+                        sessionToken: "login-session",
+                        transferToken: "login-transfer"
+                    )
+                case .userLogoutReq:
+                    throw SocketError.connectionClosed
+                default:
+                    XCTFail("Unexpected authentication frame: \(frame.type)")
+                    throw SocketError.invalidResponse
+                }
+            },
+            connectionReadyHandler: {}
+        )
+
+        _ = try await service.login(userName: "demo", password: "password")
+
+        try await service.logout()
+
+        XCTAssertNil(try store.load(for: endpoint))
+        XCTAssertFalse(service.isAuthenticated)
+        XCTAssertNil(service.currentUser)
+        XCTAssertTrue(firstTransport.wasCancelled)
+        XCTAssertEqual(connectionCount.withCriticalRegion { $0 }, 2)
+    }
+
+    func testAuthenticationServicePersistsTokensReturnedByAvatarUpdate() async throws {
+        let endpoint = ServerEndpoint(host: "drive.example.com", port: 10_086)
+        let store = InMemorySessionCredentialStore()
+        let service = AuthenticationService(
+            socketManager: SocketManager(),
+            credentialStore: store,
+            endpointProvider: { endpoint },
+            requestHandler: { frame, _, _ in
+                switch frame.type {
+                case .userLoginReq:
+                    return try Self.authenticationResponseFrame(
+                        sessionToken: "login-session",
+                        transferToken: "login-transfer"
+                    )
+                case .userAvatarUpdateReq:
+                    return try Self.authenticationResponseFrame(
+                        sessionToken: "avatar-session",
+                        transferToken: "avatar-transfer"
+                    )
+                default:
+                    XCTFail("Unexpected authentication frame: \(frame.type)")
+                    throw SocketError.invalidResponse
+                }
+            },
+            connectionReadyHandler: {}
+        )
+
+        _ = try await service.login(userName: "demo", password: "password")
+        let updated = try await service.updateAvatar(avatarData: "aGVsbG8=")
+
+        XCTAssertEqual(updated.sessionToken, "avatar-session")
+        XCTAssertEqual(updated.transferToken, "avatar-transfer")
+        XCTAssertEqual(try store.load(for: endpoint)?.sessionToken, "avatar-session")
+    }
+
+    func testAppRestoresSavedServerAndSessionOnLaunchAndForeground() throws {
+        let source = try sourceFileContents("chat-storage/chat_storageApp.swift")
+
+        XCTAssertTrue(source.contains("ServerEndpointStore.load()"))
+        XCTAssertTrue(source.contains("authService.restoreSession()"))
+        XCTAssertTrue(source.contains("NSApplication.didBecomeActiveNotification"))
+        XCTAssertTrue(source.contains("authService.resumeForForeground()"))
+    }
+
+    // [修改] 主界面只能在服务退出成功后切登录页，失败必须复用现有 alert 展示本地化错误。
+    func testMainChatStorageLogoutOnlyChangesPageAfterSuccessAndShowsFailureAlert() throws {
+        let source = try sourceFileContents("chat-storage/MainChatStorage.swift")
+        let start = try XCTUnwrap(source.range(of: "private func handleLogout()"))
+        let end = try XCTUnwrap(
+            source.range(of: "private func handleDirectory()", range: start.upperBound..<source.endIndex)
+        )
+        let handler = String(source[start.lowerBound..<end.lowerBound])
+        let catchRange = try XCTUnwrap(handler.range(of: "catch {"))
+        let successPath = String(handler[..<catchRange.lowerBound])
+        let failurePath = String(handler[catchRange.upperBound...])
+
+        XCTAssertTrue(successPath.contains("try await authService.logout()"))
+        XCTAssertTrue(successPath.contains("isLoggedIn = false"))
+        XCTAssertTrue(failurePath.contains("alertMessage = error.localizedDescription"))
+        XCTAssertTrue(failurePath.contains("showingAlert = true"))
+        XCTAssertFalse(failurePath.contains("isLoggedIn = false"))
+    }
+
+    func testPersistedServerEndpointRestoresConfiguredHost() throws {
+        let suiteName = "ServerEndpointStoreTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let endpoint = ServerEndpoint(host: "drive.example.com", port: 10_086)
+
+        try ServerEndpointStore.save(endpoint, defaults: defaults)
+
+        XCTAssertEqual(ServerEndpointStore.load(defaults: defaults), endpoint)
+    }
+
+    // [修改] 控制、上传、下载和媒体端口必须作为同一份服务器配置持久化，不能继续硬编码传输端口。
+    func testServerConfigurationPersistsEveryServicePort() throws {
+        let suiteName = "ServerConfigurationStoreTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let configuration = ServerConfiguration(
+            host: "drive.example.com",
+            controlPort: 20_086,
+            uploadPort: 20_087,
+            downloadPort: 20_088,
+            mediaPort: 20_188
+        )
+
+        try ServerEndpointStore.save(configuration, defaults: defaults)
+
+        XCTAssertEqual(ServerEndpointStore.loadConfiguration(defaults: defaults), configuration)
+        XCTAssertEqual(
+            ServerEndpointStore.load(defaults: defaults),
+            ServerEndpoint(host: configuration.host, port: configuration.controlPort)
+        )
+    }
+
+    // [修改] 老版本只保存 host/port，升级后必须自动补齐默认上传、下载和媒体端口。
+    func testServerConfigurationDecodesLegacyEndpoint() throws {
+        let legacy = Data(#"{"host":"legacy.example.com","port":12086}"#.utf8)
+
+        let configuration = try JSONDecoder().decode(ServerConfiguration.self, from: legacy)
+
+        XCTAssertEqual(configuration.host, "legacy.example.com")
+        XCTAssertEqual(configuration.controlPort, 12_086)
+        XCTAssertEqual(configuration.uploadPort, ServerConfiguration.defaultUploadPort)
+        XCTAssertEqual(configuration.downloadPort, ServerConfiguration.defaultDownloadPort)
+        XCTAssertEqual(configuration.mediaPort, ServerConfiguration.defaultMediaPort)
+    }
+
+    // [修改] 旧安装保存的本机地址必须迁移到当前测试服务端，同时保留自定义端口。
+    func testServerEndpointStoreMigratesPreviousLocalHostsToCurrentServer() throws {
+        for staleHost in ["localhost", "127.0.0.1", "::1", "172.21.32.64"] {
+            let suiteName = "ServerEndpointMigrationTests.\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let staleConfiguration = ServerConfiguration(
+                host: staleHost,
+                controlPort: 20_086,
+                uploadPort: 20_087,
+                downloadPort: 20_088,
+                mediaPort: 20_188
+            )
+            try ServerEndpointStore.save(staleConfiguration, defaults: defaults)
+
+            let migrated = try XCTUnwrap(
+                ServerEndpointStore.loadConfiguration(defaults: defaults)
+            )
+
+            XCTAssertEqual(migrated.host, "172.21.32.131")
+            XCTAssertEqual(migrated.controlPort, 20_086)
+            XCTAssertEqual(migrated.uploadPort, 20_087)
+            XCTAssertEqual(migrated.downloadPort, 20_088)
+            XCTAssertEqual(migrated.mediaPort, 20_188)
+            XCTAssertEqual(
+                ServerEndpointStore.load(defaults: defaults)?.host,
+                "172.21.32.131"
+            )
+        }
+    }
+
+    // [修改] 默认控制连接必须直达 HAProxy，禁止再走会优先解析为 IPv6 回环地址的 localhost。
+    func testDefaultServerEndpointUsesHAProxyAddress() {
+        let transport = FakeSocketTransportConnection()
+        let socketManager = SocketManager(connectionFactory: { _, _ in transport })
+
+        socketManager.connect()
+
+        let endpoint = socketManager.getCurrentServer()
+        XCTAssertEqual(endpoint.0, "172.21.32.131")
+        XCTAssertEqual(endpoint.1, 10_086)
+    }
+
+    // [修改] App 冷启动和 SocketManager.connect() 必须复用同一个默认主机常量。
+    func testAppAndSocketManagerShareDefaultServerHost() throws {
+        let endpointSource = try sourceFileContents("chat-storage/ConfigServerView.swift")
+        let socketSource = try sourceFileContents("chat-storage/SocketManager.swift")
+        let appSource = try sourceFileContents("chat-storage/chat_storageApp.swift")
+
+        XCTAssertTrue(endpointSource.contains("static let defaultHost = \"172.21.32.131\""))
+        XCTAssertTrue(socketSource.contains("connect(host: ServerEndpoint.defaultHost, port: 10_086)"))
+        XCTAssertTrue(appSource.contains("ServerEndpoint(host: ServerEndpoint.defaultHost, port: 10_086)"))
+        XCTAssertFalse(appSource.contains("ServerEndpoint(host: \"localhost\""))
+    }
+
+    func testSocketManagerSupportsResponseMatcherAndSendTimeout() throws {
         let source = try sourceFileContents("chat-storage/SocketManager.swift")
 
         XCTAssertTrue(source.contains("continuationMatchers"))
         XCTAssertTrue(source.contains("matching responseMatcher"))
-        XCTAssertTrue(source.contains("writeDeadline"))
+        XCTAssertTrue(source.contains("sendTimeout"))
         XCTAssertTrue(source.contains("SocketError.timeout"))
     }
 
@@ -2491,6 +4354,141 @@ final class chat_storageTests: XCTestCase {
         )
     }
 
+    private func writeChatBackgroundJPEG(color: NSColor, to url: URL) throws {
+        let image = NSImage(size: NSSize(width: 20, height: 12))
+        image.lockFocus()
+        color.setFill()
+        NSRect(x: 0, y: 0, width: 20, height: 12).fill()
+        image.unlockFocus()
+
+        let tiffData = try XCTUnwrap(image.tiffRepresentation)
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: tiffData))
+        let jpegData = try XCTUnwrap(
+            bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.9])
+        )
+        try jpegData.write(to: url, options: .atomic)
+    }
+
+    private func makeVideoPlaybackService(host: String, transferToken: String?) -> VideoPlaybackService {
+        let socketManager = SocketManager()
+        let authenticationService = AuthenticationService(socketManager: socketManager)
+        authenticationService.currentUser = UserDO(
+            id: 7,
+            username: "demo",
+            nickname: nil,
+            avatar: nil,
+            email: nil,
+            phone: nil,
+            createTime: nil,
+            updateTime: nil,
+            status: nil,
+            transferToken: transferToken
+        )
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [VideoPlaybackURLProtocolStub.self]
+        let session = URLSession(configuration: configuration)
+        return VideoPlaybackService(
+            authenticationService: authenticationService,
+            session: session,
+            endpointProvider: { ServerEndpoint(host: host, port: 10_188) }
+        )
+    }
+
+    private static func videoPlaybackResponse(
+        request: URLRequest,
+        playURL: String
+    ) throws -> (HTTPURLResponse, Data) {
+        let response = HTTPURLResponse(
+            url: try XCTUnwrap(request.url),
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        let body = try JSONSerialization.data(withJSONObject: [
+            "code": 200,
+            "message": "success",
+            "data": [
+                "playUrl": playURL,
+                "fileId": 77,
+                "fileSize": 1024,
+                "mimeType": "video/mp4",
+                "expiresIn": 300,
+                "playable": true,
+            ],
+        ])
+        return (response, body)
+    }
+
+    private static func authenticationResponseFrame(
+        sessionToken: String,
+        transferToken: String
+    ) throws -> Frame {
+        let data = try JSONSerialization.data(withJSONObject: [
+            "code": 200,
+            "message": "success",
+            "data": [
+                "userId": 7,
+                "userName": "demo",
+                "sessionToken": sessionToken,
+                "transferToken": transferToken,
+            ],
+        ])
+        return Frame(type: .userResponse, data: data)
+    }
+
+    private func makeSessionUser(
+        sessionToken: String?,
+        transferToken: String?
+    ) -> UserDO {
+        UserDO(
+            id: 7,
+            username: "demo",
+            nickname: nil,
+            avatar: nil,
+            email: nil,
+            phone: nil,
+            createTime: nil,
+            updateTime: nil,
+            status: nil,
+            transferToken: transferToken,
+            sessionToken: sessionToken
+        )
+    }
+
+    private func makeTransferToken(expiresAt: Date) -> String {
+        "7:ZGVtbw:\(Int64(expiresAt.timeIntervalSince1970 * 1_000)):nonce:signature"
+    }
+
+    // [修改] 构造不带正文的协议头，用于验证接收端能否在首包就拒绝恶意长度。
+    private func makeFrameHeader(type: FrameTypeEnum, payloadLength: UInt32) -> Data {
+        var data = Data(Frame.MAGIC)
+        data.append(type.rawValue)
+        data.append(0)
+        var bigEndianLength = payloadLength.bigEndian
+        data.append(Data(bytes: &bigEndianLength, count: MemoryLayout<UInt32>.size))
+        return data
+    }
+
+    private func waitUntil(
+        timeout: TimeInterval,
+        pollInterval: TimeInterval = 0.02,
+        condition: @escaping () async -> Bool
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if await condition() { return true }
+            try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
+        }
+        return await condition()
+    }
+
+    // [修改] 把 NSLock 使用收口在同步辅助方法，异步测试只轮询结果。
+    private func hasActiveContinuation(_ socketManager: SocketManager) -> Bool {
+        socketManager.continuationLock.lock()
+        defer { socketManager.continuationLock.unlock() }
+        return !socketManager.activeContinuations.isEmpty
+    }
+
     private func historyMessage(
         id: Int64?,
         clientMsgId: String? = nil,
@@ -2627,4 +4625,197 @@ final class chat_storageTests: XCTestCase {
         XCTAssertFalse(source.contains("targetDirectory?.fileName ?? \"根目录\""))
     }
 
+}
+
+private final class RecordingTransferTaskPersistence: TransferTaskPersisting {
+    private(set) var persistedTaskIds: [String] = []
+    private(set) var persistedStages: [TransferTaskStage] = []
+
+    func loadPendingTasks() -> [PersistedTransferTaskRecord] {
+        []
+    }
+
+    func persistInitialTask(_ task: StorageTransferTask, stage: TransferTaskStage) throws {
+        persistedTaskIds.append(task.id.uuidString)
+        persistedStages.append(stage)
+    }
+
+    func updateTask(
+        taskId: String,
+        stage: TransferTaskStage,
+        progress: Double,
+        transferredBytes: Int64,
+        errorMessage: String?
+    ) {}
+
+    func transferredBytes(taskId: String) -> Int64 {
+        0
+    }
+
+    func deleteTask(taskId: String) {}
+
+    func deleteCompletedTasks() {}
+}
+
+private extension Array {
+    subscript(safe index: Index) -> Element? {
+        indices.contains(index) ? self[index] : nil
+    }
+}
+
+private final class VideoPlaybackURLProtocolStub: URLProtocol {
+    typealias Handler = (URLRequest) throws -> (HTTPURLResponse, Data)
+
+    private static let handlerState = ManagedCriticalState<Handler?>(nil)
+
+    static func install(_ handler: @escaping Handler) {
+        handlerState.withCriticalRegion { $0 = handler }
+    }
+
+    static func reset() {
+        handlerState.withCriticalRegion { $0 = nil }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let handler = Self.handlerState.withCriticalRegion({ $0 }) else {
+            client?.urlProtocol(self, didFailWithError: VideoPlaybackError.invalidResponse)
+            return
+        }
+
+        do {
+            let (response, data) = try handler(request)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
+}
+
+private enum TestSessionCredentialStoreError: LocalizedError {
+    case clearFailed
+
+    var errorDescription: String? {
+        "模拟 Keychain 删除失败"
+    }
+}
+
+private final class InMemorySessionCredentialStore: SessionCredentialStoring {
+    private struct State {
+        var sessions: [ServerEndpoint: StoredAuthenticationSession] = [:]
+        var clearError: Error?
+    }
+
+    // [修改] 测试凭据仓库可稳定注入 clear 错误，同时保留真实的持久化状态变化。
+    private let state = ManagedCriticalState(State())
+
+    func load(for endpoint: ServerEndpoint) throws -> StoredAuthenticationSession? {
+        state.withCriticalRegion { $0.sessions[endpoint] }
+    }
+
+    func save(_ session: StoredAuthenticationSession, for endpoint: ServerEndpoint) throws {
+        state.withCriticalRegion { $0.sessions[endpoint] = session }
+    }
+
+    func clear(for endpoint: ServerEndpoint) throws {
+        let clearError = state.withCriticalRegion { state -> Error? in
+            if let clearError = state.clearError {
+                return clearError
+            }
+            state.sessions.removeValue(forKey: endpoint)
+            return nil
+        }
+        if let clearError {
+            throw clearError
+        }
+    }
+
+    func setClearError(_ error: Error?) {
+        state.withCriticalRegion { $0.clearError = error }
+    }
+}
+
+private final class FakeSocketTransportConnection: SocketTransportConnection {
+    private struct State {
+        var queue: DispatchQueue?
+        var stateHandler: ((SocketTransportState) -> Void)?
+        var receiveCompletion: ((Data?, Bool, String?) -> Void)?
+        var sendCompletions: [(String?) -> Void] = []
+        var sentData: [Data] = []
+        var receiveCount = 0
+        var cancelCount = 0
+    }
+
+    private let state = ManagedCriticalState(State())
+    var onReceiveRegistered: ((Int) -> Void)?
+
+    var wasCancelled: Bool {
+        state.withCriticalRegion { $0.cancelCount > 0 }
+    }
+
+    // [修改] 测试必须读取真实 transport.send 收到的完整协议帧，不能只观察上层 requestHandler。
+    var sentData: [Data] {
+        state.withCriticalRegion { $0.sentData }
+    }
+
+    func setStateUpdateHandler(_ handler: ((SocketTransportState) -> Void)?) {
+        state.withCriticalRegion { $0.stateHandler = handler }
+    }
+
+    func start(on queue: DispatchQueue) {
+        state.withCriticalRegion { $0.queue = queue }
+    }
+
+    func send(_ data: Data, completion: @escaping (String?) -> Void) {
+        state.withCriticalRegion {
+            $0.sentData.append(data)
+            $0.sendCompletions.append(completion)
+        }
+    }
+
+    func receive(
+        maximumLength: Int,
+        completion: @escaping (Data?, Bool, String?) -> Void
+    ) {
+        let count = state.withCriticalRegion { value -> Int in
+            value.receiveCompletion = completion
+            value.receiveCount += 1
+            return value.receiveCount
+        }
+        onReceiveRegistered?(count)
+    }
+
+    func cancel() {
+        state.withCriticalRegion { $0.cancelCount += 1 }
+    }
+
+    func transition(to transportState: SocketTransportState) {
+        let callback = state.withCriticalRegion { ($0.queue, $0.stateHandler) }
+        callback.0?.async { callback.1?(transportState) }
+    }
+
+    func deliver(_ data: Data) {
+        let callback = state.withCriticalRegion { value -> (DispatchQueue?, ((Data?, Bool, String?) -> Void)?) in
+            let completion = value.receiveCompletion
+            value.receiveCompletion = nil
+            return (value.queue, completion)
+        }
+        callback.0?.async { callback.1?(data, false, nil) }
+    }
+
+    func completePendingSends(errorMessage: String?) {
+        let callbacks = state.withCriticalRegion { value -> [(String?) -> Void] in
+            let pending = value.sendCompletions
+            value.sendCompletions.removeAll()
+            return pending
+        }
+        for callback in callbacks { callback(errorMessage) }
+    }
 }

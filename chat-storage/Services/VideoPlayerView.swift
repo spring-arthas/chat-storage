@@ -86,9 +86,11 @@ struct VideoPlayerView: View {
         
         // 1. Initialize Independent Socket Service
         let newSocket = SocketManager()
-        let (host, _) = socketManager.getCurrentServer() // Keep host, ignore current port
-        // User requested Port 10088 for streaming download
-        newSocket.switchConnection(host: host, port: 10088)
+        let (host, controlPort) = socketManager.getCurrentServer()
+        let downloadPort = ServerEndpointStore.resolvedConfiguration(
+            for: ServerEndpoint(host: host, port: controlPort)
+        ).downloadPort
+        newSocket.switchConnection(host: host, port: downloadPort)
         
         self.directoryService = DirectoryService(socketManager: newSocket)
         

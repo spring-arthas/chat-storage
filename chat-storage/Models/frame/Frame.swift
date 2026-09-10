@@ -25,6 +25,9 @@ struct Frame {
     /// 帧头长度：8字节
     static let HEADER_LENGTH = 8
 
+    // [修改] 客户端和 net-server 统一限制单帧正文为 10 MiB，避免异常长度耗尽内存。
+    static let maxPayloadLength = 10 * 1024 * 1024
+
     /// bit0: 标识最后一帧
     static let FLAG_LAST_FRAME: UInt8 = 0x01
 

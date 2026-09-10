@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 struct VideoPlayInfo: Decodable {
@@ -9,26 +10,63 @@ struct VideoPlayInfo: Decodable {
     let playable: Bool
 }
 
+// [修改] 媒体端口当前为 HTTP，只接受服务端明文播放地址。
+final class PlainMediaAsset: @unchecked Sendable {
+    let asset: AVURLAsset
+
+    init?(url: URL) {
+        guard url.scheme?.lowercased() == "http",
+              let host = url.host?.trimmingCharacters(in: CharacterSet(charactersIn: "[]")),
+              !host.isEmpty else {
+            return nil
+        }
+
+        asset = AVURLAsset(url: url)
+    }
+
+    func makePlayer() -> AVPlayer {
+        AVPlayer(playerItem: AVPlayerItem(asset: asset))
+    }
+}
+
 final class VideoPlaybackService {
     static let shared = VideoPlaybackService()
 
     private let authenticationService: AuthenticationService
     private let session: URLSession
-    private let playUrlEndpointBase = URL(string: "http://localhost:10188/media/play-url")!
-    private let seekEndpointBase = URL(string: "http://localhost:10188/media/seek")!
+    private let endpointProvider: () -> ServerEndpoint
 
     init(
         authenticationService: AuthenticationService = .shared,
-        session: URLSession = .shared
+        session: URLSession? = nil,
+        endpointProvider: @escaping () -> ServerEndpoint = {
+            let (host, controlPort) = SocketManager.shared.getCurrentServer()
+            let configuration = ServerEndpointStore.resolvedConfiguration(
+                for: ServerEndpoint(host: host, port: controlPort)
+            )
+            return ServerEndpoint(host: host, port: configuration.mediaPort)
+        }
     ) {
         self.authenticationService = authenticationService
-        self.session = session
+        self.session = session ?? Self.makePlainSession()
+        self.endpointProvider = endpointProvider
+    }
+
+    private static func makePlainSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 15
+        configuration.timeoutIntervalForResource = 30
+        return URLSession(configuration: configuration)
     }
 
     func requestPlayUrl(fileId: Int64, sessionId: String? = nil) async throws -> VideoPlayInfo {
-        let userName = authenticationService.currentUser?.username ?? "default"
-        let url = try buildPlayUrlRequest(fileId: fileId, userName: userName, sessionId: sessionId)
-        let (data, response) = try await session.data(from: url)
+        let endpoint = endpointProvider()
+        let transferToken = try currentTransferToken()
+        let url = try buildPlayUrlRequest(fileId: fileId, sessionId: sessionId, endpoint: endpoint)
+        var request = URLRequest(url: url)
+        // [修改] 媒体接口只接受传输令牌，禁止继续用 userName 查询参数冒充身份。
+        request.setValue("Bearer \(transferToken)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw VideoPlaybackError.invalidResponse
@@ -41,21 +79,27 @@ final class VideoPlaybackService {
         guard wrapper.code == 200, let info = wrapper.data else {
             throw VideoPlaybackError.serverError(wrapper.message)
         }
-        return info
+        guard info.playable else {
+            throw VideoPlaybackError.serverError("该文件暂不支持在线播放，请下载后播放")
+        }
+        return try normalize(info, endpoint: endpoint)
     }
 
     func notifySeek(fileId: Int64, sessionId: String, targetSeconds: Double) async {
         do {
-            let userName = authenticationService.currentUser?.username ?? "default"
+            let endpoint = endpointProvider()
+            let transferToken = try currentTransferToken()
             let url = try buildSeekRequest(
                 fileId: fileId,
-                userName: userName,
                 sessionId: sessionId,
-                targetSeconds: targetSeconds
+                targetSeconds: targetSeconds,
+                endpoint: endpoint
             )
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.timeoutInterval = 1
+            // [修改] Seek 与播放地址请求必须使用同一份 Bearer 凭据。
+            request.setValue("Bearer \(transferToken)", forHTTPHeaderField: "Authorization")
             let (_, response) = try await session.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 204 else {
@@ -69,17 +113,18 @@ final class VideoPlaybackService {
         }
     }
 
-    private func buildPlayUrlRequest(fileId: Int64, userName: String, sessionId: String?) throws -> URL {
-        let base = playUrlEndpointBase.appendingPathComponent(String(fileId))
-        var components = URLComponents(url: base, resolvingAgainstBaseURL: false)
-        var queryItems = [
-            URLQueryItem(name: "userName", value: userName)
-        ]
+    private func buildPlayUrlRequest(
+        fileId: Int64,
+        sessionId: String?,
+        endpoint: ServerEndpoint
+    ) throws -> URL {
+        var components = try endpointComponents(endpoint: endpoint, path: "/media/play-url/\(fileId)")
+        var queryItems: [URLQueryItem] = []
         if let sessionId, !sessionId.isEmpty {
             queryItems.append(URLQueryItem(name: "sessionId", value: sessionId))
         }
-        components?.queryItems = queryItems
-        guard let url = components?.url else {
+        components.queryItems = queryItems.isEmpty ? nil : queryItems
+        guard let url = components.url else {
             throw VideoPlaybackError.invalidPlayUrl
         }
         return url
@@ -87,21 +132,76 @@ final class VideoPlaybackService {
 
     private func buildSeekRequest(
         fileId: Int64,
-        userName: String,
         sessionId: String,
-        targetSeconds: Double
+        targetSeconds: Double,
+        endpoint: ServerEndpoint
     ) throws -> URL {
-        let base = seekEndpointBase.appendingPathComponent(String(fileId))
-        var components = URLComponents(url: base, resolvingAgainstBaseURL: false)
-        components?.queryItems = [
-            URLQueryItem(name: "userName", value: userName),
+        var components = try endpointComponents(endpoint: endpoint, path: "/media/seek/\(fileId)")
+        components.queryItems = [
             URLQueryItem(name: "sessionId", value: sessionId),
             URLQueryItem(name: "targetSeconds", value: String(format: "%.3f", targetSeconds))
         ]
-        guard let url = components?.url else {
+        guard let url = components.url else {
             throw VideoPlaybackError.invalidPlayUrl
         }
         return url
+    }
+
+    private func endpointComponents(endpoint: ServerEndpoint, path: String) throws -> URLComponents {
+        let host = endpoint.host
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        guard !host.isEmpty, endpoint.port > 0, endpoint.port <= UInt32(UInt16.max) else {
+            throw VideoPlaybackError.invalidPlayUrl
+        }
+
+        var components = URLComponents()
+        components.scheme = "http"
+        components.host = host
+        components.port = Int(endpoint.port)
+        components.path = path
+        return components
+    }
+
+    private func currentTransferToken() throws -> String {
+        let token = authenticationService.currentUser?.transferToken?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !token.isEmpty else {
+            throw VideoPlaybackError.missingCredential
+        }
+        return token
+    }
+
+    private func normalize(_ info: VideoPlayInfo, endpoint: ServerEndpoint) throws -> VideoPlayInfo {
+        guard var components = URLComponents(url: info.playUrl, resolvingAgainstBaseURL: false),
+              components.scheme?.lowercased() == "http",
+              let responseHost = components.host?.lowercased() else {
+            throw VideoPlaybackError.invalidPlayUrl
+        }
+
+        // [修改] 服务端返回 localhost 时替换成当前配置主机，避免播放器请求用户自己的 Mac。
+        if ["localhost", "127.0.0.1", "::1"].contains(responseHost) {
+            let configuredHost = endpoint.host
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+            guard !configuredHost.isEmpty else { throw VideoPlaybackError.invalidPlayUrl }
+            components.host = configuredHost
+            if components.port == nil {
+                components.port = Int(endpoint.port)
+            }
+        }
+
+        guard let normalizedURL = components.url else {
+            throw VideoPlaybackError.invalidPlayUrl
+        }
+        return VideoPlayInfo(
+            playUrl: normalizedURL,
+            fileId: info.fileId,
+            fileSize: info.fileSize,
+            mimeType: info.mimeType,
+            expiresIn: info.expiresIn,
+            playable: info.playable
+        )
     }
 }
 
@@ -111,9 +211,10 @@ private struct VideoPlayResponse: Decodable {
     let data: VideoPlayInfo?
 }
 
-enum VideoPlaybackError: LocalizedError {
+enum VideoPlaybackError: LocalizedError, Equatable {
     case invalidPlayUrl
     case invalidResponse
+    case missingCredential
     case serverError(String)
 
     var errorDescription: String? {
@@ -122,6 +223,8 @@ enum VideoPlaybackError: LocalizedError {
             return "播放地址无效"
         case .invalidResponse:
             return "播放服务响应无效"
+        case .missingCredential:
+            return "文件传输凭证无效，请重新登录"
         case .serverError(let message):
             return message
         }

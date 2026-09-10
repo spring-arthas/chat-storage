@@ -177,6 +177,13 @@ struct AppSettingsView: View {
             ConfigServerView {
                 authService.invalidateLocalSession()
                 isLoggedIn = false
+                // [修改] 主界面切换服务器后自动恢复目标服务器会话，无凭据时才停留登录页。
+                Task {
+                    let restored = await authService.restoreSession()
+                    await MainActor.run {
+                        isLoggedIn = restored
+                    }
+                }
             }
                 .environmentObject(socketManager)
         }
@@ -640,7 +647,8 @@ enum TelegramTheme {
         switch status {
         case "已完成":
             return successHex
-        case "上传中", "下载中":
+        case "等待上传", "等待下载", "连接传输服务", "计算文件校验", "检查上传断点",
+             "建立服务端任务", "上传中", "下载中", "等待服务端", "校验中", "网络恢复中":
             return accentHex
         case "失败":
             return dangerHex
@@ -655,7 +663,8 @@ enum TelegramTheme {
         switch status {
         case "已完成":
             return success
-        case "上传中", "下载中":
+        case "等待上传", "等待下载", "连接传输服务", "计算文件校验", "检查上传断点",
+             "建立服务端任务", "上传中", "下载中", "等待服务端", "校验中", "网络恢复中":
             return accent
         case "失败":
             return danger
@@ -1315,14 +1324,17 @@ struct MainChatStorage: View {
                 if let index = self.transferList.firstIndex(where: { $0.id.uuidString == id }) {
                     let oldStatus = self.transferList[index].status
                     // 更新状态
-                    self.transferList[index].status = info.0
+                    self.transferList[index].status = info.status
                     // 更新进度
-                    self.transferList[index].progress = info.1
+                    self.transferList[index].progress = info.progress
                     // 更新速度
-                    self.transferList[index].speed = info.2
+                    self.transferList[index].speed = info.speed
+                    // [修改] 精确展示已传字节与失败原因，连接失败不再只剩一个“失败”标签。
+                    self.transferList[index].transferredBytes = info.transferredBytes
+                    self.transferList[index].errorMessage = info.errorMessage
                     
                     // 如果开启了自动排序且状态变为已完成，触发排序
-                    if self.isAutoSortEnabled && info.0 == "已完成" && oldStatus != "已完成" {
+                    if self.isAutoSortEnabled && info.stage.isCompleted && oldStatus != "已完成" {
                         DispatchQueue.main.async {
                             self.sortTransferList()
                         }
@@ -2192,11 +2204,11 @@ struct MainChatStorage: View {
             case .download:
                 matchesFilter = item.taskType == .download
             case .active:
-                matchesFilter = item.status == "上传中" || item.status == "下载中" || item.status == "等待上传" || item.status == "等待下载"
+                matchesFilter = item.isActive
             case .failed:
-                matchesFilter = item.status == "失败"
+                matchesFilter = item.stage.isFailed
             case .completed:
-                matchesFilter = item.status == "已完成" || item.status == "Completed"
+                matchesFilter = item.stage.isCompleted
             }
 
             return matchesFilter
@@ -2205,22 +2217,22 @@ struct MainChatStorage: View {
 
     private var transferSummaryText: String {
         guard !transferList.isEmpty else { return "暂无传输任务" }
-        if let active = transferList.first(where: { $0.status == "上传中" || $0.status == "下载中" }) {
-            return "\(active.name) \(active.status) · \(active.progressPercent)"
+        if let active = transferList.first(where: \.isActive) {
+            return "\(active.name) · \(active.status) · \(active.transferredSizeText)"
         }
-        let failedCount = transferList.filter { $0.status == "失败" }.count
+        let failedCount = transferList.filter { $0.stage.isFailed }.count
         if failedCount > 0 {
             return "\(failedCount) 个任务失败，可展开处理"
         }
-        let completedCount = transferList.filter { $0.status == "已完成" || $0.status == "Completed" }.count
+        let completedCount = transferList.filter { $0.stage.isCompleted }.count
         return "已完成 \(completedCount) 个，剩余 \(max(transferList.count - completedCount, 0)) 个"
     }
 
     private var activeTransferProgress: Double {
-        guard let active = transferList.first(where: { $0.status == "上传中" || $0.status == "下载中" }) else {
-            return transferList.isEmpty ? 0 : 1
+        if let active = transferList.first(where: \.isActive) {
+            return active.progress
         }
-        return active.progress
+        return !transferList.isEmpty && transferList.allSatisfy({ $0.stage.isCompleted }) ? 1 : 0
     }
 
     private func transferCount(for filter: TransferDisplayFilter) -> Int {
@@ -2232,11 +2244,11 @@ struct MainChatStorage: View {
         case .download:
             return transferList.filter { $0.taskType == .download }.count
         case .active:
-            return transferList.filter { $0.status == "上传中" || $0.status == "下载中" || $0.status == "等待上传" || $0.status == "等待下载" }.count
+            return transferList.filter(\.isActive).count
         case .failed:
-            return transferList.filter { $0.status == "失败" }.count
+            return transferList.filter { $0.stage.isFailed }.count
         case .completed:
-            return transferList.filter { $0.status == "已完成" || $0.status == "Completed" }.count
+            return transferList.filter { $0.stage.isCompleted }.count
         }
     }
 
@@ -2342,9 +2354,18 @@ struct MainChatStorage: View {
     
     private func handleLogout() {
         Task {
-            await authService.logout()
-            await MainActor.run {
-                isLoggedIn = false
+            do {
+                try await authService.logout()
+                await MainActor.run {
+                    // [修改] 只有本地凭据已删除并完成服务层退出后，主界面才切回登录页。
+                    isLoggedIn = false
+                }
+            } catch {
+                await MainActor.run {
+                    // [修改] 复用主界面现有 alert，Keychain 删除失败时保留当前页面和认证状态。
+                    alertMessage = error.localizedDescription
+                    showingAlert = true
+                }
             }
         }
     }
@@ -3837,8 +3858,8 @@ struct MainChatStorage: View {
         for task in tasks {
             // Check if already exists in UI
             if !transferList.contains(where: { $0.id == task.id }) {
-                // 所有恢复的任务都设置为"已暂停"状态，由用户手动决定是否启动
-                let status = "已暂停"
+                let stage = TransferTaskStage.resolve(task.status, taskType: task.taskType)
+                let update = TransferTaskManager.shared.taskUpdates[task.id.uuidString]
                 
                 let newItem = TransferItem(
                     id: task.id,
@@ -3848,14 +3869,14 @@ struct MainChatStorage: View {
                     fileUrl: task.fileUrl,
                     targetDirId: task.targetDirId,
                     taskType: task.taskType == .upload ? .upload : .download,
-                    status: status,
+                    status: stage.rawValue,
                     progress: task.progress,
-                    speed: ""
+                    speed: "",
+                    transferredBytes: update?.transferredBytes
+                        ?? Int64(Double(task.fileSize) * task.progress),
+                    errorMessage: update?.errorMessage
                 )
                 transferList.append(newItem)
-                
-                // 在 TransferTaskManager 中也更新为暂停状态
-                TransferTaskManager.shared.taskUpdates[task.id.uuidString] = (status, task.progress, "")
             }
         }
         
@@ -3868,11 +3889,11 @@ struct MainChatStorage: View {
     }
         
     private func statusScore(_ status: String) -> Int {
-        switch status {
-        case "上传中", "下载中": return 100
-        case "等待上传", "等待下载": return 80
-        case "暂停", "已暂停", "失败": return 60
-        case "已完成": return 10
+        let stage = TransferTaskStage.resolve(status)
+        if stage.isActive { return 100 }
+        switch stage {
+        case .paused, .failed: return 60
+        case .completed: return 10
         default: return 0
         }
     }
@@ -4033,7 +4054,20 @@ extension FileDto {
 struct TransferItem: Identifiable {
     let id: UUID
     
-    init(id: UUID = UUID(), name: String, size: Int64, directoryName: String, fileUrl: URL?, targetDirId: Int64, taskType: TaskType, status: String, progress: Double, speed: String) {
+    init(
+        id: UUID = UUID(),
+        name: String,
+        size: Int64,
+        directoryName: String,
+        fileUrl: URL?,
+        targetDirId: Int64,
+        taskType: TaskType,
+        status: String,
+        progress: Double,
+        speed: String,
+        transferredBytes: Int64 = 0,
+        errorMessage: String? = nil
+    ) {
         self.id = id
         self.name = name
         self.size = size
@@ -4044,6 +4078,8 @@ struct TransferItem: Identifiable {
         self.status = status
         self.progress = progress
         self.speed = speed
+        self.transferredBytes = transferredBytes
+        self.errorMessage = errorMessage
     }
     let name: String
     let size: Int64
@@ -4058,6 +4094,23 @@ struct TransferItem: Identifiable {
     var status: String // 等待上传, 上传中, 已完成, 失败, 暂停
     var progress: Double // 0.0 - 1.0
     var speed: String
+    var transferredBytes: Int64
+    var errorMessage: String?
+
+    var stage: TransferTaskStage {
+        TransferTaskStage.resolve(
+            status,
+            taskType: taskType == .upload ? .upload : .download
+        )
+    }
+
+    var isActive: Bool {
+        stage.isActive
+    }
+
+    var transferredSizeText: String {
+        "\(Self.formatBytes(transferredBytes)) / \(Self.formatBytes(size))"
+    }
     
     var sizeString: String {
         if size < 1024 {
@@ -4075,6 +4128,10 @@ struct TransferItem: Identifiable {
     
     var progressPercent: String {
         String(format: "%.1f%%", progress * 100)
+    }
+
+    private static func formatBytes(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: max(0, bytes), countStyle: .file)
     }
 }
 
@@ -4221,8 +4278,12 @@ private struct ChatDetailView: View {
     @State private var pendingAttachments: [PendingChatAttachment] = []
     @State private var pendingAttachmentError: String? = nil
     @State private var imagePreviewContext: ChatImagePreviewContext?
+    @State private var chatBackgroundImage: NSImage?
+    @State private var isManagingChatBackground = false
+    @State private var chatBackgroundError: String?
     @StateObject private var attachmentTransferStore = ChatAttachmentTransferStore.shared
     private let attachmentTransferCoordinator = ChatAttachmentTransferCoordinator.shared
+    private let chatBackgroundStore = ChatBackgroundStore.shared
     
     // Alias Update State
     @State private var showingAliasPopover: Bool = false
@@ -4280,8 +4341,16 @@ private struct ChatDetailView: View {
                         newAliasInput = friend.name
                         showingAliasPopover = true
                     }
-                    Button("更改聊天背景") {
-                        // TODO: Implement background change
+                    Menu("更改聊天背景") {
+                        Button("选择图片") {
+                            chooseChatBackground()
+                        }
+                        .disabled(isManagingChatBackground)
+
+                        Button("恢复空白背景", role: .destructive) {
+                            Task { await resetChatBackground() }
+                        }
+                        .disabled(chatBackgroundImage == nil || isManagingChatBackground)
                     }
                     Button("清空聊天记录") {
                         Task { await clearLocalHistory() }
@@ -4333,9 +4402,21 @@ private struct ChatDetailView: View {
                     // Messages Area
                     ScrollViewReader { proxy in
                 ZStack {
-                    // Mesh Gradient Placeholder Background
-                    LinearGradient(colors: [.clear, .blue.opacity(0.05), .clear], startPoint: .topLeading, endPoint: .bottomTrailing)
-                        .ignoresSafeArea()
+                    GeometryReader { backgroundProxy in
+                        if let chatBackgroundImage {
+                            Image(nsImage: chatBackgroundImage)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(
+                                    width: backgroundProxy.size.width,
+                                    height: backgroundProxy.size.height
+                                )
+                                .clipped()
+                        } else {
+                            Color(NSColor.textBackgroundColor)
+                                .opacity(0.8)
+                        }
+                    }
                     
                     ScrollView {
                         LazyVStack(spacing: 12) {
@@ -4408,6 +4489,7 @@ private struct ChatDetailView: View {
                         .padding(.top, 16)
                         .padding(.bottom, 8)
                     }
+                    .background(Color.clear)
                     .onChange(of: historyWindowRevision) { _ in
                         if let messageId = scrollRestoreMessageId {
                             let anchor: UnitPoint = scrollRestoreEdge == .top ? .top : .bottom
@@ -4437,7 +4519,6 @@ private struct ChatDetailView: View {
                 }
             }
             .frame(height: messageHeight)
-            .background(Color(NSColor.textBackgroundColor).opacity(0.8))
 
                     ChatInputBar(
                         friendName: friend.name,
@@ -4466,6 +4547,9 @@ private struct ChatDetailView: View {
                 try? await Task.sleep(nanoseconds: 600_000_000)
                 isInitialProcessing = false
             }
+            Task {
+                await loadChatBackground()
+            }
         }
         .onDisappear {
             historyLoadTask?.cancel()
@@ -4475,9 +4559,9 @@ private struct ChatDetailView: View {
             for (taskId, info) in updates {
                 attachmentTransferStore.updateDownload(
                     taskId: taskId,
-                    status: info.0,
-                    progress: info.1,
-                    errorMessage: info.0.contains("失败") ? info.0 : nil
+                    status: info.status,
+                    progress: info.progress,
+                    errorMessage: info.errorMessage
                 )
             }
         }
@@ -4495,6 +4579,139 @@ private struct ChatDetailView: View {
             }
         }
         .animation(.easeInOut(duration: 0.16), value: imagePreviewContext?.id)
+        .alert(
+            "聊天背景设置失败",
+            isPresented: Binding(
+                get: { chatBackgroundError != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        chatBackgroundError = nil
+                    }
+                }
+            )
+        ) {
+            Button("确定", role: .cancel) {
+                chatBackgroundError = nil
+            }
+        } message: {
+            Text(chatBackgroundError ?? "")
+        }
+    }
+
+    @MainActor
+    private func loadChatBackground() async {
+        guard let identity = currentChatBackgroundIdentity() else {
+            chatBackgroundError = "无法获取当前账号或好友信息。"
+            return
+        }
+
+        let data = await chatBackgroundStore.loadBackgroundData(
+            accountId: identity.accountId,
+            friendId: identity.friendId
+        )
+        guard isCurrentChatBackgroundIdentity(identity) else { return }
+        chatBackgroundImage = data.flatMap(NSImage.init(data:))
+    }
+
+    @MainActor
+    private func chooseChatBackground() {
+        guard !isManagingChatBackground else { return }
+        guard let identity = currentChatBackgroundIdentity() else {
+            chatBackgroundError = "无法获取当前账号或好友信息。"
+            return
+        }
+
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        isManagingChatBackground = true
+        chatBackgroundError = nil
+        Task {
+            await importChatBackground(from: url, identity: identity)
+        }
+    }
+
+    @MainActor
+    private func importChatBackground(
+        from url: URL,
+        identity: (accountId: Int64, friendId: Int64)
+    ) async {
+        defer { isManagingChatBackground = false }
+        guard isCurrentChatBackgroundIdentity(identity) else {
+            chatBackgroundError = "当前账号或好友已变更，请重新选择。"
+            return
+        }
+
+        let isAccessingSecurityScopedResource = url.startAccessingSecurityScopedResource()
+        defer {
+            if isAccessingSecurityScopedResource {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        do {
+            let data = try await chatBackgroundStore.importBackground(
+                from: url,
+                accountId: identity.accountId,
+                friendId: identity.friendId
+            )
+            guard isCurrentChatBackgroundIdentity(identity) else { return }
+            guard let image = NSImage(data: data) else {
+                chatBackgroundError = ChatBackgroundStore.StoreError.invalidImage.localizedDescription
+                return
+            }
+            chatBackgroundImage = image
+        } catch {
+            guard isCurrentChatBackgroundIdentity(identity) else { return }
+            chatBackgroundError = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func resetChatBackground() async {
+        guard !isManagingChatBackground else { return }
+        guard let identity = currentChatBackgroundIdentity() else {
+            chatBackgroundError = "无法获取当前账号或好友信息。"
+            return
+        }
+
+        isManagingChatBackground = true
+        chatBackgroundError = nil
+        defer { isManagingChatBackground = false }
+
+        do {
+            try await chatBackgroundStore.removeBackground(
+                accountId: identity.accountId,
+                friendId: identity.friendId
+            )
+            guard isCurrentChatBackgroundIdentity(identity) else { return }
+            chatBackgroundImage = nil
+        } catch {
+            guard isCurrentChatBackgroundIdentity(identity) else { return }
+            chatBackgroundError = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func currentChatBackgroundIdentity() -> (accountId: Int64, friendId: Int64)? {
+        guard let accountId = authService.currentUser?.id,
+              accountId > 0,
+              friend.id > 0 else {
+            return nil
+        }
+        return (accountId, friend.id)
+    }
+
+    @MainActor
+    private func isCurrentChatBackgroundIdentity(
+        _ identity: (accountId: Int64, friendId: Int64)
+    ) -> Bool {
+        authService.currentUser?.id == identity.accountId && friend.id == identity.friendId
     }
     
     private func handleUpdateAlias() {
@@ -7353,10 +7570,10 @@ private struct TransferListRowView: View {
     @State private var isHovering = false
 
     private var isActive: Bool {
-        item.status == "上传中" || item.status == "下载中" || item.status == "等待下载"
+        item.isActive
     }
     private var canResume: Bool {
-        item.status == "等待上传" || item.status == "暂停" || item.status == "已暂停" || item.status == "失败"
+        item.stage.canResume
     }
 
     private var statusColor: Color {
@@ -7397,7 +7614,7 @@ private struct TransferListRowView: View {
 
                     Text(fileMetadataText)
                         .font(.system(size: 12))
-                        .foregroundColor(TelegramTheme.textSecondary)
+                        .foregroundColor(item.errorMessage == nil ? TelegramTheme.textSecondary : TelegramTheme.danger)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -7448,9 +7665,11 @@ private struct TransferListRowView: View {
                 }
                 .frame(height: 6)
 
-                Text(item.progressPercent)
+                Text("\(item.progressPercent) · \(item.transferredSizeText)")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(TelegramTheme.textSecondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
             }
             .frame(width: metrics.progressWidth)
 
@@ -7506,6 +7725,9 @@ private struct TransferListRowView: View {
     }
 
     private var fileMetadataText: String {
+        if let errorMessage = item.errorMessage, !errorMessage.isEmpty {
+            return errorMessage
+        }
         let locationAndSize = "\(item.directoryName) / \(item.sizeString)"
         if metrics.showType {
             return locationAndSize

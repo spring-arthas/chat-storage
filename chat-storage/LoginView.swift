@@ -54,7 +54,16 @@ struct LoginView: View {
         } else {
             loginContent
                 .sheet(isPresented: $showConfigServer) {
-                    ConfigServerView()
+                    ConfigServerView {
+                        // [修改] 登录页切换服务器后尝试恢复新服务器自己的 Keychain 会话。
+                        authService.invalidateLocalSession()
+                        Task {
+                            let restored = await authService.restoreSession()
+                            await MainActor.run {
+                                isLoggedIn = restored
+                            }
+                        }
+                    }
                         .environmentObject(socketManager)
                 }
         }

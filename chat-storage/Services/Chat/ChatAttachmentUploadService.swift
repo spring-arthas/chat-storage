@@ -46,11 +46,12 @@ enum ChatAttachmentUploadError: LocalizedError {
     }
 }
 
-/// 一条聊天消息独占的上传会话。会话内所有物理文件顺序复用同一条 10087 连接。
+/// 一条聊天消息独占的上传会话。会话内所有物理文件顺序复用同一条上传连接。
 final class ChatAttachmentUploadSession {
     let batchId: String
 
     private let host: String
+    private let uploadPort: UInt32
     private let socketManager: SocketManager
     private lazy var transferService = FileTransferService(socketManager: socketManager)
     private var closed = false
@@ -58,10 +59,15 @@ final class ChatAttachmentUploadSession {
     init(
         batchId: String,
         host: String = SocketManager.shared.getCurrentServer().0,
+        uploadPort: UInt32? = nil,
         socketManager: SocketManager = SocketManager()
     ) {
         self.batchId = batchId
         self.host = host
+        let controlServer = SocketManager.shared.getCurrentServer()
+        self.uploadPort = uploadPort ?? ServerEndpointStore.resolvedConfiguration(
+            for: ServerEndpoint(host: host, port: controlServer.1)
+        ).uploadPort
         self.socketManager = socketManager
     }
 
@@ -119,7 +125,7 @@ final class ChatAttachmentUploadSession {
     private func connectAndWaitUntilWritable() async throws {
         await MainActor.run {
             socketManager.disconnect(notifyUI: false)
-            socketManager.connect(host: host, port: 10087)
+            socketManager.connect(host: host, port: uploadPort)
         }
 
         var attempts = 0
@@ -602,7 +608,11 @@ final class ChatAttachmentUploadService {
 
         await MainActor.run {
             socketManager.disconnect(notifyUI: false)
-            socketManager.connect(host: host, port: 10087)
+            let currentServer = SocketManager.shared.getCurrentServer()
+            let uploadPort = ServerEndpointStore.resolvedConfiguration(
+                for: ServerEndpoint(host: host, port: currentServer.1)
+            ).uploadPort
+            socketManager.connect(host: host, port: uploadPort)
         }
 
         var attempts = 0

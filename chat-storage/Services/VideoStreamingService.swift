@@ -23,16 +23,22 @@ final class VideoStreamingService {
     private var activeStreamHandlerToken: UUID?
     private var requestGeneration: UInt64 = 0
 
-    init(host: String, port: UInt32 = 10088, streamTimeoutSeconds: TimeInterval = 45.0) {
+    init(host: String, port: UInt32? = nil, streamTimeoutSeconds: TimeInterval = 45.0) {
         self.targetHost = host
-        self.targetPort = port
+        let currentServer = SocketManager.shared.getCurrentServer()
+        self.targetPort = port ?? ServerEndpointStore.resolvedConfiguration(
+            for: ServerEndpoint(host: host, port: currentServer.1)
+        ).downloadPort
         self.streamTimeoutSeconds = streamTimeoutSeconds
         self.socketManager = SocketManager()
     }
 
     convenience init() {
-        let (host, _) = SocketManager.shared.getCurrentServer()
-        self.init(host: host)
+        let (host, controlPort) = SocketManager.shared.getCurrentServer()
+        let configuration = ServerEndpointStore.resolvedConfiguration(
+            for: ServerEndpoint(host: host, port: controlPort)
+        )
+        self.init(host: host, port: configuration.downloadPort)
     }
 
     deinit {
@@ -383,16 +389,8 @@ final class VideoStreamingService {
     }
 
     private func isSocketReadyForStreaming() -> Bool {
-        guard socketManager.connectionState == .connected,
-              let inputStream = socketManager.inputStream,
-              let outputStream = socketManager.outputStream else {
-            return false
-        }
-
-        let inputReady: Set<Stream.Status> = [.open, .reading]
-        let outputReady: Set<Stream.Status> = [.open, .writing]
-        return inputReady.contains(inputStream.streamStatus) &&
-               outputReady.contains(outputStream.streamStatus)
+        // [修改] 在线播放复用统一 TCP 传输层，以真实连接状态判断是否可用。
+        socketManager.isTransportReady
     }
 
     private func disconnectSocket() {

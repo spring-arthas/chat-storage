@@ -10,7 +10,7 @@ import Foundation
 // MARK: - UserDO (Data Object)
 
 /// 用户数据对象 (对应数据库或API返回的用户信息)
-struct UserDO: Codable, Identifiable {
+struct UserDO: Codable, Identifiable, Equatable {
     /// 用户唯一ID
     let id: Int64
     
@@ -40,6 +40,35 @@ struct UserDO: Codable, Identifiable {
 
     /// 登录后由服务端签发，用于文件上传、下载和图片流请求认证。
     let transferToken: String?
+
+    /// 登录后由服务端签发，用于应用重启、回到前台和传输令牌刷新时恢复会话。
+    let sessionToken: String?
+
+    init(
+        id: Int64,
+        username: String,
+        nickname: String?,
+        avatar: String?,
+        email: String?,
+        phone: String?,
+        createTime: Int64?,
+        updateTime: Int64?,
+        status: Int?,
+        transferToken: String?,
+        sessionToken: String? = nil
+    ) {
+        self.id = id
+        self.username = username
+        self.nickname = nickname
+        self.avatar = avatar
+        self.email = email
+        self.phone = phone
+        self.createTime = createTime
+        self.updateTime = updateTime
+        self.status = status
+        self.transferToken = transferToken
+        self.sessionToken = sessionToken
+    }
     
     // Identifiable 协议要求
     var identifiableId: String { String(id) }
@@ -56,6 +85,7 @@ struct UserDO: Codable, Identifiable {
         case updateTime
         case status
         case transferToken
+        case sessionToken
     }
 }
 
@@ -77,6 +107,9 @@ struct ResponseWrapper<T: Codable>: Codable {
     
     /// 响应数据（可选）
     let data: T?
+
+    /// 认证类失败的稳定错误码，例如 SESSION_EXPIRED。
+    let errorCode: String?
     
     /// 计算属性：响应码
     /// 如果服务器返回了 code 字段，使用该值
@@ -99,6 +132,7 @@ struct ResponseWrapper<T: Codable>: Codable {
         case message
         case msg
         case data
+        case errorCode
     }
     
     // 自定义解码逻辑以处理 message/msg 字段
@@ -107,6 +141,7 @@ struct ResponseWrapper<T: Codable>: Codable {
         success = try container.decodeIfPresent(Bool.self, forKey: .success)
         codeValue = try container.decodeIfPresent(Int.self, forKey: .codeValue)
         data = try container.decodeIfPresent(T.self, forKey: .data)
+        errorCode = try container.decodeIfPresent(String.self, forKey: .errorCode)
         
         // 尝试读取 message，如果失败尝试读取 msg
         message = (try? container.decode(String.self, forKey: .message))
@@ -120,6 +155,7 @@ struct ResponseWrapper<T: Codable>: Codable {
         try container.encodeIfPresent(codeValue, forKey: .codeValue)
         try container.encode(message, forKey: .message)
         try container.encodeIfPresent(data, forKey: .data)
+        try container.encodeIfPresent(errorCode, forKey: .errorCode)
     }
 }
 

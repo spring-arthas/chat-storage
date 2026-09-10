@@ -593,9 +593,11 @@ actor FileThumbnailService {
         // 尾部 moov 和目标帧数据，避免把 requestsAllDataToEnd 请求截断后误报资源不完整。
         do {
             let playInfo = try await VideoPlaybackService.shared.requestPlayUrl(fileId: item.id)
-            let asset = AVURLAsset(url: playInfo.playUrl)
+            guard let plainMediaAsset = PlainMediaAsset(url: playInfo.playUrl) else {
+                throw VideoPlaybackError.invalidPlayUrl
+            }
             if let image = await generateRemoteVideoThumbnail(
-                asset: asset,
+                plainAsset: plainMediaAsset,
                 fileName: item.fileName,
                 timeoutSeconds: 30
             ) {
@@ -607,6 +609,19 @@ actor FileThumbnailService {
         }
 
         return await loadVideoThumbnailViaRangePull(item)
+    }
+
+    // [修改] 通过参数强持有 PlainMediaAsset，确保抽帧期间资源不会被释放。
+    private func generateRemoteVideoThumbnail(
+        plainAsset: PlainMediaAsset,
+        fileName: String,
+        timeoutSeconds: UInt64
+    ) async -> NSImage? {
+        await generateRemoteVideoThumbnail(
+            asset: plainAsset.asset,
+            fileName: fileName,
+            timeoutSeconds: timeoutSeconds
+        )
     }
 
     private func loadVideoThumbnailViaRangePull(_ item: DirectoryItem) async -> NSImage? {

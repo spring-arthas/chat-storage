@@ -876,6 +876,7 @@ class FileTransferService: ObservableObject {
               !transferToken.isEmpty else {
             throw FileTransferError.serverError("文件传输凭证无效，请重新登录")
         }
+        statusHandler?(TransferTaskStage.hashing.rawValue)
         
         // --- Persistence Integration Start ---
         // 初始化/更新本地数据库任务
@@ -888,8 +889,8 @@ class FileTransferService: ObservableObject {
                 targetDirId: targetDirId,
                 userId: userId,
                 userName: userName,
-                status: "Waiting",
-                progress: 0.0,
+                status: TransferTaskStage.hashing.rawValue,
+                progress: fileSize > 0 ? Double(startOffset) / Double(fileSize) : 0,
                 uploadedBytes: startOffset, // [修改] 保留已上传字节数，断点续传时不归零
                 md5: nil // MD5 计算后再更新
             )
@@ -898,7 +899,7 @@ class FileTransferService: ObservableObject {
         
         // 2. 计算 MD5
         if persistTransferTask {
-            PersistenceManager.shared.updateStatus(taskId: taskId, status: "Hashing")
+            PersistenceManager.shared.updateStatus(taskId: taskId, status: TransferTaskStage.hashing.rawValue)
         }
         print("⏳ 正在计算 MD5...")
         let md5 = try await resolveOrComputeMD5(for: fileUrl, fileSize: fileSize)
@@ -929,9 +930,7 @@ class FileTransferService: ObservableObject {
         
         // 4. 发送断点检查帧 (0x05)
         print("🔍 发送断点检查请求...")
-        if uploadPurpose == "CHAT_ATTACHMENT" {
-            statusHandler?("断点检查")
-        }
+        statusHandler?(TransferTaskStage.resumeChecking.rawValue)
         
         // 构建字典类型的请求体，确保 userId 是数字，且可以在此处去掉 taskId 如果服务端不需要
         // 发送上传请求元数据（包含startOffset用于断点续传）
@@ -952,9 +951,9 @@ class FileTransferService: ObservableObject {
             uploadRequest["batchId"] = batchId
         }
         
-        // --- DEBUG LOG START ---
-        if let jsonData = try? JSONSerialization.data(withJSONObject: uploadRequest), let jsonString = String(data: jsonData, encoding: .utf8) {
-            print("📤 [DEBUG] Meta Request JSON (Dict): \(jsonString)")
+        if let jsonData = try? JSONSerialization.data(withJSONObject: uploadRequest) {
+            // [修改] 上传 JSON 含 transferToken，只记录排障所需的非敏感业务字段。
+            print("📤 准备上传元数据 taskId=\(taskId) fileName=\(fileName) fileSize=\(fileSize) purpose=\(uploadPurpose)")
             
             // 使用字典构建 Frame
             let checkFrame = Frame(type: .resumeCheck, data: jsonData, flags: 0x00)
@@ -989,9 +988,10 @@ class FileTransferService: ObservableObject {
                     throw FileTransferError.invalidFinalFileId
                 }
                 if persistTransferTask {
-                    PersistenceManager.shared.updateStatus(taskId: taskId, status: "Completed")
+                    PersistenceManager.shared.updateStatus(taskId: taskId, status: TransferTaskStage.completed.rawValue)
                 }
                 progressHandler?(1.0, "完成")
+                statusHandler?(TransferTaskStage.completed.rawValue)
                 return fileId
             } else {
                 throw FileTransferError.serverError(resumeInfo.message ?? "未知状态")
@@ -1000,9 +1000,7 @@ class FileTransferService: ObservableObject {
             if needFreshUpload {
                 // === 全新上传 ===
                 print("🆕 无断点记录，开始全新上传...")
-                if uploadPurpose == "CHAT_ATTACHMENT" {
-                    statusHandler?("元数据握手")
-                }
+                statusHandler?(TransferTaskStage.metadataHandshake.rawValue)
                 let metaFrame = try FrameBuilder.build(type: .metaFrame, payload: metaRequest)
                 let metaResponseFrame = try await socketManager.sendFrameAndWait(
                     metaFrame,
@@ -1028,9 +1026,9 @@ class FileTransferService: ObservableObject {
             // --- Persistence Update Status ---
             // 关键修复: 使用原始 taskId 更新数据库，确保记录匹配
             if persistTransferTask {
-                PersistenceManager.shared.updateStatus(taskId: taskId, status: "Uploading")
+                PersistenceManager.shared.updateStatus(taskId: taskId, status: TransferTaskStage.uploading.rawValue)
             }
-            statusHandler?(uploadPurpose == "CHAT_ATTACHMENT" ? "数据发送" : "上传中")
+            statusHandler?(TransferTaskStage.uploading.rawValue)
             // --- Persistence Update End ---
             
             // 5. 发送文件数据 (0x02)
@@ -1044,7 +1042,7 @@ class FileTransferService: ObservableObject {
                     initialChunkSize: resumeInfo.initialChunkSize,
                     initialAckWindowBytes: resumeInfo.initialAckWindow,
                     persistTransferTask: persistTransferTask,
-                    reportsDetailedStages: uploadPurpose == "CHAT_ATTACHMENT",
+                    reportsDetailedStages: true,
                     progressHandler: progressHandler,
                     statusHandler: statusHandler
                 )
@@ -1058,7 +1056,7 @@ class FileTransferService: ObservableObject {
             
             // 6. 发送结束帧 (0x03)
             print("🏁 发送结束帧...")
-            statusHandler?(uploadPurpose == "CHAT_ATTACHMENT" ? "完整性校验与最终确认" : "校验中")
+            statusHandler?(TransferTaskStage.verifying.rawValue)
             let endRequest = EndUploadRequest(taskId: taskId)
             let endFrame = try FrameBuilder.build(type: .endFrame, payload: endRequest)
             let endResponseFrame = try await socketManager.sendFrameAndWait(
@@ -1074,7 +1072,7 @@ class FileTransferService: ObservableObject {
             // --- Persistence Complete ---
             // 任务完成，可以选择删除或标记为完成。 根据需求保留记录。
             if persistTransferTask {
-                PersistenceManager.shared.updateStatus(taskId: taskId, status: "Completed")
+                PersistenceManager.shared.updateStatus(taskId: taskId, status: TransferTaskStage.completed.rawValue)
             }
             // PersistenceManager.shared.deleteTask(taskId: taskId) // 暂时保留
             // --- Persistence End ---
@@ -1158,9 +1156,7 @@ class FileTransferService: ObservableObject {
                 flags: flags
             )
             if dataFrameNeedsAck {
-                if reportsDetailedStages {
-                    statusHandler?("进度确认")
-                }
+                statusHandler?(TransferTaskStage.waitingForServer.rawValue)
                 let ackResult = try await waitForUploadProgressAck(
                     dataFrame: dataFrame,
                     taskId: taskId,
@@ -1206,14 +1202,12 @@ class FileTransferService: ObservableObject {
                 }
                 rewindAttempts = 0
                 lastAckOffset = confirmedOffset
-                if reportsDetailedStages {
-                    statusHandler?("数据发送")
-                }
+                statusHandler?(TransferTaskStage.uploading.rawValue)
                 if adaptiveDecision.shouldPause {
-                    statusHandler?("等待服务端")
+                    statusHandler?(TransferTaskStage.waitingForServer.rawValue)
                     let retryAfterMs = min(60_000, max(1, adaptiveDecision.retryAfterMs ?? 250))
                     try await Task.sleep(nanoseconds: UInt64(retryAfterMs) * 1_000_000)
-                    statusHandler?("上传中")
+                    statusHandler?(TransferTaskStage.uploading.rawValue)
                 }
                 ackWindowStartedAt = Date()
                 socketWriteWaitDuration = 0
@@ -1249,7 +1243,8 @@ class FileTransferService: ObservableObject {
                     PersistenceManager.shared.updateProgress(
                         taskId: taskId,
                         progress: progress,
-                        uploadedBytes: currentOffset
+                        uploadedBytes: currentOffset,
+                        status: TransferTaskStage.uploading.rawValue
                     )
                 }
                 // --- Persistence End ---

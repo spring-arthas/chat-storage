@@ -65,7 +65,7 @@ struct PersistenceController {
 
 import Foundation
 
-class PersistenceManager {
+class PersistenceManager: TransferTaskPersisting {
     static let shared = PersistenceManager()
     
     private let context: NSManagedObjectContext
@@ -88,16 +88,52 @@ class PersistenceManager {
         status: String? = nil,
         progress: Double? = nil,
         uploadedBytes: Int64? = nil,
-        md5: String? = nil
+        md5: String? = nil,
+        errorMessage: String? = nil
     ) {
-        context.perform {
-            let entity = self.fetchEntity(taskId: taskId) ?? TransferTaskEntity(context: self.context)
-            entity.taskId = taskId
-            
-            if let fileUrl = fileUrl {
-                print("💾 Persistence: Attempting to create bookmark for \(fileUrl.path)")
-                // Save Security-Scoped Bookmark
-                do {
+        do {
+            try saveTaskNow(
+                taskId: taskId,
+                fileUrl: fileUrl,
+                fileName: fileName,
+                fileSize: fileSize,
+                targetDirId: targetDirId,
+                userId: userId,
+                userName: userName,
+                status: status,
+                progress: progress,
+                uploadedBytes: uploadedBytes,
+                md5: md5,
+                errorMessage: errorMessage
+            )
+        } catch {
+            print("❌ Core Data 保存传输任务失败, taskId=\(taskId), error=\(error.localizedDescription)")
+        }
+    }
+
+    private func saveTaskNow(
+        taskId: String,
+        fileUrl: URL? = nil,
+        fileName: String? = nil,
+        fileSize: Int64? = nil,
+        targetDirId: Int64? = nil,
+        userId: Int32? = nil,
+        userName: String? = nil,
+        status: String? = nil,
+        progress: Double? = nil,
+        uploadedBytes: Int64? = nil,
+        md5: String? = nil,
+        errorMessage: String? = nil
+    ) throws {
+        var operationError: Error?
+        context.performAndWait {
+            do {
+                let entity = try self.fetchEntityInContext(taskId: taskId)
+                    ?? TransferTaskEntity(context: self.context)
+                entity.taskId = taskId
+
+                if let fileUrl {
+                    print("💾 Persistence: Attempting to create bookmark for \(fileUrl.path)")
                     let bookmark = try fileUrl.bookmarkData(
                         options: .withSecurityScope,
                         includingResourceValuesForKeys: nil,
@@ -105,36 +141,150 @@ class PersistenceManager {
                     )
                     entity.fileUrl = bookmark
                     print("✅ Persistence: Bookmark created successfully (\(bookmark.count) bytes)")
-                } catch {
-                    print("❌ Failed to create bookmark for \(fileUrl): \(error)")
+                } else if entity.fileUrl == nil {
+                    print("⚠️ Persistence: saveTask called without fileUrl and entity has no existing bookmark.")
                 }
-            } else {
-                 if entity.fileUrl == nil {
-                     print("⚠️ Persistence: saveTask called without fileUrl and entity has no existing bookmark.")
-                 }
+                if let fileName { entity.fileName = fileName }
+                if let fileSize { entity.fileSize = fileSize }
+                if let targetDirId { entity.targetDirId = targetDirId }
+                if let userId { entity.userId = userId }
+                if let userName { entity.userName = userName }
+                if let status { entity.status = status }
+                if let progress { entity.progress = progress }
+                if let uploadedBytes { entity.uploadedBytes = uploadedBytes }
+                if let md5 { entity.md5 = md5 }
+                if let errorMessage { entity.errorMessage = errorMessage }
+
+                if entity.timestamp == nil {
+                    entity.timestamp = Date()
+                }
+                try self.saveContextNow()
+            } catch {
+                operationError = error
             }
-            if let fileName = fileName { entity.fileName = fileName }
-            if let fileSize = fileSize { entity.fileSize = fileSize }
-            if let targetDirId = targetDirId { entity.targetDirId = targetDirId }
-            if let userId = userId { entity.userId = userId }
-            if let userName = userName { entity.userName = userName }
-            if let status = status { entity.status = status }
-            if let progress = progress { entity.progress = progress }
-            if let uploadedBytes = uploadedBytes { entity.uploadedBytes = uploadedBytes }
-            if let md5 = md5 { entity.md5 = md5 }
-            
-            if entity.timestamp == nil {
-                entity.timestamp = Date()
-            }
-            
-            self.saveContext()
         }
+        if let operationError {
+            throw operationError
+        }
+    }
+
+    // MARK: - TransferTaskPersisting
+
+    func loadPendingTasks() -> [PersistedTransferTaskRecord] {
+        var records: [PersistedTransferTaskRecord] = []
+        context.performAndWait {
+            let request: NSFetchRequest<TransferTaskEntity> = TransferTaskEntity.fetchRequest()
+            request.predicate = NSPredicate(
+                format: "status != %@ AND status != %@",
+                TransferTaskStage.completed.rawValue,
+                "Completed"
+            )
+            request.sortDescriptors = [NSSortDescriptor(key: "timestamp", ascending: true)]
+
+            do {
+                let entities = try self.context.fetch(request)
+                records = entities.compactMap { entity in
+                    guard let taskIdString = entity.taskId,
+                          let taskId = UUID(uuidString: taskIdString),
+                          let fileName = entity.fileName,
+                          let bookmark = entity.fileUrl,
+                          let fileURL = self.resolveBookmark(data: bookmark) else {
+                        return nil
+                    }
+
+                    let isDownload = entity.md5?.hasPrefix("DOWNLOAD_FILE_ID_") == true
+                    let taskType: TransferTaskType = isDownload ? .download : .upload
+                    let remoteFileId = isDownload
+                        ? Int64(entity.md5?.split(separator: "_").last ?? "") ?? 0
+                        : 0
+                    let byteProgress = entity.fileSize > 0
+                        ? Double(entity.uploadedBytes) / Double(entity.fileSize)
+                        : 0
+                    let progress = min(1, max(entity.progress, byteProgress))
+                    let stage = TransferTaskStage.resolve(
+                        entity.status ?? "",
+                        taskType: taskType
+                    )
+                    let restoredStage = stage.isActive ? TransferTaskStage.paused : stage
+                    let task = StorageTransferTask(
+                        id: taskId,
+                        taskType: taskType,
+                        name: fileName,
+                        fileUrl: fileURL,
+                        targetDirId: entity.targetDirId,
+                        userId: Int64(entity.userId),
+                        userName: entity.userName ?? "",
+                        fileSize: entity.fileSize,
+                        directoryName: "",
+                        remoteFileId: remoteFileId,
+                        progress: progress,
+                        status: restoredStage.rawValue
+                    )
+                    return PersistedTransferTaskRecord(
+                        task: task,
+                        transferredBytes: entity.uploadedBytes,
+                        errorMessage: entity.errorMessage
+                    )
+                }
+            } catch {
+                print("❌ 读取待恢复传输任务失败: \(error.localizedDescription)")
+                records = []
+            }
+        }
+        return records
+    }
+
+    func persistInitialTask(_ task: StorageTransferTask, stage: TransferTaskStage) throws {
+        guard let userId = Int32(exactly: task.userId) else {
+            throw FileTransferError.serverError("当前用户ID超出文件传输协议范围")
+        }
+        let downloadMarker = task.taskType == .download
+            ? "DOWNLOAD_FILE_ID_\(task.remoteFileId)"
+            : nil
+        try saveTaskNow(
+            taskId: task.id.uuidString,
+            fileUrl: task.fileUrl,
+            fileName: task.name,
+            fileSize: task.fileSize,
+            targetDirId: task.targetDirId,
+            userId: userId,
+            userName: task.userName,
+            status: stage.rawValue,
+            progress: task.progress,
+            uploadedBytes: Int64(Double(task.fileSize) * task.progress),
+            md5: downloadMarker
+        )
+    }
+
+    func updateTask(
+        taskId: String,
+        stage: TransferTaskStage,
+        progress: Double,
+        transferredBytes: Int64,
+        errorMessage: String?
+    ) {
+        context.performAndWait {
+            do {
+                guard let entity = try self.fetchEntityInContext(taskId: taskId) else { return }
+                entity.status = stage.rawValue
+                entity.progress = min(1, max(0, progress))
+                entity.uploadedBytes = max(0, transferredBytes)
+                entity.errorMessage = errorMessage
+                try self.saveContextNow()
+            } catch {
+                print("❌ 更新传输任务失败, taskId=\(taskId), error=\(error.localizedDescription)")
+            }
+        }
+    }
+
+    func transferredBytes(taskId: String) -> Int64 {
+        fetchEntity(taskId: taskId)?.uploadedBytes ?? 0
     }
     
     /// Update progress lightly to avoid overhead
     func updateProgress(taskId: String, progress: Double, uploadedBytes: Int64, status: String = "Uploading") {
         context.perform {
-            if let entity = self.fetchEntity(taskId: taskId) {
+            if let entity = try? self.fetchEntityInContext(taskId: taskId) {
                 entity.progress = progress
                 entity.uploadedBytes = uploadedBytes
                 entity.status = status
@@ -146,7 +296,7 @@ class PersistenceManager {
     /// Update status only
     func updateStatus(taskId: String, status: String) {
         context.perform {
-            if let entity = self.fetchEntity(taskId: taskId) {
+            if let entity = try? self.fetchEntityInContext(taskId: taskId) {
                 entity.status = status
                 self.saveContext()
             }
@@ -156,21 +306,29 @@ class PersistenceManager {
     /// Fetch pending tasks (Waiting, Uploading, Paused, Failed)
     func fetchPendingTasks() -> [TransferTaskEntity] {
         let request: NSFetchRequest<TransferTaskEntity> = TransferTaskEntity.fetchRequest()
-        // Fetch all except Completed
-        request.predicate = NSPredicate(format: "status != %@", "Completed")
+        // [修改] 中英文完成状态都不能被恢复成待处理任务。
+        request.predicate = NSPredicate(
+            format: "status != %@ AND status != %@",
+            "Completed",
+            TransferTaskStage.completed.rawValue
+        )
         request.sortDescriptors = [NSSortDescriptor(key: "timestamp", ascending: true)]
-        
-        do {
-            return try context.fetch(request)
-        } catch {
-            print("❌ Failed to fetch pending tasks: \(error)")
-            return []
+
+        var result: [TransferTaskEntity] = []
+        context.performAndWait {
+            do {
+                result = try context.fetch(request)
+            } catch {
+                print("❌ Failed to fetch pending tasks: \(error)")
+                result = []
+            }
         }
+        return result
     }
     
     func deleteTask(taskId: String) {
         context.perform {
-            if let entity = self.fetchEntity(taskId: taskId) {
+            if let entity = try? self.fetchEntityInContext(taskId: taskId) {
                 self.context.delete(entity)
                 self.saveContext()
             }
@@ -209,12 +367,8 @@ class PersistenceManager {
         
         // 使用 performAndWait 确保在正确的队列上执行，避免线程安全问题
         context.performAndWait {
-            let request: NSFetchRequest<TransferTaskEntity> = TransferTaskEntity.fetchRequest()
-            request.predicate = NSPredicate(format: "taskId == %@", taskId)
-            request.fetchLimit = 1
-            
             do {
-                result = try context.fetch(request).first
+                result = try self.fetchEntityInContext(taskId: taskId)
             } catch {
                 print("❌ Error fetching task \(taskId): \(error)")
                 result = nil
@@ -223,14 +377,27 @@ class PersistenceManager {
         
         return result
     }
+
+    private func fetchEntityInContext(taskId: String) throws -> TransferTaskEntity? {
+        let request: NSFetchRequest<TransferTaskEntity> = TransferTaskEntity.fetchRequest()
+        request.predicate = NSPredicate(format: "taskId == %@", taskId)
+        request.fetchLimit = 1
+        return try context.fetch(request).first
+    }
     
     private func saveContext() {
         if context.hasChanges {
             do {
-                try context.save()
+                try saveContextNow()
             } catch {
                 print("❌ Core Data Save Error: \(error)")
             }
+        }
+    }
+
+    private func saveContextNow() throws {
+        if context.hasChanges {
+            try context.save()
         }
     }
     

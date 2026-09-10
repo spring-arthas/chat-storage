@@ -30,6 +30,8 @@ struct chat_storageApp: App {
     // 登录状态
     @State private var isLoggedIn = false
 
+    @State private var didAttemptSessionRestoration = false
+
     var body: some Scene {
         WindowGroup {
             Group {
@@ -66,6 +68,30 @@ struct chat_storageApp: App {
                     configureWindowForCurrentState()
                 }
             }
+            .onChange(of: authService.isAuthenticated) { authenticated in
+                // [修改] 自动刷新重试成功后也要立刻切回主界面，不能停留在登录页。
+                if isLoggedIn != authenticated {
+                    isLoggedIn = authenticated
+                }
+            }
+            .task {
+                guard !didAttemptSessionRestoration else { return }
+                didAttemptSessionRestoration = true
+                let restored = await authService.restoreSession()
+                if restored {
+                    isLoggedIn = true
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                guard didAttemptSessionRestoration else { return }
+                Task { @MainActor in
+                    // [修改] 回到前台时换发 transferToken，避免网盘在令牌到期后突然全部失败。
+                    let authenticated = await authService.resumeForForeground()
+                    if authenticated {
+                        isLoggedIn = true
+                    }
+                }
+            }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
                 DispatchQueue.main.async {
                     configureWindowForCurrentState()
@@ -83,9 +109,11 @@ struct chat_storageApp: App {
     init() {
         Self.refreshDockIcon()
 
-        // 应用启动时自动连接远程服务端
+        // [修改] 启动时先恢复上次服务器，随后才能读取该服务器隔离的 Keychain 会话。
+        let endpoint = ServerEndpointStore.load()
+            ?? ServerEndpoint(host: ServerEndpoint.defaultHost, port: 10_086)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            SocketManager.shared.connect()
+            SocketManager.shared.connect(host: endpoint.host, port: endpoint.port)
         }
     }
 
