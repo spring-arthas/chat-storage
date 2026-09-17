@@ -102,6 +102,17 @@ struct FileDto: Codable {
     
     /// MD5 Checksum
     let md5: String?
+
+    // MARK: - 账号级存储统计（仅根目录节点附带，全局目录数/文件数/已用空间）
+
+    /// 已用空间（字节）
+    let totalBytes: Int64?
+
+    /// 目录总数
+    let totalDirectories: Int?
+
+    /// 文件总数
+    let totalFiles: Int64?
     
     // MARK: - Robust Decoding
     
@@ -114,6 +125,7 @@ struct FileDto: Codable {
         case del, delTime
         case childFileList
         case md5
+        case totalBytes, totalDirectories, totalFiles
     }
     
     init(from decoder: Decoder) throws {
@@ -172,10 +184,33 @@ struct FileDto: Codable {
         self.childFileList = try container.decodeIfPresent([FileDto].self, forKey: .childFileList)
         
         self.md5 = try container.decodeIfPresent(String.self, forKey: .md5)
+
+        // 账号级存储统计（仅根目录节点附带，稳健解码支持 Int/String）
+        if let bytesVal = try? container.decode(Int64.self, forKey: .totalBytes) {
+            self.totalBytes = bytesVal
+        } else if let bytesStr = try? container.decode(String.self, forKey: .totalBytes), let bytesVal = Int64(bytesStr) {
+            self.totalBytes = bytesVal
+        } else {
+            self.totalBytes = nil
+        }
+        if let dirsVal = try? container.decode(Int.self, forKey: .totalDirectories) {
+            self.totalDirectories = dirsVal
+        } else if let dirsStr = try? container.decode(String.self, forKey: .totalDirectories), let dirsVal = Int(dirsStr) {
+            self.totalDirectories = dirsVal
+        } else {
+            self.totalDirectories = nil
+        }
+        if let filesVal = try? container.decode(Int64.self, forKey: .totalFiles) {
+            self.totalFiles = filesVal
+        } else if let filesStr = try? container.decode(String.self, forKey: .totalFiles), let filesVal = Int64(filesStr) {
+            self.totalFiles = filesVal
+        } else {
+            self.totalFiles = nil
+        }
     }
     
     // Default init for manual creation if needed
-    init(id: Int64, pId: Int64, fileName: String, filePath: String, fileSize: Int64?, fileType: String, isFile: String, isExist: String, hasChild: String, userName: String?, gmtCreated: Int64?, gmtModified: Int64?, del: String?, delTime: Int64?, childFileList: [FileDto]?, md5: String? = nil, parentDirName: String? = nil) {
+    init(id: Int64, pId: Int64, fileName: String, filePath: String, fileSize: Int64?, fileType: String, isFile: String, isExist: String, hasChild: String, userName: String?, gmtCreated: Int64?, gmtModified: Int64?, del: String?, delTime: Int64?, childFileList: [FileDto]?, md5: String? = nil, parentDirName: String? = nil, totalBytes: Int64? = nil, totalDirectories: Int? = nil, totalFiles: Int64? = nil) {
         self.id = id
         self.pId = pId
         self.parentDirName = parentDirName
@@ -193,6 +228,9 @@ struct FileDto: Codable {
         self.delTime = delTime
         self.childFileList = childFileList
         self.md5 = md5
+        self.totalBytes = totalBytes
+        self.totalDirectories = totalDirectories
+        self.totalFiles = totalFiles
     }
     
     func encode(to encoder: Encoder) throws {
@@ -214,6 +252,9 @@ struct FileDto: Codable {
         try container.encodeIfPresent(delTime, forKey: .delTime)
         try container.encodeIfPresent(childFileList, forKey: .childFileList)
         try container.encodeIfPresent(md5, forKey: .md5)
+        try container.encodeIfPresent(totalBytes, forKey: .totalBytes)
+        try container.encodeIfPresent(totalDirectories, forKey: .totalDirectories)
+        try container.encodeIfPresent(totalFiles, forKey: .totalFiles)
     }
     
     /// 是否是文件 (布尔值)
@@ -262,7 +303,10 @@ struct FileDto: Codable {
             uploadTime: gmtCreated,
             directoryName: parentDirName,
             filePath: filePath,
-            fileType: fileType
+            fileType: fileType,
+            totalBytes: totalBytes,
+            totalDirectories: totalDirectories,
+            totalFiles: totalFiles
         )
     }
 }
@@ -283,6 +327,11 @@ struct DirectoryItem: Identifiable, CustomDebugStringConvertible, Codable, Hasha
     let directoryName: String? // Display purpose
     let filePath: String
     let fileType: String
+
+    // MARK: - 账号级存储统计（仅根目录节点附带）
+    let totalBytes: Int64?
+    let totalDirectories: Int?
+    let totalFiles: Int64?
 
     // Helper for UI
     var sizeString: String {
@@ -360,7 +409,7 @@ struct DirectoryItem: Identifiable, CustomDebugStringConvertible, Codable, Hasha
     }
 
     // Default Init
-    init(id: Int64, pId: Int64, fileName: String, childFileList: [DirectoryItem]?, hasChild: Bool? = nil, fileSize: Int64? = nil, isFile: Bool = false, uploadTime: Int64? = nil, directoryName: String? = nil, filePath: String = "", fileType: String = "") {
+    init(id: Int64, pId: Int64, fileName: String, childFileList: [DirectoryItem]?, hasChild: Bool? = nil, fileSize: Int64? = nil, isFile: Bool = false, uploadTime: Int64? = nil, directoryName: String? = nil, filePath: String = "", fileType: String = "", totalBytes: Int64? = nil, totalDirectories: Int? = nil, totalFiles: Int64? = nil) {
         self.id = id
         self.pId = pId
         self.fileName = fileName
@@ -372,5 +421,8 @@ struct DirectoryItem: Identifiable, CustomDebugStringConvertible, Codable, Hasha
         self.directoryName = directoryName
         self.filePath = filePath
         self.fileType = fileType
+        self.totalBytes = totalBytes
+        self.totalDirectories = totalDirectories
+        self.totalFiles = totalFiles
     }
 }

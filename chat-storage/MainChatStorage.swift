@@ -1103,6 +1103,11 @@ struct MainChatStorage: View {
     
     /// 当前选中的目录 ID
     @State private var selectedDirectoryId: Int64?
+
+    /// 账号级存储统计（已用空间/目录总数/文件总数，由根目录节点附带）
+    @State private var storageTotalBytes: Int64?
+    @State private var storageTotalDirectories: Int?
+    @State private var storageTotalFiles: Int64?
     
     // MARK: - Search State
     
@@ -1473,6 +1478,8 @@ struct MainChatStorage: View {
 
             directoryTreeContent
 
+            storageSummaryBar
+
             TelegramSidebarTabBar(
                 selectedTab: $selectedTab,
                 unreadCount: socketManager.unreadCounts.values.reduce(0, +)
@@ -1543,7 +1550,77 @@ struct MainChatStorage: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-    
+
+    // MARK: - 存储概览条（左侧栏底部，全局统计）
+
+    private static let storageByteFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useGB, .useMB, .useKB]
+        formatter.countStyle = .file
+        return formatter
+    }()
+
+    private var storageSummaryBar: some View {
+        HStack(spacing: 0) {
+            storageSummaryItem(
+                icon: "internaldrive",
+                value: storageTotalBytes.map { Self.storageByteFormatter.string(fromByteCount: $0) } ?? "--",
+                label: "已用空间",
+                tint: TelegramTheme.success
+            )
+            storageSummaryDivider
+            storageSummaryItem(
+                icon: "folder.fill",
+                value: storageTotalDirectories.map { "\($0)" } ?? "--",
+                label: "目录",
+                tint: TelegramTheme.textSecondary
+            )
+            storageSummaryDivider
+            storageSummaryItem(
+                icon: "doc.fill",
+                value: storageTotalFiles.map { "\($0)" } ?? "--",
+                label: "文件",
+                tint: TelegramTheme.textSecondary
+            )
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(height: 52)
+        .background(CloudStorageSurface.field)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(TelegramTheme.textSecondary.opacity(0.16), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .help("账号级全局存储统计")
+    }
+
+    private func storageSummaryItem(icon: String, value: String, label: String, tint: Color) -> some View {
+        VStack(spacing: 2) {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 10, weight: .semibold))
+                Text(value)
+                    .font(.system(size: 12, weight: .bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            .foregroundColor(tint)
+            Text(label)
+                .font(.system(size: 9))
+                .foregroundColor(TelegramTheme.textSecondary.opacity(0.7))
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var storageSummaryDivider: some View {
+        Rectangle()
+            .fill(TelegramTheme.textSecondary.opacity(0.16))
+            .frame(width: 1, height: 22)
+    }
+
     // MARK: - Main Content (主内容区域)
     
 
@@ -1619,14 +1696,25 @@ struct MainChatStorage: View {
     private var currentDirectoryTitle: String {
         if let selectedDirectoryId,
            let item = findDirectoryItem(id: selectedDirectoryId, nodes: directoryTree) {
+            // 根目录时显示"全部文件"，避免和顶部用户信息中的用户名重复
+            if let rootId = directoryTree.first?.id, item.id == rootId {
+                return "全部文件"
+            }
             return item.fileName
         }
-        return directoryTree.first?.fileName ?? "全部文件"
+        return "全部文件"
     }
 
     private var currentBreadcrumb: String {
         let rootName = directoryTree.first?.fileName ?? authService.currentUser?.username ?? "个人网盘"
-        if currentDirectoryTitle == rootName {
+        // 用选中的目录 ID 判断是否在根目录，而非用标题字符串比较（根目录标题已改为"全部文件"）
+        let isAtRoot: Bool
+        if let selectedDirectoryId, let rootId = directoryTree.first?.id {
+            isAtRoot = selectedDirectoryId == rootId
+        } else {
+            isAtRoot = true
+        }
+        if isAtRoot {
             return rootName
         }
         return "\(rootName) / \(currentDirectoryTitle)"
@@ -1655,11 +1743,19 @@ struct MainChatStorage: View {
         }
     }
 
+    private var currentUserDisplayName: String {
+        // 优先显示昵称，没有昵称则显示用户名（账号），避免直接展示手机号
+        if let nickname = authService.currentUser?.nickname, !nickname.isEmpty {
+            return nickname
+        }
+        return authService.currentUser?.username ?? "用户"
+    }
+
     private var cloudHeaderIdentity: some View {
         VStack(alignment: .leading, spacing: 7) {
             CurrentUserIdentityView(
                 avatar: toolbarAvatar,
-                username: authService.currentUser?.username,
+                username: currentUserDisplayName,
                 subtitle: "个人云盘",
                 avatarSize: 32
             )
@@ -2783,6 +2879,12 @@ struct MainChatStorage: View {
             let items = try await service.loadDirectoryTree()
 
             self.directoryTree = items
+            // 从根目录节点提取账号级存储统计（全局已用空间/目录数/文件数）
+            if let root = items.first {
+                storageTotalBytes = root.totalBytes
+                storageTotalDirectories = root.totalDirectories
+                storageTotalFiles = root.totalFiles
+            }
             // 文件列表必须始终有一个来自左侧目录树的父目录；首次进入云盘时默认选中根目录。
             if let selectedDirectoryId,
                findDirectoryItem(id: selectedDirectoryId, nodes: items) == nil {
