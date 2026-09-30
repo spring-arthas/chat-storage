@@ -522,6 +522,16 @@ class AuthenticationService: ObservableObject {
         }
 
         do {
+            // [修复] 会话恢复重试时连接可能已断开，必须主动重新建立连接，
+            // 否则 connectionReadyHandler 只会空等到超时，永远无法恢复登录态。
+            let shouldReconnect = await MainActor.run {
+                !socketManager.isTransportReady && socketManager.connectionState == .disconnected
+            }
+            if shouldReconnect {
+                await MainActor.run {
+                    socketManager.connect(host: endpoint.host, port: endpoint.port)
+                }
+            }
             try await connectionReadyHandler()
             // [修改] 等待连接期间可能切服，恢复操作必须在继续组帧前仍然有效。
             guard isSessionResumeOperationValid(operation) else { return false }
