@@ -69,6 +69,9 @@ actor FileThumbnailService {
 
     /// 同一 fileId 正在加载时，后来的请求直接等待同一个 Task 的结果
     private var inFlight: [Int64: Task<NSImage?, Never>] = [:]
+    /// [优化] 失败冷却记录：加载失败的 fileId 在此时间内不重试，避免重复失败占用资源。
+    private var failedFileIds: [Int64: Date] = [:]
+    private let failureCooldownSeconds: TimeInterval = 300 // 5分钟冷却
     /// 同时进行的加载任务上限（每个视频任务内部可能再创建多个 socket，不受此限制）
     /// [优化] 从 3 提升到 8，局域网内服务端稳定时可显著加快批量缩略图加载。
     private var activeCount = 0
@@ -227,6 +230,8 @@ actor FileThumbnailService {
     // MARK: - 核心查询方法
 
     /// 返回 fileId 对应的缩略图。优先内存→磁盘→网络，结果自动写入两级缓存。
+    /// [修复] 正确处理外部任务取消：.task 取消时同步取消内部加载 Task，
+    /// 释放并发槽位，避免滚动分页后 activeCount 只增不减导致新任务永久等待。
     func thumbnail(for item: DirectoryItem) async -> NSImage? {
         let key = NSNumber(value: item.id)
 
@@ -251,19 +256,25 @@ actor FileThumbnailService {
             }
         }
 
-        // 3. 已有 in-flight 任务则等待
+        // 3. 已有 in-flight 任务则等待（等待也可被取消）
         if let existing = inFlight[item.id] {
             return await existing.value
         }
 
-        // 4. 并发限制：轮询等待空位
+        // [优化] 失败冷却：近期加载失败的文件在冷却期内不重试，避免重复失败占用资源
+        if let failedAt = failedFileIds[item.id],
+           Date().timeIntervalSince(failedAt) < failureCooldownSeconds {
+            return nil
+        }
+
+        // 4. 并发限制：轮询等待空位（可被取消）
         await waitForLoadSlotIfNeeded()
+        if Task.isCancelled { return nil }
 
         // 5. 发起加载
         let task = Task<NSImage?, Never> { [weak self] in
             guard let self else { return nil }
             // [优化] 加载总超时：图片 20s，视频 45s（视频需头尾预取+抽帧，链路更长）。
-            // 超时后放弃，避免慢请求长时间占用并发槽位导致后续缩略图排队。
             let timeoutSeconds: UInt64 = item.isVideoFile ? 45 : 20
             let img = await withTaskGroup(of: NSImage?.self) { group in
                 group.addTask { await self.loadFromServer(item) }
@@ -280,8 +291,26 @@ actor FileThumbnailService {
         }
         activeCount += 1
         inFlight[item.id] = task
-        let result = await task.value
+
+        // [修复] 监听外部任务取消，同步取消内部加载 Task 并释放槽位
+        let result = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+            Task { [weak self] in
+                await self?.cleanupCancelledLoad(fileId: item.id)
+            }
+        }
         return result
+    }
+
+    /// [修复] 外部任务取消后清理并发槽位和 in-flight 记录。
+    private func cleanupCancelledLoad(fileId: Int64) {
+        if inFlight[fileId] != nil {
+            inFlight.removeValue(forKey: fileId)
+            activeCount = max(0, activeCount - 1)
+            signalLoadSlotIfNeeded()
+        }
     }
 
     /// 点击聊天图片时加载更清晰的预览图。预览图只在用户主动查看时拉取，避免聊天列表自动下载大图。
@@ -371,7 +400,13 @@ actor FileThumbnailService {
         activeCount -= 1
         inFlight.removeValue(forKey: fileId)
         signalLoadSlotIfNeeded()
-        guard let img else { return }
+        guard let img else {
+            // [优化] 记录失败时间，进入冷却期避免短时间内重复失败
+            failedFileIds[fileId] = Date()
+            return
+        }
+        // 加载成功，清除失败记录
+        failedFileIds.removeValue(forKey: fileId)
         memCache.setObject(img, forKey: key)
         saveJPEG(img, to: path)
     }
@@ -388,7 +423,8 @@ actor FileThumbnailService {
     // 导致用户滚动到新区域时可见区域的缩略图需要等待预加载完成。
     private static let maxPrefetchCount = 30
     /// [优化] 预加载最大并发数。低于 maxConcurrent，留槽位给用户可见区域的即时请求。
-    private static let maxPrefetchConcurrent = 3
+    /// 从 3 降到 2，避免预加载占满槽位导致滚动到新区域时可见缩略图等待。
+    private static let maxPrefetchConcurrent = 2
 
     func prefetch(items: [DirectoryItem]) {
         for item in items where item.isImageFile || item.isVideoFile {
@@ -436,11 +472,26 @@ actor FileThumbnailService {
         prefetchWorker = nil
     }
 
+    /// [修复] 等待并发槽位时支持任务取消，避免滚动后旧任务永久挂起占用槽位。
     private func waitForLoadSlotIfNeeded() async {
         if activeCount < maxConcurrent { return }
-        await withCheckedContinuation { continuation in
-            loadSlotWaiters.append(continuation)
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                loadSlotWaiters.append(continuation)
+            }
+        } onCancel: {
+            // 取消时从等待队列中移除并立即恢复，避免永久挂起
+            Task { [weak self] in
+                await self?.removeAndResumeWaiter()
+            }
         }
+    }
+
+    /// [修复] 取消时移除第一个等待者并恢复，释放挂起的任务。
+    private func removeAndResumeWaiter() {
+        guard !loadSlotWaiters.isEmpty else { return }
+        let waiter = loadSlotWaiters.removeFirst()
+        waiter.resume()
     }
 
     private func signalLoadSlotIfNeeded() {
@@ -664,42 +715,10 @@ actor FileThumbnailService {
     // MARK: - 视频：AVAssetResourceLoader 按需拉取字节
 
     private func loadVideoThumbnailFromServer(_ item: DirectoryItem) async -> NSImage? {
-        // 优先复用在线播放服务的 HTTP Range 地址。AVFoundation 可自行请求文件头、
-        // 尾部 moov 和目标帧数据，避免把 requestsAllDataToEnd 请求截断后误报资源不完整。
-        // [优化] playback 地址请求加 8s 超时，超时后立即回退 range_pull，避免媒体网关慢时卡住。
-        let playInfo: VideoPlayInfo? = await withTaskGroup(of: VideoPlayInfo?.self) { group in
-            group.addTask {
-                do { return try await VideoPlaybackService.shared.requestPlayUrl(fileId: item.id) }
-                catch { return nil }
-            }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: 8 * 1_000_000_000)
-                return nil
-            }
-            let result = await group.next() ?? nil
-            group.cancelAll()
-            return result ?? nil
-        }
-        if let playInfo {
-            do {
-                guard let plainMediaAsset = PlainMediaAsset(url: playInfo.playUrl) else {
-                    throw VideoPlaybackError.invalidPlayUrl
-                }
-                if let image = await generateRemoteVideoThumbnail(
-                    plainAsset: plainMediaAsset,
-                    fileName: item.fileName,
-                    timeoutSeconds: 30
-                ) {
-                    return image
-                }
-                print("[Thumbnail] HTTP Range 抽帧失败，回退 range_pull: file=\(item.fileName), id=\(item.id)")
-            } catch {
-                print("[Thumbnail] 获取缩略图播放地址失败，回退 range_pull: file=\(item.fileName), error=\(error.localizedDescription)")
-            }
-        } else {
-            print("[Thumbnail] playback 地址请求超时或失败，回退 range_pull: file=\(item.fileName), id=\(item.id)")
-        }
-
+        // [优化] 直接使用 range_pull 方式，跳过播放地址请求。
+        // 播放地址请求依赖 transferToken，登录态波动时容易失败，且 HTTP Range 抽帧
+        // 失败后仍需回退到 range_pull，等于白白浪费 8 秒超时。
+        // range_pull 直接用 SocketManager 连接，更稳定，且头尾预取仅 1MB，速度快。
         return await loadVideoThumbnailViaRangePull(item)
     }
 
@@ -739,7 +758,7 @@ actor FileThumbnailService {
         let image = await generateRemoteVideoThumbnail(
             asset: asset,
             fileName: item.fileName,
-            timeoutSeconds: 30
+            timeoutSeconds: 20
         )
         // AVAssetResourceLoader.setDelegate 只持有 delegate 的弱引用。
         withExtendedLifetime(loader) {}

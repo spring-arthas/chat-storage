@@ -29,7 +29,8 @@ final class VideoThumbnailResourceLoader: NSObject, AVAssetResourceLoaderDelegat
     /// [优化] 连接复用池：同一个视频的多个 range 请求共享已建立的 TCP 连接，
     /// 避免每次都新建 SocketManager + TCP 握手。成功完成的请求归还池中，失败的丢弃。
     private var availableServices: [VideoStreamingService] = []
-    private let maxPoolSize = 4
+    /// [优化] 连接池从 4 降到 2，避免 8 个并发视频任务创建 32 个连接压垮服务端。
+    private let maxPoolSize = 2
 
     /// 头尾预取与后续 request 的字节段缓存
     private var cachedSegments: [CachedSegment] = []
@@ -117,8 +118,9 @@ final class VideoThumbnailResourceLoader: NSObject, AVAssetResourceLoaderDelegat
         }
 
         let requestedOffset = dataRequest.requestedOffset
-        // 单次请求上限 4MB，防止单次拉取过多数据
-        let maxBytesPerRequest: Int64 = 4 * 1024 * 1024
+        // [优化] 单次请求上限从 4MB 降到 1MB，缩略图只需文件头元数据+关键帧，
+        // 减少数据传输量，加快抽帧速度。
+        let maxBytesPerRequest: Int64 = 1 * 1024 * 1024
         let available = max(0, fileSize - requestedOffset)
         let requestedLength: Int64
         if dataRequest.requestsAllDataToEndOfResource {
