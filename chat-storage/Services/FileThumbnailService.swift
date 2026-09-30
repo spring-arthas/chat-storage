@@ -52,7 +52,6 @@ struct LocalVideoThumbnailProfile: Equatable {
 actor FileThumbnailService {
     static let shared = FileThumbnailService()
     private static let fullHDSize = CGSize(width: 1920, height: 1080)
-    private static let fallbackRemoteImageFetchLength: Int64 = 10 * 1024 * 1024
     private static let supportedLocalVideoExtensions: Set<String> = [
         "mp4", "m4v", "mov", "avi", "mkv", "webm", "wmv", "flv", "mpg", "mpeg", "ts", "m2ts", "3gp"
     ]
@@ -228,7 +227,17 @@ actor FileThumbnailService {
         // 5. 发起加载
         let task = Task<NSImage?, Never> { [weak self] in
             guard let self else { return nil }
-            let img = await self.loadFromServer(item)
+            // [优化] 加载总超时 20s，超时后放弃，避免慢请求长时间占用并发槽位导致后续缩略图排队
+            let img = await withTaskGroup(of: NSImage?.self) { group in
+                group.addTask { await self.loadFromServer(item) }
+                group.addTask {
+                    try? await Task.sleep(nanoseconds: 20 * 1_000_000_000)
+                    return nil
+                }
+                let result = await group.next() ?? nil
+                group.cancelAll()
+                return result ?? nil
+            }
             await self.finishLoad(fileId: item.id, img: img, path: path, key: key)
             return img
         }
@@ -338,8 +347,13 @@ actor FileThumbnailService {
 
     /// 对列表中的图片/视频文件异步预加载缩略图，已缓存则跳过。
     /// 在非 actor 上下文中调用（如 Task {}），所有操作在后台完成，不触碰 UI。
+    // [优化] 预加载队列上限 30 个，避免大目录下全部文件排队占用并发槽位，
+    // 导致用户滚动到新区域时可见区域的缩略图需要等待预加载完成。
+    private static let maxPrefetchCount = 30
+
     func prefetch(items: [DirectoryItem]) {
         for item in items where item.isImageFile || item.isVideoFile {
+            guard prefetchQueue.count < Self.maxPrefetchCount else { break }
             let key = NSNumber(value: item.id)
             guard memCache.object(forKey: key) == nil,
                   !FileManager.default.fileExists(atPath: diskPath(for: item.id).path),
@@ -591,21 +605,38 @@ actor FileThumbnailService {
     private func loadVideoThumbnailFromServer(_ item: DirectoryItem) async -> NSImage? {
         // 优先复用在线播放服务的 HTTP Range 地址。AVFoundation 可自行请求文件头、
         // 尾部 moov 和目标帧数据，避免把 requestsAllDataToEnd 请求截断后误报资源不完整。
-        do {
-            let playInfo = try await VideoPlaybackService.shared.requestPlayUrl(fileId: item.id)
-            guard let plainMediaAsset = PlainMediaAsset(url: playInfo.playUrl) else {
-                throw VideoPlaybackError.invalidPlayUrl
+        // [优化] playback 地址请求加 8s 超时，超时后立即回退 range_pull，避免媒体网关慢时卡住。
+        let playInfo: VideoPlayInfo? = await withTaskGroup(of: VideoPlayInfo?.self) { group in
+            group.addTask {
+                do { return try await VideoPlaybackService.shared.requestPlayUrl(fileId: item.id) }
+                catch { return nil }
             }
-            if let image = await generateRemoteVideoThumbnail(
-                plainAsset: plainMediaAsset,
-                fileName: item.fileName,
-                timeoutSeconds: 30
-            ) {
-                return image
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 8 * 1_000_000_000)
+                return nil
             }
-            print("[Thumbnail] HTTP Range 抽帧失败，回退 range_pull: file=\(item.fileName), id=\(item.id)")
-        } catch {
-            print("[Thumbnail] 获取缩略图播放地址失败，回退 range_pull: file=\(item.fileName), error=\(error.localizedDescription)")
+            let result = await group.next() ?? nil
+            group.cancelAll()
+            return result ?? nil
+        }
+        if let playInfo {
+            do {
+                guard let plainMediaAsset = PlainMediaAsset(url: playInfo.playUrl) else {
+                    throw VideoPlaybackError.invalidPlayUrl
+                }
+                if let image = await generateRemoteVideoThumbnail(
+                    plainAsset: plainMediaAsset,
+                    fileName: item.fileName,
+                    timeoutSeconds: 30
+                ) {
+                    return image
+                }
+                print("[Thumbnail] HTTP Range 抽帧失败，回退 range_pull: file=\(item.fileName), id=\(item.id)")
+            } catch {
+                print("[Thumbnail] 获取缩略图播放地址失败，回退 range_pull: file=\(item.fileName), error=\(error.localizedDescription)")
+            }
+        } else {
+            print("[Thumbnail] playback 地址请求超时或失败，回退 range_pull: file=\(item.fileName), id=\(item.id)")
         }
 
         return await loadVideoThumbnailViaRangePull(item)
@@ -1096,11 +1127,16 @@ actor FileThumbnailService {
         remoteImageFetchLength(fileSize: fileSize)
     }
 
+    // [优化] 缩略图只拉 3MB 前缀，不下载完整文件。
+    // 列表缩略图仅渲染 480px，3MB 足以解码绝大多数 JPEG/HEIC，
+    // 原实现返回完整 fileSize 导致大照片全量下载，严重拖慢列表加载。
+    private static let maximumRemoteImageBytes: Int64 = 3 * 1024 * 1024
+
     private static func remoteImageFetchLength(fileSize: Int64?) -> Int64 {
         guard let fileSize, fileSize > 0 else {
-            return fallbackRemoteImageFetchLength
+            return maximumRemoteImageBytes
         }
-        return fileSize
+        return min(fileSize, maximumRemoteImageBytes)
     }
 
     private static func decodeImageData(_ data: Data) -> NSImage? {
