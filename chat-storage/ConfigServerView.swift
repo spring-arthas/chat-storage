@@ -197,12 +197,11 @@ enum ServerConnectionProbe {
         let connection = NWConnection(
             host: NWEndpoint.Host(endpoint.host),
             port: port,
-            // [修改] 服务端当前为明文自定义帧端口，探测成功以 TCP 连接就绪为准。
+            // 控制端口使用明文自定义帧；此处只判断 TCP 是否可建立。
             using: SocketTransportParameters.makePlainTCP()
         )
         let queue = DispatchQueue(label: "duyao.chat-storage.server-probe")
         let completionState = ManagedCriticalState(false)
-
         let finish: (Bool) -> Void = { success in
             let shouldComplete = completionState.withCriticalRegion { hasCompleted in
                 guard !hasCompleted else { return false }
@@ -396,6 +395,10 @@ struct ConfigServerView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
 
+                Text("测试会发送空账号探测帧，不会使用你的账号或密码。")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+
                 HStack(spacing: 8) {
                     portField(title: "上传", text: $uploadPort)
                     portField(title: "下载", text: $downloadPort)
@@ -574,15 +577,15 @@ struct ConfigServerView: View {
         // 启动旋转动画
         startRotationAnimation()
         
-        ServerConnectionProbe.test(endpoint: endpoint) { success in
+        ServerConnectionProbe.test(endpoint: endpoint) { result in
             isTesting = false
             stopRotationAnimation()
 
-            if success {
+            if result {
                 testedEndpoint = endpoint
                 testedConfiguration = configuration
                 isNewConnectionReady = true
-                statusMessage = "远程服务端连接成功"
+                statusMessage = "TCP 可达（尚未验证登录协议）"
                 statusColor = .green
 
                 if shouldAutoDismiss {
@@ -593,7 +596,7 @@ struct ConfigServerView: View {
                 testedConfiguration = nil
                 isNewConnectionReady = false
                 shouldAutoDismiss = false
-                statusMessage = "连接失败或超时，请检查地址和网络"
+                statusMessage = "TCP 连接失败或超时，请检查地址和控制端口"
                 statusColor = .red
             }
         }

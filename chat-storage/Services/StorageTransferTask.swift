@@ -129,6 +129,7 @@ public struct StorageTransferTask: Identifiable, Codable {
     public let userName: String
     public let fileSize: Int64
     public let directoryName: String
+    public let directoryFullPath: String
     
     // 状态
     public var progress: Double = 0.0
@@ -147,6 +148,7 @@ public struct StorageTransferTask: Identifiable, Codable {
          userName: String,
          fileSize: Int64,
          directoryName: String = "",
+         directoryFullPath: String = "",
          remoteFileId: Int64 = 0,
          progress: Double = 0.0,
          status: String = "等待中") {
@@ -160,6 +162,7 @@ public struct StorageTransferTask: Identifiable, Codable {
         self.userName = userName
         self.fileSize = fileSize
         self.directoryName = directoryName
+        self.directoryFullPath = directoryFullPath
         self.remoteFileId = remoteFileId
         self.progress = progress
         self.status = status

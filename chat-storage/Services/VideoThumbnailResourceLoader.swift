@@ -23,8 +23,13 @@ final class VideoThumbnailResourceLoader: NSObject, AVAssetResourceLoaderDelegat
     private let fileSize: Int64
     private let fileName: String
 
-    /// 每个 loadingRequest 对应一个独立的 streaming service 实例（独立 socket）
+    /// 每个 loadingRequest 对应一个正在使用的 streaming service 实例
     private var activeServices: [ObjectIdentifier: VideoStreamingService] = [:]
+
+    /// [优化] 连接复用池：同一个视频的多个 range 请求共享已建立的 TCP 连接，
+    /// 避免每次都新建 SocketManager + TCP 握手。成功完成的请求归还池中，失败的丢弃。
+    private var availableServices: [VideoStreamingService] = []
+    private let maxPoolSize = 4
 
     /// 头尾预取与后续 request 的字节段缓存
     private var cachedSegments: [CachedSegment] = []
@@ -41,10 +46,44 @@ final class VideoThumbnailResourceLoader: NSObject, AVAssetResourceLoaderDelegat
 
     deinit {
         lock.lock()
-        let services = activeServices.values
+        let active = Array(activeServices.values)
+        let pooled = availableServices
         activeServices.removeAll()
+        availableServices.removeAll()
         lock.unlock()
-        for service in services {
+        for service in active {
+            service.cancel()
+        }
+        for service in pooled {
+            service.cancel()
+        }
+    }
+
+    // MARK: - 连接池
+
+    /// 从池中取一个可用连接，没有则新建。
+    private func acquireService() -> VideoStreamingService {
+        lock.lock()
+        if let service = availableServices.popLast() {
+            lock.unlock()
+            return service
+        }
+        lock.unlock()
+        return VideoStreamingService()
+    }
+
+    /// 归还连接到池中。isHealthy 为 false（请求失败）时直接丢弃并断开。
+    private func releaseService(_ service: VideoStreamingService, isHealthy: Bool) {
+        guard isHealthy else {
+            service.cancel()
+            return
+        }
+        lock.lock()
+        if availableServices.count < maxPoolSize {
+            availableServices.append(service)
+            lock.unlock()
+        } else {
+            lock.unlock()
             service.cancel()
         }
     }
@@ -115,7 +154,7 @@ final class VideoThumbnailResourceLoader: NSObject, AVAssetResourceLoaderDelegat
                 return
             }
 
-            let service = VideoStreamingService()
+            let service = acquireService()
             self.lock.lock()
             self.activeServices[key] = service
             self.lock.unlock()
@@ -139,13 +178,18 @@ final class VideoThumbnailResourceLoader: NSObject, AVAssetResourceLoaderDelegat
                 } else {
                     print("[Thumbnail] DataRequest 完整完成 offset=\(requestedOffset) 共\(data.count)字节")
                 }
+                self.lock.lock()
+                self.activeServices.removeValue(forKey: key)
+                self.lock.unlock()
+                self.releaseService(service, isHealthy: true)
             } catch {
                 print("[Thumbnail] DataRequest 错误: \(error)")
                 loadingRequest.finishLoading(with: error)
+                self.lock.lock()
+                self.activeServices.removeValue(forKey: key)
+                self.lock.unlock()
+                self.releaseService(service, isHealthy: false)
             }
-            self.lock.lock()
-            self.activeServices.removeValue(forKey: key)
-            self.lock.unlock()
         }
 
         return true
@@ -230,15 +274,22 @@ final class VideoThumbnailResourceLoader: NSObject, AVAssetResourceLoaderDelegat
     }
 
     private func fetchData(offset: Int64, length: Int64) async throws -> Data {
-        let service = VideoStreamingService()
+        let service = acquireService()
         let collector = DataCollector()
-        try await service.startCustomVideoStreaming(
-            fileId: fileId,
-            startOffset: offset,
-            length: length,
-            delegate: collector
-        )
-        return collector.collectedData()
+        do {
+            try await service.startCustomVideoStreaming(
+                fileId: fileId,
+                startOffset: offset,
+                length: length,
+                delegate: collector
+            )
+            let data = collector.collectedData()
+            releaseService(service, isHealthy: true)
+            return data
+        } catch {
+            releaseService(service, isHealthy: false)
+            throw error
+        }
     }
 
     private func cacheDataSegment(offset: Int64, data: Data) {

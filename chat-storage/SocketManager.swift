@@ -357,7 +357,9 @@ public class SocketManager: NSObject, ObservableObject {
         connectionFactory: @escaping (NWEndpoint.Host, NWEndpoint.Port) -> SocketTransportConnection,
         sendTimeout: TimeInterval = 30,
         heartbeatInterval: TimeInterval = 30,
-        heartbeatTimeout: TimeInterval = 10,
+        // [优化] 心跳超时从 10s 延长到 15s，避免服务端偶尔响应慢（GC/高负载）就触发断连重连，
+        // 重连会取消所有正在等待的请求，导致目录列表/文件查询频繁失败。
+        heartbeatTimeout: TimeInterval = 15,
         reconnectInterval: TimeInterval = 5
     ) {
         self.connectionFactory = connectionFactory

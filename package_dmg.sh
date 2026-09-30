@@ -45,7 +45,11 @@ echo "======================================"
 rm -f "$DMG_NAME"
 hdiutil create -volname "Chat Storage Installer" -srcfolder "$STAGING_DIR" -ov -format UDZO "$DMG_NAME"
 
-echo "🧹 Cleaning up..."
+echo "🧹 Cleaning up staging..."
 rm -rf "$STAGING_DIR"
+
+# 清理构建产物，避免 Launchpad/Spotlight 索引到多个 chat-storage.app
+echo "🧹 Cleaning build artifacts..."
+rm -rf ./build_data
 
 echo "✅ DMG created successfully at: $(pwd)/$DMG_NAME"

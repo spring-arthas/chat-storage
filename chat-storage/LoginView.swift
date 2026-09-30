@@ -40,10 +40,6 @@ struct LoginView: View {
 
     init(isLoggedIn: Binding<Bool>) {
         _isLoggedIn = isLoggedIn
-#if DEBUG
-        _username = State(initialValue: "18806504525")
-        _password = State(initialValue: "spring")
-#endif
     }
 
     // MARK: - Body
@@ -506,7 +502,11 @@ struct LoginView: View {
             } catch let error as SocketError {
                 await MainActor.run {
                     isLoading = false
-                    errorMessage = "连接错误: \(error.localizedDescription)"
+                    if error == .connectionClosed {
+                        errorMessage = "服务端关闭了连接。请核对控制端口和客户端/服务端协议版本，并查看服务端登录请求日志。"
+                    } else {
+                        errorMessage = "连接错误: \(error.localizedDescription)"
+                    }
                 }
             } catch {
                 await MainActor.run {

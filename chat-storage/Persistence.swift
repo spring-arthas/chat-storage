@@ -89,6 +89,7 @@ class PersistenceManager: TransferTaskPersisting {
         progress: Double? = nil,
         uploadedBytes: Int64? = nil,
         md5: String? = nil,
+        directoryFullPath: String? = nil,
         errorMessage: String? = nil
     ) {
         do {
@@ -104,6 +105,7 @@ class PersistenceManager: TransferTaskPersisting {
                 progress: progress,
                 uploadedBytes: uploadedBytes,
                 md5: md5,
+                directoryFullPath: directoryFullPath,
                 errorMessage: errorMessage
             )
         } catch {
@@ -123,6 +125,7 @@ class PersistenceManager: TransferTaskPersisting {
         progress: Double? = nil,
         uploadedBytes: Int64? = nil,
         md5: String? = nil,
+        directoryFullPath: String? = nil,
         errorMessage: String? = nil
     ) throws {
         var operationError: Error?
@@ -153,6 +156,7 @@ class PersistenceManager: TransferTaskPersisting {
                 if let progress { entity.progress = progress }
                 if let uploadedBytes { entity.uploadedBytes = uploadedBytes }
                 if let md5 { entity.md5 = md5 }
+                if let directoryFullPath { entity.directoryFullPath = directoryFullPath }
                 if let errorMessage { entity.errorMessage = errorMessage }
 
                 if entity.timestamp == nil {
@@ -216,6 +220,7 @@ class PersistenceManager: TransferTaskPersisting {
                         userName: entity.userName ?? "",
                         fileSize: entity.fileSize,
                         directoryName: "",
+                        directoryFullPath: entity.directoryFullPath ?? "",
                         remoteFileId: remoteFileId,
                         progress: progress,
                         status: restoredStage.rawValue
@@ -252,7 +257,8 @@ class PersistenceManager: TransferTaskPersisting {
             status: stage.rawValue,
             progress: task.progress,
             uploadedBytes: Int64(Double(task.fileSize) * task.progress),
-            md5: downloadMarker
+            md5: downloadMarker,
+            directoryFullPath: task.directoryFullPath
         )
     }
 

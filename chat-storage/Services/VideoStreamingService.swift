@@ -52,7 +52,9 @@ final class VideoStreamingService {
         delegate: VideoStreamLoaderDelegate
     ) async throws -> Int64 {
         let generation = prepareForNewRequest()
+        print("[VideoStream-DIAG] 开始 range_pull: fileId=\(fileId), offset=\(startOffset), length=\(length), target=\(targetHost):\(targetPort)")
         try await connectIfNeeded()
+        print("[VideoStream-DIAG] 连接就绪: fileId=\(fileId), target=\(targetHost):\(targetPort)")
 
         guard let currentUser = AuthenticationService.shared.currentUser,
               let transferToken = currentUser.transferToken,
@@ -206,7 +208,9 @@ final class VideoStreamingService {
                 do {
                     let requestFrame = Frame(type: .metaFrame, data: requestData, flags: 0x00)
                     try self.socketManager.sendFrame(requestFrame)
+                    print("[VideoStream-DIAG] range_pull 请求已发送: fileId=\(fileId), length=\(windowLength)")
                 } catch {
+                    print("[VideoStream-DIAG] range_pull 请求发送失败: fileId=\(fileId), error=\(error)")
                     self.complete(.failure(error))
                 }
             }
@@ -364,20 +368,20 @@ final class VideoStreamingService {
 
         let host = self.targetHost
         let port = self.targetPort
+        print("[VideoStream-DIAG] 正在连接: \(host):\(port)")
         await MainActor.run {
-            // 直接调用 connect()，不通过 switchConnection()，
-            // 避免 switchConnection 内部的 Thread.sleep(0.1) 阻塞主 RunLoop。
-            // VideoStreamingService 的 SocketManager 始终是全新实例，无需先 disconnect。
             self.socketManager.connect(host: host, port: port)
         }
 
         var attempts = 0
         while attempts < 50 {
             if isSocketReadyForStreaming() {
+                print("[VideoStream-DIAG] 连接成功: \(host):\(port), 等待次数=\(attempts)")
                 return
             }
 
             if case .error(let message) = socketManager.connectionState {
+                print("[VideoStream-DIAG] 连接失败: \(host):\(port), error=\(message)")
                 throw DirectoryError.serverError(code: -1, message: message)
             }
 
@@ -385,6 +389,7 @@ final class VideoStreamingService {
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
 
+        print("[VideoStream-DIAG] 连接超时: \(host):\(port), 等待5秒未就绪")
         throw SocketError.timeout
     }
 

@@ -323,6 +323,9 @@ final class StreamingVideoViewModel: NSObject, ObservableObject {
                     sessionId: sessionId
                 )
                 try Task.checkCancellation()
+                if playInfo.playable == false {
+                    throw VideoPlaybackError.serverError("该文件不支持在线播放")
+                }
                 await MainActor.run {
                     guard let self,
                           self.currentFileId == fileId,

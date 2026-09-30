@@ -506,6 +506,7 @@ class TransferTaskManager: ObservableObject {
                     userName: identity.userName,
                     taskId: taskId,
                     startOffset: startOffset,
+                    directoryFullPath: task.directoryFullPath,
                     progressHandler: { progress, speed in
                         self.updateTaskProgress(id: taskId, progress: progress, speed: speed)
                     },

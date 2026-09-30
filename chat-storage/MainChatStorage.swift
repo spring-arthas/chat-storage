@@ -1104,6 +1104,15 @@ struct MainChatStorage: View {
     /// 当前选中的目录 ID
     @State private var selectedDirectoryId: Int64?
 
+    /// 是否显示"所有文件"模式（刷新后启用，查询所有文件按时间倒排）
+    @State private var showAllFiles: Bool = false
+
+    /// 递归查询到的所有文件（点击目录时，包含该目录及所有子目录的文件）
+    @State private var recursiveFiles: [DirectoryItem] = []
+
+    /// 是否为递归模式（点击目录时启用，客户端分页）
+    @State private var isRecursiveMode: Bool = false
+
     /// 账号级存储统计（已用空间/目录总数/文件总数，由根目录节点附带）
     @State private var storageTotalBytes: Int64?
     @State private var storageTotalDirectories: Int?
@@ -1292,7 +1301,8 @@ struct MainChatStorage: View {
                 if directoryTree.isEmpty {
                     DispatchQueue.main.async {
                         Task {
-                            await loadDirectoryFromServer()
+                            // 首次进入云盘：完整刷新（加载目录树 + 切换到"所有文件"模式按时间倒排展示）
+                            await refreshCloudDriveData()
                         }
                     }
                 } else {
@@ -1305,6 +1315,11 @@ struct MainChatStorage: View {
         .onChange(of: selectedDirectoryId) { newId in
             if let id = newId {
                 printNodeInfo(id: id)
+                // 用户点击目录时，退出"所有文件"模式，切换到当前目录视图
+                self.showAllFiles = false
+                // 清空递归查询缓存，触发重新查询
+                self.recursiveFiles = []
+                self.isRecursiveMode = false
                 // 重置搜索和页码
                 self.searchKeyword = ""
                 self.currentPage = 1
@@ -1694,6 +1709,10 @@ struct MainChatStorage: View {
     }
 
     private var currentDirectoryTitle: String {
+        // "所有文件"模式：展示当前用户上传的所有文件
+        if showAllFiles {
+            return "全部文件"
+        }
         if let selectedDirectoryId,
            let item = findDirectoryItem(id: selectedDirectoryId, nodes: directoryTree) {
             // 根目录时显示"全部文件"，避免和顶部用户信息中的用户名重复
@@ -1706,6 +1725,10 @@ struct MainChatStorage: View {
     }
 
     private var currentBreadcrumb: String {
+        // "所有文件"模式：提示当前按上传时间倒序排列
+        if showAllFiles {
+            return "按上传时间倒序排列"
+        }
         let rootName = directoryTree.first?.fileName ?? authService.currentUser?.username ?? "个人网盘"
         // 用选中的目录 ID 判断是否在根目录，而非用标题字符串比较（根目录标题已改为"全部文件"）
         let isAtRoot: Bool
@@ -2474,6 +2497,9 @@ struct MainChatStorage: View {
     private func handleEnterDirectory(_ directory: DirectoryItem) {
         self.selectedDirectoryId = directory.id
         self.expandedDirectoryIds.insert(directory.id)
+        // 点击目录时退出"所有文件"模式，切换到当前目录视图
+        self.showAllFiles = false
+        self.currentPage = 1
         addLog("进入目录: \(directory.fileName)")
     }
     
@@ -2492,9 +2518,23 @@ struct MainChatStorage: View {
 
         print("刷新目录树和文件列表")
         addLog("开始刷新目录树和文件列表...")
+
+        // 1. 刷新目录树
         await loadDirectoryFromServer()
+
+        // 2. 刷新后重置目录展开状态：只展开顶层目录（显示顶层+第一级子目录），其他子目录按需点击
+        let rootIds = Set(directoryTree.map { $0.id })
+        self.expandedDirectoryIds = rootIds
+
+        // 3. 切换到"所有文件"模式：分页查询当前用户上传的所有文件，按时间倒排
+        self.showAllFiles = true
+        self.currentPage = 1
+        // 清空递归查询缓存
+        self.recursiveFiles = []
+        self.isRecursiveMode = false
         await loadCurrentFilesFromServer()
-        addLog("目录树和文件列表刷新完成")
+
+        addLog("目录树和文件列表刷新完成（所有文件按时间倒排）")
     }
     
     private func selectDownloadPath() {
@@ -2535,6 +2575,28 @@ struct MainChatStorage: View {
         }
     }
 
+    // MARK: - 完整目录路径构建
+
+    /// 根据目标目录和目录树构建完整目录路径，如 "/我的网盘/视频收藏/姐弟/"
+    private func buildDirectoryFullPath(targetDirectory: DirectoryItem) -> String {
+        var pathComponents: [String] = [targetDirectory.fileName]
+        var currentPid = targetDirectory.pId
+
+        // 递归查找父目录，最多查找 20 层防止死循环
+        var depth = 0
+        while currentPid > 0 && depth < 20 {
+            if let parent = directoryTree.first(where: { $0.id == currentPid }) {
+                pathComponents.insert(parent.fileName, at: 0)
+                currentPid = parent.pId
+            } else {
+                break
+            }
+            depth += 1
+        }
+
+        return "/" + pathComponents.joined(separator: "/") + "/"
+    }
+
     private func handleSelectFiles(targetDirectory: DirectoryItem) {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
@@ -2554,13 +2616,15 @@ struct MainChatStorage: View {
                 let fileSize = Int64(resources?.fileSize ?? 0)
                 let name = url.lastPathComponent
                 
-                // Determine target directory name
+                // Determine target directory name and full path
                 let targetName = targetDirectory.fileName
+                let fullPath = buildDirectoryFullPath(targetDirectory: targetDirectory)
                 
                 let item = TransferItem(
                     name: name,
                     size: fileSize,
                     directoryName: targetName,
+                    directoryFullPath: fullPath,
                     fileUrl: url, // 保存 URL
                     targetDirId: targetDirectory.id,
                     taskType: .upload, // Set as Upload
@@ -2588,6 +2652,7 @@ struct MainChatStorage: View {
                     userName: currentUserName,
                     fileSize: item.size,
                     directoryName: item.directoryName,
+                    directoryFullPath: item.directoryFullPath,
                     progress: 0.0
                 )
                 print("🛠️ [UI] Auto submitting upload task: \(task.name) - ID: \(task.id)")
@@ -3774,7 +3839,6 @@ struct MainChatStorage: View {
                 let currentUserName = String(authService.currentUser?.username ?? "default")
                 
                 
-                // 构建 TransferTaskd
                 // 构建 TransferTask
                 let task = StorageTransferTask(
                     id: item.id,
@@ -3786,6 +3850,7 @@ struct MainChatStorage: View {
                     userName: currentUserName,
                     fileSize: item.size,
                     directoryName: item.directoryName,
+                    directoryFullPath: item.directoryFullPath,
                     progress: 0.0
                 )
                 
@@ -3848,6 +3913,21 @@ struct MainChatStorage: View {
         return nil
     }
     
+    /// 递归获取指定目录及其所有子目录的 ID 列表
+    private func getAllDirectoryIdsInSubtree(rootId: Int64) -> [Int64] {
+        var ids: [Int64] = []
+        guard let root = findDirectoryItem(id: rootId, nodes: directoryTree) else {
+            return [rootId] // 找不到时至少包含自身
+        }
+        ids.append(root.id)
+        if let children = root.childFileList {
+            for child in children {
+                ids.append(contentsOf: getAllDirectoryIdsInSubtree(rootId: child.id))
+            }
+        }
+        return ids
+    }
+
     // MARK: - File List Pagination Helpers
     
     /// 加载当前条件下的文件列表
@@ -3861,61 +3941,154 @@ struct MainChatStorage: View {
     private func loadCurrentFilesFromServer() async {
         guard let service = directoryService else { return }
 
-        // 没有左侧目录选中项时不发起全量查询，避免聊天附件混入云盘列表。
+        let currentKeyword = searchKeyword
+
+        // "所有文件"模式：dirId 传 0 查询所有文件，服务端分页
+        if showAllFiles {
+            isRecursiveMode = false
+            recursiveFiles = []
+            do {
+                let result = try await service.fetchFileList(
+                    dirId: 0,
+                    fileName: currentKeyword,
+                    pageNum: currentPage,
+                    pageSize: itemsPerPage,
+                    sortBy: "uploadTime",
+                    sortOrder: "desc"
+                )
+
+                var files = result.recordList.map { fileDto in
+                    convertFileDtoToDirectoryItem(fileDto)
+                }
+                // 客户端兜底按上传时间倒排
+                files.sort { (item1, item2) -> Bool in
+                    (item1.uploadTime ?? 0) > (item2.uploadTime ?? 0)
+                }
+
+                self.fileList = files
+                self.totalPages = Int(result.totalPage)
+                self.totalCount = result.totalCount
+                if self.currentPage > self.totalPages && self.totalPages > 0 {
+                    self.currentPage = self.totalPages
+                }
+                await FileThumbnailService.shared.prefetch(items: self.fileList)
+            } catch {
+                handleFileListError(error)
+            }
+            return
+        }
+
+        // 普通模式（点击目录）：递归查询该目录及所有子目录下的所有文件，客户端分页
         guard let dirId = selectedDirectoryId, dirId > 0 else {
             self.fileList = []
             self.totalCount = 0
             self.totalPages = 1
+            self.isRecursiveMode = false
+            self.recursiveFiles = []
             return
         }
-        let currentKeyword = searchKeyword
+
+        isRecursiveMode = true
+
+        // 如果是翻页（recursiveFiles 已有数据），直接客户端分页，不重新查询
+        if !recursiveFiles.isEmpty {
+            applyClientPagination()
+            return
+        }
+
+        // 递归获取所有子目录 ID
+        let allDirIds = getAllDirectoryIdsInSubtree(rootId: dirId)
+        print("📂 递归查询文件，目录数: \(allDirIds.count)")
 
         do {
-            let result = try await service.fetchFileList(
-                dirId: dirId,
-                fileName: currentKeyword,
-                pageNum: currentPage,
-                pageSize: itemsPerPage
-            )
-
-            self.fileList = result.recordList.map { fileDto in
-                let item = fileDto.toDirectoryItem()
-                let parentDirectoryName = fileDto.parentDirName ?? self.findDirectoryName(
-                    id: item.pId,
-                    nodes: self.directoryTree
-                )
-
-                return DirectoryItem(
-                    id: item.id,
-                    pId: item.pId,
-                    fileName: item.fileName,
-                    childFileList: item.childFileList,
-                    hasChild: item.hasChild,
-                    fileSize: item.fileSize,
-                    isFile: item.isFile,
-                    uploadTime: item.uploadTime,
-                    directoryName: parentDirectoryName ?? "未知目录"
-                )
+            // 并发查询每个目录下的文件（pageSize 设大，尽量一次获取全部）
+            var allDtos: [FileDto] = []
+            try await withThrowingTaskGroup(of: [FileDto].self) { group in
+                for dId in allDirIds {
+                    group.addTask {
+                        do {
+                            let result = try await service.fetchFileList(
+                                dirId: dId,
+                                fileName: currentKeyword,
+                                pageNum: 1,
+                                pageSize: 1000
+                            )
+                            return result.recordList
+                        } catch {
+                            print("⚠️ 目录 \(dId) 文件查询失败: \(error.localizedDescription)")
+                            return []
+                        }
+                    }
+                }
+                for try await files in group {
+                    allDtos.append(contentsOf: files)
+                }
             }
-            self.totalPages = Int(result.totalPage)
-            self.totalCount = result.totalCount
-            // 如果当前页大于总页数（可能是删除后），且总页数不为0，重置为最后一页
-            if self.currentPage > self.totalPages && self.totalPages > 0 {
+
+            // 转换为 DirectoryItem 并按上传时间倒排
+            let allFiles = allDtos.map { convertFileDtoToDirectoryItem($0) }
+                .sorted { (item1, item2) -> Bool in
+                    (item1.uploadTime ?? 0) > (item2.uploadTime ?? 0)
+                }
+
+            self.recursiveFiles = allFiles
+            self.totalCount = Int64(allFiles.count)
+            self.totalPages = max(1, (allFiles.count + itemsPerPage - 1) / itemsPerPage)
+            if self.currentPage > self.totalPages {
                 self.currentPage = self.totalPages
             }
 
-            // 文件列表加载完成后，后台预加载图片/视频缩略图
+            // 客户端分页
+            applyClientPagination()
+
+            // 预加载当前页缩略图
             await FileThumbnailService.shared.prefetch(items: self.fileList)
         } catch {
-            print("❌ 加载文件列表失败: \(error)")
-            // 发生错误时清空列表，避免误导用户
-            self.fileList = []
-            self.totalCount = 0
-            self.totalPages = 1
-
-            self.alertMessage = "加载文件列表失败: \(error.localizedDescription)"
-            self.showingAlert = true
+            handleFileListError(error)
         }
+    }
+
+    /// 将 FileDto 转换为 DirectoryItem
+    private func convertFileDtoToDirectoryItem(_ fileDto: FileDto) -> DirectoryItem {
+        let item = fileDto.toDirectoryItem()
+        let parentDirectoryName = fileDto.parentDirName ?? findDirectoryName(
+            id: item.pId,
+            nodes: directoryTree
+        )
+        return DirectoryItem(
+            id: item.id,
+            pId: item.pId,
+            fileName: item.fileName,
+            childFileList: item.childFileList,
+            hasChild: item.hasChild,
+            fileSize: item.fileSize,
+            isFile: item.isFile,
+            uploadTime: item.uploadTime,
+            directoryName: parentDirectoryName ?? "未知目录"
+        )
+    }
+
+    /// 客户端分页：从 recursiveFiles 中截取当前页
+    private func applyClientPagination() {
+        let start = (currentPage - 1) * itemsPerPage
+        let end = min(start + itemsPerPage, recursiveFiles.count)
+        if start < recursiveFiles.count {
+            self.fileList = Array(recursiveFiles[start..<end])
+        } else {
+            self.fileList = []
+        }
+    }
+
+    /// 处理文件列表加载错误
+    private func handleFileListError(_ error: Error) {
+        print("❌ 加载文件列表失败: \(error)")
+        self.fileList = []
+        self.totalCount = 0
+        self.totalPages = 1
+        self.recursiveFiles = []
+        self.isRecursiveMode = false
+        self.alertMessage = "加载文件列表失败: \(error.localizedDescription)"
+        self.showingAlert = true
     }
 
     private func scheduleFileListRefreshAfterUpload() {
@@ -3923,6 +4096,8 @@ struct MainChatStorage: View {
         uploadCompletionRefreshTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 300_000_000)
             guard !Task.isCancelled else { return }
+            // 清空递归查询缓存，触发重新查询以包含新上传的文件
+            self.recursiveFiles = []
             loadCurrentFiles()
             uploadCompletionRefreshTask = nil
         }
@@ -3931,6 +4106,8 @@ struct MainChatStorage: View {
     private func handleSearch() {
         // 重置页码并加载
         self.currentPage = 1
+        // 清空递归查询缓存，触发重新查询
+        self.recursiveFiles = []
         loadCurrentFiles()
     }
     
@@ -3955,23 +4132,25 @@ struct MainChatStorage: View {
         let tasks = TransferTaskManager.shared.getAllTasks()
         if tasks.isEmpty { return }
         
-        print("📥 从本地恢复 \(tasks.count) 个传输任务")
+        print("📥 从本地恢复 \(tasks.count) 个传输任务，自动加入排队")
         
         for task in tasks {
             // Check if already exists in UI
             if !transferList.contains(where: { $0.id == task.id }) {
-                let stage = TransferTaskStage.resolve(task.status, taskType: task.taskType)
                 let update = TransferTaskManager.shared.taskUpdates[task.id.uuidString]
+                // 恢复的任务统一设为等待状态，自动加入排队（受 maxConcurrentTasks=5 限制，超出的排队）
+                let waitStatus = task.taskType == .upload ? "等待上传" : "等待下载"
                 
                 let newItem = TransferItem(
                     id: task.id,
                     name: task.name,
                     size: task.fileSize,
                     directoryName: task.directoryName,
+                    directoryFullPath: task.directoryFullPath,
                     fileUrl: task.fileUrl,
                     targetDirId: task.targetDirId,
                     taskType: task.taskType == .upload ? .upload : .download,
-                    status: stage.rawValue,
+                    status: waitStatus,
                     progress: task.progress,
                     speed: "",
                     transferredBytes: update?.transferredBytes
@@ -3979,10 +4158,22 @@ struct MainChatStorage: View {
                     errorMessage: update?.errorMessage
                 )
                 transferList.append(newItem)
+
+                // 在 TransferTaskManager 中更新为等待状态并自动加入排队
+                if let update {
+                    TransferTaskManager.shared.taskUpdates[task.id.uuidString] = TransferTaskUpdate(
+                        stage: TransferTaskStage.resolve(waitStatus, taskType: task.taskType),
+                        progress: task.progress,
+                        speed: "",
+                        transferredBytes: update.transferredBytes,
+                        errorMessage: update.errorMessage
+                    )
+                }
+                TransferTaskManager.shared.resume(id: task.id)
             }
         }
         
-        print("✅ 任务恢复完成，所有任务均为暂停状态，请手动启动需要的任务")
+        print("✅ 任务恢复完成，已自动加入排队，前 5 个开始传输，其余等待")
         
         // Trigger sort
         if isAutoSortEnabled {
@@ -4161,6 +4352,7 @@ struct TransferItem: Identifiable {
         name: String,
         size: Int64,
         directoryName: String,
+        directoryFullPath: String = "",
         fileUrl: URL?,
         targetDirId: Int64,
         taskType: TaskType,
@@ -4174,6 +4366,7 @@ struct TransferItem: Identifiable {
         self.name = name
         self.size = size
         self.directoryName = directoryName
+        self.directoryFullPath = directoryFullPath
         self.fileUrl = fileUrl
         self.targetDirId = targetDirId
         self.taskType = taskType
@@ -4186,6 +4379,7 @@ struct TransferItem: Identifiable {
     let name: String
     let size: Int64
     let directoryName: String
+    let directoryFullPath: String
     let fileUrl: URL? // 新增：保存文件路径用于上传
     let targetDirId: Int64 // 新增：目标目录ID
     enum TaskType: String {
@@ -7719,6 +7913,20 @@ private struct TransferListRowView: View {
                         .foregroundColor(item.errorMessage == nil ? TelegramTheme.textSecondary : TelegramTheme.danger)
                         .lineLimit(1)
                         .truncationMode(.middle)
+
+                    if !item.directoryFullPath.isEmpty {
+                        HStack(spacing: 3) {
+                            Image(systemName: "folder.fill")
+                                .font(.system(size: 9))
+                                .foregroundColor(TelegramTheme.textSecondary.opacity(0.6))
+                            Text(item.directoryFullPath)
+                                .font(.system(size: 10.5))
+                                .foregroundColor(TelegramTheme.textSecondary.opacity(0.7))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        .help(item.directoryFullPath) // 鼠标悬停显示完整路径
+                    }
                 }
                 .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             }

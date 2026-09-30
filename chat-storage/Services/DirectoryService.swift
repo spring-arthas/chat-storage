@@ -190,15 +190,19 @@ class DirectoryService: ObservableObject {
         dirId: Int64,
         fileName: String = "",
         pageNum: Int = 1,
-        pageSize: Int = 10
+        pageSize: Int = 10,
+        sortBy: String? = nil,
+        sortOrder: String? = nil
     ) async throws -> PageResult<FileDto> {
-        print("📂 请求加载文件列表: dirId=\(dirId), fileName=\(fileName), page=\(pageNum)")
+        print("📂 请求加载文件列表: dirId=\(dirId), fileName=\(fileName), page=\(pageNum), sortBy=\(sortBy ?? "default"), sortOrder=\(sortOrder ?? "default")")
         
         let request = FileListRequest(
             dirId: dirId,
             fileName: fileName,
             pageNum: pageNum,
-            pageSize: pageSize
+            pageSize: pageSize,
+            sortBy: sortBy,
+            sortOrder: sortOrder
         )
         let jsonData = try JSONEncoder().encode(request)
         
@@ -584,6 +588,7 @@ class DirectoryService: ObservableObject {
                 userName: entity.userName ?? "",
                 fileSize: entity.fileSize,
                 directoryName: "/", // 暂时无法获取目录名，或者需要存库
+                directoryFullPath: entity.directoryFullPath ?? "",
                 remoteFileId: remoteFileId,
                 progress: progress
             )
@@ -596,11 +601,15 @@ class DirectoryService: ObservableObject {
                 let originalStatus = entity.status ?? "Paused"
                 print("📋 [恢复] 任务: \(fileName), 原始状态: \(originalStatus), 进度: \(String(format: "%.1f%%", progress * 100))")
                 
+                // 恢复任务到内存（状态统一设为"等待上传"/"等待下载"，不保留旧的失败/网络恢复中状态）
+                let waitStatus = taskType == .upload ? "等待上传" : "等待下载"
                 TransferTaskManager.shared.restore(
                     task: task,
-                    status: originalStatus,
+                    status: waitStatus,
                     progress: progress
                 )
+                // 自动加入排队，按 maxConcurrentTasks=5 并发调度，超出的排队等待
+                TransferTaskManager.shared.resume(id: uuid)
             }
             count += 1
         }
@@ -636,6 +645,24 @@ struct FileListRequest: Codable {
     let fileName: String
     let pageNum: Int
     let pageSize: Int
+    let sortBy: String?
+    let sortOrder: String?
+
+    init(
+        dirId: Int64,
+        fileName: String = "",
+        pageNum: Int = 1,
+        pageSize: Int = 10,
+        sortBy: String? = nil,
+        sortOrder: String? = nil
+    ) {
+        self.dirId = dirId
+        self.fileName = fileName
+        self.pageNum = pageNum
+        self.pageSize = pageSize
+        self.sortBy = sortBy
+        self.sortOrder = sortOrder
+    }
 }
 
 struct PageResult<T: Codable>: Codable {
@@ -840,6 +867,7 @@ class FileTransferService: ObservableObject {
         batchId: String? = nil,
         startOffset: Int64 = 0,
         persistTransferTask: Bool = true,
+        directoryFullPath: String = "",
         progressHandler: ((Double, String) -> Void)? = nil,
         statusHandler: ((String) -> Void)? = nil
     ) async throws -> Int64? {
@@ -892,7 +920,8 @@ class FileTransferService: ObservableObject {
                 status: TransferTaskStage.hashing.rawValue,
                 progress: fileSize > 0 ? Double(startOffset) / Double(fileSize) : 0,
                 uploadedBytes: startOffset, // [修改] 保留已上传字节数，断点续传时不归零
-                md5: nil // MD5 计算后再更新
+                md5: nil, // MD5 计算后再更新
+                directoryFullPath: directoryFullPath
             )
         }
         // --- Persistence Integration End ---

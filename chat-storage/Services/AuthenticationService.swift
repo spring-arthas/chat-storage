@@ -169,6 +169,7 @@ class AuthenticationService: ObservableObject {
     private let sessionResumeLock = NSLock()
     private var activeSessionResumeOperations: [ServerEndpoint: SessionResumeOperation] = [:]
     private var sessionResumeGeneration: UInt64 = 0
+    private var interactiveLoginInProgress = false
     
     // MARK: - Initializer
     
@@ -208,7 +209,17 @@ class AuthenticationService: ObservableObject {
     /// - Returns: 用户信息
     /// - Throws: AuthError
     func login(userName: String, password: String) async throws -> UserDO {
-        print("🔐 开始登录: \(userName)")
+        print("🔐 开始登录请求")
+
+        beginInteractiveLogin()
+        defer { endInteractiveLogin() }
+
+        // 手动登录独占一条新连接，避免与启动或前台恢复的旧会话请求共用控制端口。
+        let endpoint = endpointProvider()
+        await MainActor.run {
+            socketManager.disconnect(notifyUI: false)
+            socketManager.connect(host: endpoint.host, port: endpoint.port)
+        }
         try await connectionReadyHandler()
         
         // 1. 构建请求体
@@ -221,11 +232,25 @@ class AuthenticationService: ObservableObject {
         )
         
         // 3. 发送并等待响应
-        let responseFrame = try await sendAuthenticationRequest(
-            frame,
-            responseType: .userResponse,
-            timeout: 10.0
-        )
+        let responseFrame: Frame
+        do {
+            responseFrame = try await sendAuthenticationRequest(
+                frame,
+                responseType: .userResponse,
+                timeout: 10.0
+            )
+        } catch SocketError.connectionClosed {
+            // 服务端在刚建立的连接上关闭时，只重试一次，避免重复提交登录请求。
+            await MainActor.run {
+                socketManager.connect(host: endpoint.host, port: endpoint.port)
+            }
+            try await connectionReadyHandler()
+            responseFrame = try await sendAuthenticationRequest(
+                frame,
+                responseType: .userResponse,
+                timeout: 10.0
+            )
+        }
         
         // 4. 解析响应
         let response = try FrameParser.decodePayload(
@@ -651,6 +676,10 @@ class AuthenticationService: ObservableObject {
         guard endpointProvider() == endpoint else { return nil }
 
         sessionResumeLock.lock()
+        guard !interactiveLoginInProgress else {
+            sessionResumeLock.unlock()
+            return nil
+        }
         guard activeSessionResumeOperations[endpoint] == nil else {
             sessionResumeLock.unlock()
             return nil
@@ -706,6 +735,19 @@ class AuthenticationService: ObservableObject {
         activeSessionResumeOperations.values.forEach { $0.sendPermit.invalidate() }
         sessionResumeGeneration &+= 1
         activeSessionResumeOperations.removeAll()
+    }
+
+    private func beginInteractiveLogin() {
+        sessionResumeLock.lock()
+        interactiveLoginInProgress = true
+        invalidateSessionResumeOperationsLocked()
+        sessionResumeLock.unlock()
+    }
+
+    private func endInteractiveLogin() {
+        sessionResumeLock.lock()
+        interactiveLoginInProgress = false
+        sessionResumeLock.unlock()
     }
 
     private func isSessionResumeOperationValid(_ operation: SessionResumeOperation) -> Bool {

@@ -70,14 +70,49 @@ actor FileThumbnailService {
     /// 同一 fileId 正在加载时，后来的请求直接等待同一个 Task 的结果
     private var inFlight: [Int64: Task<NSImage?, Never>] = [:]
     /// 同时进行的加载任务上限（每个视频任务内部可能再创建多个 socket，不受此限制）
+    /// [优化] 从 3 提升到 8，局域网内服务端稳定时可显著加快批量缩略图加载。
     private var activeCount = 0
-    private let maxConcurrent = 3
+    private let maxConcurrent = 8
     private var loadSlotWaiters: [CheckedContinuation<Void, Never>] = []
     private var remapInFlight: Set<String> = []
     private var remapLedger: [String: ThumbnailRemapRecord] = [:]
     private var ffmpegAvailability: FFmpegAvailability = .unknown
     private var prefetchQueue: [Int64: DirectoryItem] = [:]
     private var prefetchWorker: Task<Void, Never>?
+
+    // MARK: - 视频流连接池
+
+    /// [优化] 全局 VideoStreamingService 连接池，复用已建立的 TCP 连接，
+    /// 避免每个缩略图/预览图都新建 SocketManager + TCP 握手。
+    private var availableStreamServices: [VideoStreamingService] = []
+    private let maxStreamPoolSize = 8
+
+    private func acquireStreamService() -> VideoStreamingService {
+        if let service = availableStreamServices.popLast() {
+            return service
+        }
+        return VideoStreamingService()
+    }
+
+    private func releaseStreamService(_ service: VideoStreamingService, isHealthy: Bool) {
+        guard isHealthy else {
+            service.cancel()
+            return
+        }
+        if availableStreamServices.count < maxStreamPoolSize {
+            availableStreamServices.append(service)
+        } else {
+            service.cancel()
+        }
+    }
+
+    /// 切换服务器或登录态变化时清空连接池，避免复用失效连接。
+    func resetStreamPool() {
+        for service in availableStreamServices {
+            service.cancel()
+        }
+        availableStreamServices.removeAll()
+    }
 
     // MARK: - Init
 
@@ -227,11 +262,13 @@ actor FileThumbnailService {
         // 5. 发起加载
         let task = Task<NSImage?, Never> { [weak self] in
             guard let self else { return nil }
-            // [优化] 加载总超时 20s，超时后放弃，避免慢请求长时间占用并发槽位导致后续缩略图排队
+            // [优化] 加载总超时：图片 20s，视频 45s（视频需头尾预取+抽帧，链路更长）。
+            // 超时后放弃，避免慢请求长时间占用并发槽位导致后续缩略图排队。
+            let timeoutSeconds: UInt64 = item.isVideoFile ? 45 : 20
             let img = await withTaskGroup(of: NSImage?.self) { group in
                 group.addTask { await self.loadFromServer(item) }
                 group.addTask {
-                    try? await Task.sleep(nanoseconds: 20 * 1_000_000_000)
+                    try? await Task.sleep(nanoseconds: timeoutSeconds * 1_000_000_000)
                     return nil
                 }
                 let result = await group.next() ?? nil
@@ -350,6 +387,8 @@ actor FileThumbnailService {
     // [优化] 预加载队列上限 30 个，避免大目录下全部文件排队占用并发槽位，
     // 导致用户滚动到新区域时可见区域的缩略图需要等待预加载完成。
     private static let maxPrefetchCount = 30
+    /// [优化] 预加载最大并发数。低于 maxConcurrent，留槽位给用户可见区域的即时请求。
+    private static let maxPrefetchConcurrent = 3
 
     func prefetch(items: [DirectoryItem]) {
         for item in items where item.isImageFile || item.isVideoFile {
@@ -370,14 +409,29 @@ actor FileThumbnailService {
         }
     }
 
+    /// [优化] 预加载从串行改为并行（最多 maxPrefetchConcurrent 个同时进行），
+    /// 批量取任务→并行加载→再取下一批，避免逐个等待拖慢整页缩略图。
     private func drainPrefetchQueue() async {
         while !Task.isCancelled {
-            guard let item = prefetchQueue.values.first else {
+            // 从队列中取出一批（最多 maxPrefetchConcurrent 个）
+            let batch = prefetchQueue.values.prefix(Self.maxPrefetchConcurrent)
+            guard !batch.isEmpty else {
                 prefetchWorker = nil
                 return
             }
-            prefetchQueue.removeValue(forKey: item.id)
-            _ = await thumbnail(for: item)
+            let batchIds = batch.map { $0.id }
+            for id in batchIds {
+                prefetchQueue.removeValue(forKey: id)
+            }
+
+            // 并行加载这批缩略图
+            await withTaskGroup(of: Void.self) { group in
+                for item in batch {
+                    group.addTask {
+                        _ = await self.thumbnail(for: item)
+                    }
+                }
+            }
         }
         prefetchWorker = nil
     }
@@ -574,9 +628,11 @@ actor FileThumbnailService {
     }
 
     private func loadImageDataFromServer(_ item: DirectoryItem) async -> Data? {
-        let service = VideoStreamingService()
+        let service = acquireStreamService()
         let collector = ImageDataCollector()
         let fetchLength = Self.remoteImageFetchLength(fileSize: item.fileSize)
+        let startTime = Date()
+        print("[Thumbnail-DIAG] 开始加载图片缩略图: fileId=\(item.id), fileName=\(item.fileName), fileSize=\(item.fileSize?.description ?? "nil"), fetchLength=\(fetchLength)")
         do {
             let receivedBytes = try await service.startCustomVideoStreaming(
                 fileId: item.id,
@@ -584,11 +640,16 @@ actor FileThumbnailService {
                 length: fetchLength,
                 delegate: collector
             )
+            let elapsed = Date().timeIntervalSince(startTime)
+            print("[Thumbnail-DIAG] 图片缩略图拉流完成: fileId=\(item.id), received=\(receivedBytes), collected=\(collector.collectedData().count), 耗时=\(String(format: "%.2f", elapsed))s")
             if receivedBytes != Int64(collector.collectedData().count) {
                 print("[ImagePreview] 图片预览收流字节不一致: fileId=\(item.id), fileName=\(item.fileName), reported=\(receivedBytes), collected=\(collector.collectedData().count)")
             }
+            releaseStreamService(service, isHealthy: true)
         } catch {
-            print("[ImagePreview] 图片预览拉流异常: fileId=\(item.id), fileName=\(item.fileName), error=\(error.localizedDescription)")
+            let elapsed = Date().timeIntervalSince(startTime)
+            print("[Thumbnail-DIAG] 图片缩略图拉流异常: fileId=\(item.id), fileName=\(item.fileName), error=\(error.localizedDescription), 耗时=\(String(format: "%.2f", elapsed))s")
+            releaseStreamService(service, isHealthy: false)
             return nil
         }
         let data = collector.collectedData()
