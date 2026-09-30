@@ -1277,6 +1277,8 @@ struct MainChatStorage: View {
             // generateFakeData() // Removed demo data generation
             // 初始化目录服务
             directoryService = DirectoryService(socketManager: socketManager)
+            // 注入控制连接到缩略图服务，用于请求服务端预生成的缩略图
+            FileThumbnailService.configure(socketManager: socketManager)
             
             // 不在登录时恢复或启动任何任务，完全移除自动恢复逻辑
             // 等待用户切换到网盘标签时再手动处理

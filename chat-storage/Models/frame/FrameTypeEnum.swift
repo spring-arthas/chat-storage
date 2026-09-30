@@ -127,6 +127,12 @@ enum FrameTypeEnum: UInt8, CaseIterable {
     case chatMessageActionResp = 0x5A
     /// 聊天消息动作推送
     case chatMessageActionPush = 0x5B
+
+    // ========== 缩略图帧 (0x70-0x7F) ==========
+    /// 文件缩略图请求（服务端预生成，base64 返回）
+    case thumbnailReq = 0x70
+    /// 文件缩略图响应
+    case thumbnailResp = 0x71
     
     /// 帧类型描述
     var description: String {
@@ -189,6 +195,8 @@ enum FrameTypeEnum: UInt8, CaseIterable {
         case .chatMessageActionReq: return "聊天消息动作请求"
         case .chatMessageActionResp: return "聊天消息动作响应"
         case .chatMessageActionPush: return "聊天消息动作推送"
+        case .thumbnailReq: return "文件缩略图请求"
+        case .thumbnailResp: return "文件缩略图响应"
         }
     }
     

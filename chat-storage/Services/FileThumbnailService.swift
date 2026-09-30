@@ -121,6 +121,15 @@ actor FileThumbnailService {
 
     // MARK: - Init
 
+    /// [服务端缩略图] 外部注入的控制连接 SocketManager，用于请求服务端预生成的缩略图。
+    /// App 启动时由 MainChatStorage 调用 configure(socketManager:) 注入。
+    static var sharedSocketManager: SocketManager?
+
+    /// 注入控制连接 SocketManager（App 启动时调用一次）。
+    static func configure(socketManager: SocketManager) {
+        Self.sharedSocketManager = socketManager
+    }
+
     init(testDiskCacheDir: URL? = nil) {
         if let testDiskCacheDir {
             diskCacheDir = testDiskCacheDir
@@ -662,12 +671,56 @@ actor FileThumbnailService {
     // MARK: - 从服务端加载
 
     private func loadFromServer(_ item: DirectoryItem) async -> NSImage? {
+        // [服务端缩略图] 优先请求服务端预生成的缩略图（几十 KB，比下载 3MB 原始文件快 10-100 倍）。
+        // 服务端没有或失败时，回退到原有的 range_pull 本地生成方案。
+        if let serverThumb = await loadThumbnailFromServerAPI(item) {
+            return serverThumb
+        }
         if item.isImageFile {
             return await loadImageFromServer(item)
         } else if item.isVideoFile {
             return await loadVideoThumbnailFromServer(item)
         }
         return nil
+    }
+
+    // MARK: - 服务端缩略图 API (0x70/0x71)
+
+    /// 通过控制端口请求服务端预生成的缩略图。
+    /// 服务端返回 base64 编码的 JPEG 缩略图（最大边 480px）。
+    /// 失败返回 nil，调用方回退到 range_pull 本地生成。
+    private func loadThumbnailFromServerAPI(_ item: DirectoryItem) async -> NSImage? {
+        guard let socketManager = Self.sharedSocketManager else {
+            return nil
+        }
+        guard item.isImageFile || item.isVideoFile else {
+            return nil
+        }
+        do {
+            let requestDict: [String: Any] = ["fileId": item.id]
+            let frame = try FrameBuilder.build(type: .thumbnailReq, dictionary: requestDict)
+            let response = try await socketManager.sendFrameAndWait(
+                frame,
+                expecting: .thumbnailResp,
+                timeout: 15.0
+            )
+            guard let dict = try? FrameParser.decodeAsDictionary(response) else {
+                return nil
+            }
+            guard let hasThumb = dict["hasThumbnail"] as? Bool, hasThumb else {
+                return nil
+            }
+            guard let base64 = dict["thumbnailData"] as? String,
+                  let data = Data(base64Encoded: base64),
+                  let img = Self.decodeImageData(data) else {
+                return nil
+            }
+            print("[Thumbnail-API] 服务端缩略图命中: fileId=\(item.id), fileName=\(item.fileName), size=\(data.count)B")
+            return img
+        } catch {
+            print("[Thumbnail-API] 服务端缩略图请求失败: fileId=\(item.id), error=\(error.localizedDescription)")
+            return nil
+        }
     }
 
     // MARK: - 图片：按文件大小拉取完整图片后解码
