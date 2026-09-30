@@ -73,9 +73,11 @@ actor FileThumbnailService {
     private var failedFileIds: [Int64: Date] = [:]
     private let failureCooldownSeconds: TimeInterval = 300 // 5分钟冷却
     /// 同时进行的加载任务上限（每个视频任务内部可能再创建多个 socket，不受此限制）
-    /// [优化] 从 3 提升到 8，局域网内服务端稳定时可显著加快批量缩略图加载。
+    /// [修复] 从 8 降到 3：服务端 WorkerThreadPool 线程数 = CPU 核数（约8），
+    /// 且每连接占一个常驻线程。客户端并发太多会把服务端线程池占满，
+    /// range_pull 排队导致缩略图越加载越慢。3 个并发 + 视频 loader 连接可控在 5 个左右。
     private var activeCount = 0
-    private let maxConcurrent = 8
+    private let maxConcurrent = 3
     private var loadSlotWaiters: [CheckedContinuation<Void, Never>] = []
     private var remapInFlight: Set<String> = []
     private var remapLedger: [String: ThumbnailRemapRecord] = [:]
@@ -85,10 +87,10 @@ actor FileThumbnailService {
 
     // MARK: - 视频流连接池
 
-    /// [优化] 全局 VideoStreamingService 连接池，复用已建立的 TCP 连接，
-    /// 避免每个缩略图/预览图都新建 SocketManager + TCP 握手。
+    /// [修复] 全局 VideoStreamingService 连接池从 8 降到 2：
+    /// 服务端每连接一个常驻线程，连接过多直接压垮服务端（25个连接 vs 8线程）。
     private var availableStreamServices: [VideoStreamingService] = []
-    private let maxStreamPoolSize = 8
+    private let maxStreamPoolSize = 2
 
     private func acquireStreamService() -> VideoStreamingService {
         if let service = availableStreamServices.popLast() {
@@ -422,9 +424,9 @@ actor FileThumbnailService {
     // [优化] 预加载队列上限 30 个，避免大目录下全部文件排队占用并发槽位，
     // 导致用户滚动到新区域时可见区域的缩略图需要等待预加载完成。
     private static let maxPrefetchCount = 30
-    /// [优化] 预加载最大并发数。低于 maxConcurrent，留槽位给用户可见区域的即时请求。
-    /// 从 3 降到 2，避免预加载占满槽位导致滚动到新区域时可见缩略图等待。
-    private static let maxPrefetchConcurrent = 2
+    /// [修复] 预加载最大并发数从 2 降到 1：
+    /// 服务端线程池小，预加载占 1 个并发即可，其余留给可见区域即时请求。
+    private static let maxPrefetchConcurrent = 1
 
     func prefetch(items: [DirectoryItem]) {
         for item in items where item.isImageFile || item.isVideoFile {

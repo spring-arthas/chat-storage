@@ -26,11 +26,11 @@ final class VideoThumbnailResourceLoader: NSObject, AVAssetResourceLoaderDelegat
     /// 每个 loadingRequest 对应一个正在使用的 streaming service 实例
     private var activeServices: [ObjectIdentifier: VideoStreamingService] = [:]
 
-    /// [优化] 连接复用池：同一个视频的多个 range 请求共享已建立的 TCP 连接，
-    /// 避免每次都新建 SocketManager + TCP 握手。成功完成的请求归还池中，失败的丢弃。
+    /// [修复] 连接复用池从 2 降到 1：
+    /// 服务端线程池 = CPU 核数，每连接一个常驻线程。
+    /// 多个视频同时加载时若每视频 2 个连接，总连接数会压垮服务端。
     private var availableServices: [VideoStreamingService] = []
-    /// [优化] 连接池从 4 降到 2，避免 8 个并发视频任务创建 32 个连接压垮服务端。
-    private let maxPoolSize = 2
+    private let maxPoolSize = 1
 
     /// 头尾预取与后续 request 的字节段缓存
     private var cachedSegments: [CachedSegment] = []
