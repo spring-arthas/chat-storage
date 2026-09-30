@@ -9,6 +9,7 @@ import Foundation
 import AppKit
 import Combine
 import Network
+import os.log
 
 enum SocketTransportParameters {
     // [修改] 服务端自定义帧端口当前直接承载明文 TCP；保留参数入口供控制、传输和探测统一复用。
@@ -52,10 +53,20 @@ private final class NetworkSocketTransportConnection: SocketTransportConnection 
     func setStateUpdateHandler(_ handler: ((SocketTransportState) -> Void)?) {
         guard let handler else {
             connection.stateUpdateHandler = nil
+            connection.pathUpdateHandler = nil
             return
         }
         connection.stateUpdateHandler = { state in
             handler(Self.map(state))
+        }
+        // [诊断] 监听网络路径变化，排查 "Network is down" 根因
+        connection.pathUpdateHandler = { path in
+            os_log("🔌 [Socket] NWPath 更新: status=%{public}@, interfaces=%{public}@, isExpensive=%{public}@, isConstrained=%{public}@",
+                   log: .default, type: .info,
+                   String(describing: path.status),
+                   path.availableInterfaces.map { String(describing: $0.name) }.joined(separator: ","),
+                   path.isExpensive ? "true" : "false",
+                   path.isConstrained ? "true" : "false")
         }
     }
 
@@ -393,6 +404,7 @@ public class SocketManager: NSObject, ObservableObject {
             return
         }
 
+        os_log("🔌 [Socket] connect 被调用: %{public}@:%{public}@", log: .default, type: .info, host, String(port))
         print("🔌 开始连接到服务器: \(host):\(port)")
         updateState(.connecting)
         
@@ -414,10 +426,12 @@ public class SocketManager: NSObject, ObservableObject {
 
         candidate.setStateUpdateHandler { [weak self, weak candidate] state in
             guard let self, let candidate else { return }
+            os_log("🔌 [Socket] NWConnection 状态更新: %{public}@", log: .default, type: .info, String(describing: state))
             self.handleConnectionState(state, for: candidate)
         }
         candidate.start(on: connectionQueue)
 
+        os_log("🔌 [Socket] NWConnection.start 已调用", log: .default, type: .info)
         print("📡 TCP Socket 已启动，等待连接就绪...")
     }
     

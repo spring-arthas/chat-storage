@@ -7,6 +7,7 @@
 
 import SwiftUI
 import AppKit
+import os.log
 
 enum AppWindowLayout {
     static let mainDefaultWidth: CGFloat = 1240
@@ -108,11 +109,14 @@ struct chat_storageApp: App {
     
     init() {
         Self.refreshDockIcon()
+        os_log("🔍 [App] init 开始", log: .default, type: .info)
 
         // [修改] 启动时先恢复上次服务器，随后才能读取该服务器隔离的 Keychain 会话。
         let endpoint = ServerEndpointStore.load()
             ?? ServerEndpoint(host: ServerEndpoint.defaultHost, port: 10_086)
+        os_log("🔍 [App] 服务器地址: %{public}@:%{public}@", log: .default, type: .info, endpoint.host, String(endpoint.port))
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            os_log("🔍 [App] asyncAfter 触发，调用 connect", log: .default, type: .info)
             SocketManager.shared.connect(host: endpoint.host, port: endpoint.port)
         }
     }
