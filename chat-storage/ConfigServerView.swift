@@ -10,7 +10,7 @@ import Network
 
 struct ServerEndpoint: Codable, Equatable, Hashable, Sendable {
     // [修改] 本机测试统一连接当前局域网服务端地址。
-    static let defaultHost = "172.21.32.131"
+    static let defaultHost = "172.21.32.120"
 
     let host: String
     let port: UInt32
