@@ -2,3 +2,8 @@ build/
 *.dmg
 *.xcarchive
 *.dSYM
+
+# Build artifacts (derived data)
+build_data/
+# Packaged jars (distribute manually)
+*.jar
