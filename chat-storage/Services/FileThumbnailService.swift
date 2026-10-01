@@ -78,7 +78,7 @@ actor FileThumbnailService {
     /// range_pull 排队导致缩略图越加载越慢。3 个并发 + 视频 loader 连接可控在 5 个左右。
     private var activeCount = 0
     private let maxConcurrent = 5
-    private var loadSlotWaiters: [CheckedContinuation<Void, Never>] = []
+    private var loadSlotWaiters: [(fileId: Int64, continuation: CheckedContinuation<Void, Never>)] = []
     private var remapInFlight: Set<String> = []
     private var remapLedger: [String: ThumbnailRemapRecord] = [:]
     private var ffmpegAvailability: FFmpegAvailability = .unknown
@@ -279,7 +279,7 @@ actor FileThumbnailService {
         }
 
         // 4. 并发限制：轮询等待空位（可被取消）
-        await waitForLoadSlotIfNeeded()
+        await waitForLoadSlotIfNeeded(fileId: item.id)
         if Task.isCancelled { return nil }
 
         // 5. 发起加载
@@ -484,31 +484,32 @@ actor FileThumbnailService {
     }
 
     /// [修复] 等待并发槽位时支持任务取消，避免滚动后旧任务永久挂起占用槽位。
-    private func waitForLoadSlotIfNeeded() async {
+    /// 队列元素带 fileId，取消时精准移除对应 continuation，避免误 resume 其他任务。
+    private func waitForLoadSlotIfNeeded(fileId: Int64) async {
         if activeCount < maxConcurrent { return }
         await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
-                loadSlotWaiters.append(continuation)
+                loadSlotWaiters.append((fileId: fileId, continuation: continuation))
             }
         } onCancel: {
-            // 取消时从等待队列中移除并立即恢复，避免永久挂起
+            // 取消时从等待队列中精准移除并恢复，避免永久挂起
             Task { [weak self] in
-                await self?.removeAndResumeWaiter()
+                await self?.removeAndResumeWaiter(fileId: fileId)
             }
         }
     }
 
-    /// [修复] 取消时移除第一个等待者并恢复，释放挂起的任务。
-    private func removeAndResumeWaiter() {
-        guard !loadSlotWaiters.isEmpty else { return }
-        let waiter = loadSlotWaiters.removeFirst()
-        waiter.resume()
+    /// [修复] 取消时按 fileId 精准移除对应等待者并恢复。
+    private func removeAndResumeWaiter(fileId: Int64) {
+        guard let index = loadSlotWaiters.firstIndex(where: { $0.fileId == fileId }) else { return }
+        let waiter = loadSlotWaiters.remove(at: index)
+        waiter.continuation.resume()
     }
 
     private func signalLoadSlotIfNeeded() {
         guard activeCount < maxConcurrent, !loadSlotWaiters.isEmpty else { return }
         let waiter = loadSlotWaiters.removeFirst()
-        waiter.resume()
+        waiter.continuation.resume()
     }
 
     // MARK: - 本地文件直接生成缩略图（提交上传任务时调用）
