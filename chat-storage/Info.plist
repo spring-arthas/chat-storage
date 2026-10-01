@@ -22,6 +22,10 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<!-- [修复] 本地网络隐私(TCC)：macOS 11+ 访问局域网 IP 必须声明此键并向用户授权，
+	     缺少时系统默认拒绝本地网络访问，导致 NWConnection 到 192.168.x.x 超时 -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>ChatStorage 需要访问本地网络以连接您配置的服务端（如 192.168.0.103），用于文件上传、下载、聊天和缩略图加载。所有数据仅在您的局域网内传输。</string>
 	<!-- [修改] 仅允许访问局域网内当前 HTTP 媒体服务，不开放全局任意明文请求。 -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
