@@ -696,45 +696,36 @@ actor FileThumbnailService {
         guard item.isImageFile || item.isVideoFile else {
             return nil
         }
-        // [优化] 最多请求 2 次：第一次服务端可能正在异步生成，等 800ms 后重试一次。
-        // 服务端缩略图生成通常 1-3 秒，重试能显著提高首次命中率，避免回退 range_pull。
-        for attempt in 0..<2 {
-            do {
-                let requestDict: [String: Any] = ["fileId": item.id]
-                let frame = try FrameBuilder.build(type: .thumbnailReq, dictionary: requestDict)
-                let response = try await socketManager.sendFrameAndWait(
-                    frame,
-                    expecting: .thumbnailResp,
-                    timeout: 10.0
-                )
-                guard let dict = try? FrameParser.decodeAsDictionary(response) else {
-                    return nil
-                }
-                guard let hasThumb = dict["hasThumbnail"] as? Bool, hasThumb else {
-                    // 服务端还没生成好：第一次等 800ms 重试，第二次放弃（回退 range_pull）
-                    if attempt == 0 {
-                        try? await Task.sleep(nanoseconds: 800_000_000)
-                        continue
-                    }
-                    return nil
-                }
-                guard let base64 = dict["thumbnailData"] as? String,
-                      let data = Data(base64Encoded: base64),
-                      let img = Self.decodeImageData(data) else {
-                    return nil
-                }
-                print("[Thumbnail-API] 服务端缩略图命中: fileId=\(item.id), fileName=\(item.fileName), size=\(data.count)B, attempt=\(attempt + 1)")
-                return img
-            } catch {
-                print("[Thumbnail-API] 服务端缩略图请求失败: fileId=\(item.id), attempt=\(attempt + 1), error=\(error.localizedDescription)")
-                if attempt == 0 {
-                    try? await Task.sleep(nanoseconds: 500_000_000)
-                    continue
-                }
+        // [优化] 只请求一次：服务端有就直接返回（几十KB，毫秒级）；
+        // 没有就立即返回 nil，客户端回退 range_pull 本地生成，不等待。
+        // 服务端会在后台异步生成，下次访问时命中。
+        // 之前的"等800ms重试"被证明是反效果：单线程生成器排队时
+        // 800ms后大概率还没生成好，白白多等1秒才回退。
+        do {
+            let requestDict: [String: Any] = ["fileId": item.id]
+            let frame = try FrameBuilder.build(type: .thumbnailReq, dictionary: requestDict)
+            let response = try await socketManager.sendFrameAndWait(
+                frame,
+                expecting: .thumbnailResp,
+                timeout: 8.0
+            )
+            guard let dict = try? FrameParser.decodeAsDictionary(response) else {
                 return nil
             }
+            guard let hasThumb = dict["hasThumbnail"] as? Bool, hasThumb else {
+                return nil
+            }
+            guard let base64 = dict["thumbnailData"] as? String,
+                  let data = Data(base64Encoded: base64),
+                  let img = Self.decodeImageData(data) else {
+                return nil
+            }
+            print("[Thumbnail-API] 服务端缩略图命中: fileId=\(item.id), fileName=\(item.fileName), size=\(data.count)B")
+            return img
+        } catch {
+            print("[Thumbnail-API] 服务端缩略图请求失败: fileId=\(item.id), error=\(error.localizedDescription)")
+            return nil
         }
-        return nil
     }
 
     // MARK: - 图片：按文件大小拉取完整图片后解码
