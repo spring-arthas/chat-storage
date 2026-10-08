@@ -794,8 +794,8 @@ private struct CloudDockButton: View {
     }
 }
 
-/// Telegram 风格的侧边栏贴底导航：无悬浮外框，三个入口等分，当前项使用底部细线强调。
-private struct TelegramSidebarTabBar: View {
+/// Telegram 风格的侧边栏贴底导航：无悬浮外框，四个入口等分，当前项使用底部细线强调。
+struct TelegramSidebarTabBar: View {
     @Binding var selectedTab: Int
     let unreadCount: Int
 
@@ -816,23 +816,33 @@ private struct TelegramSidebarTabBar: View {
                 }
 
                 tabButton(
-                    icon: "externaldrive",
+                    icon: "bubble.left.and.text.bubble.right",
                     tint: TelegramTheme.success,
                     isSelected: selectedTab == 1,
                     badge: 0,
-                    help: "云盘"
+                    help: "动态"
                 ) {
                     selectedTab = 1
                 }
 
                 tabButton(
+                    icon: "externaldrive",
+                    tint: TelegramTheme.success,
+                    isSelected: selectedTab == 2,
+                    badge: 0,
+                    help: "云盘"
+                ) {
+                    selectedTab = 2
+                }
+
+                tabButton(
                     icon: "gearshape",
                     tint: TelegramTheme.accent,
-                    isSelected: selectedTab == 2,
+                    isSelected: selectedTab == 3,
                     badge: 0,
                     help: "设置"
                 ) {
-                    selectedTab = 2
+                    selectedTab = 3
                 }
             }
             .frame(height: 45)
@@ -1094,7 +1104,25 @@ struct MainChatStorage: View {
     
     /// 当前选中的标签页 (默认进入好友列表: 0)
     @State private var selectedTab: Int = 0
-    
+
+    // MARK: - 动态功能状态
+
+    /// 是否显示发布动态面板
+    @State private var showingDynamicComposer = false
+    /// 当前查看的动态详情
+    @State private var selectedDynamicPost: DynamicPost? = nil
+    /// 动态分类选中（0=关注, 1=我的动态, 2=点赞过的, 3=收藏）
+    @State private var dynamicCategory: Int = 0
+    /// 云盘媒体预览器状态
+    @State private var mediaBrowserState: MediaBrowserState? = nil
+    /// 动态媒体预览器状态（媒体+作者信息）
+    @State private var dynamicMediaBrowser: (media: DynamicMedia, allMedia: [DynamicMedia], author: DynamicAuthor)? = nil
+
+    /// 动态网络仓库（懒加载，使用共享 socketManager）
+    private var dynamicRepository: any DynamicRepository {
+        RemoteDynamicRepository(socketManager: socketManager)
+    }
+
     /// 目录树数据
     @State private var directoryTree: [DirectoryItem] = []
     
@@ -1228,9 +1256,13 @@ struct MainChatStorage: View {
 
                 Group {
                     switch selectedTab {
-                    case 0:
-                        FriendChatSplitView(selectedTab: $selectedTab)
-                    case 1:
+                    case 0, 1:
+                        FriendChatSplitView(
+                            selectedTab: $selectedTab,
+                            dynamicCategory: $dynamicCategory,
+                            dynamicContent: selectedTab == 1 ? AnyView(dynamicContentView) : nil
+                        )
+                    case 2:
                         storageView
                     default:
                         AppSettingsView(selectedTab: $selectedTab, isLoggedIn: $isLoggedIn)
@@ -1270,6 +1302,74 @@ struct MainChatStorage: View {
 
                 renameFileUiDialog
             }
+
+            // 云盘媒体预览器（图片/视频应用内预览）
+            if let browserState = mediaBrowserState {
+                MediaBrowserView(state: browserState) {
+                    mediaBrowserState = nil
+                }
+                .environmentObject(socketManager)
+                .transition(.opacity)
+                .zIndex(100)
+            }
+
+            // 动态发布面板
+            if showingDynamicComposer {
+                Color.black.opacity(0.4)
+                    .edgesIgnoringSafeArea(.all)
+                    .onTapGesture { showingDynamicComposer = false }
+
+                DynamicComposerView(
+                    repository: dynamicRepository,
+                    transferManager: transferManager,
+                    authenticationService: authService,
+                    onClose: { showingDynamicComposer = false },
+                    onPublished: {
+                        showingDynamicComposer = false
+                        // 切换到动态标签并刷新
+                        selectedTab = 2
+                    }
+                )
+                .environmentObject(socketManager)
+                .transition(.scale.combined(with: .opacity))
+                .zIndex(90)
+            }
+
+            // 动态详情页
+            if let post = selectedDynamicPost {
+                DynamicDetailView(
+                    post: post,
+                    repository: dynamicRepository,
+                    onBack: { selectedDynamicPost = nil },
+                    onOpenMedia: { media, allMedia, author in
+                        dynamicMediaBrowser = (media, allMedia, author)
+                    }
+                )
+                .environmentObject(socketManager)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+                .zIndex(80)
+            }
+
+            // 动态媒体预览器
+            if let dynMedia = dynamicMediaBrowser {
+                let browserItems = dynMedia.allMedia.map { media in
+                    DirectoryItem(
+                        id: media.fileId, pId: 0, fileName: media.fileName,
+                        childFileList: nil, hasChild: false, fileSize: media.fileSize,
+                        isFile: true, uploadTime: nil, directoryName: nil,
+                        filePath: "", fileType: media.mimeType
+                    )
+                }
+                MediaBrowserView(
+                    state: MediaBrowserState(items: browserItems, selectedFileId: dynMedia.media.fileId)
+                ) {
+                    dynamicMediaBrowser = nil
+                }
+                .environmentObject(socketManager)
+                .transition(.opacity)
+                .zIndex(110)
+            }
         }
         .onAppear {
             startTimer()
@@ -1293,7 +1393,7 @@ struct MainChatStorage: View {
         }
         .onChange(of: selectedTab) { newTab in
             // 当切换到网盘存储标签页时，恢复传输任务和加载目录
-            if newTab == 1 {
+            if newTab == 2 {
                 // 只在第一次切换到网盘标签时恢复任务
                 if transferList.isEmpty {
                     loadRestoredTasks()
@@ -1672,6 +1772,12 @@ struct MainChatStorage: View {
                                             handleEnterDirectory(file)
                                         } else if file.isPlayableVideoFile {
                                             VideoWindowManager.shared.show(fileId: file.id, fileName: file.fileName, fileSize: file.fileSize ?? 0)
+                                        } else if file.isImageFile {
+                                            // 图片双击：在应用内打开媒体预览器
+                                            mediaBrowserState = MediaBrowserState(
+                                                items: currentFiles,
+                                                selectedFileId: file.id
+                                            )
                                         }
                                     },
                                     onAction: { file, action in
@@ -3137,6 +3243,23 @@ struct MainChatStorage: View {
         }
     }
     
+    // MARK: - 动态视图
+
+    /// 动态时间线内容（纯右侧内容区，左侧边栏由 FriendChatSplitView 提供）
+    private var dynamicContentView: some View {
+        DynamicTimelineView(
+            repository: dynamicRepository,
+            onCompose: { showingDynamicComposer = true },
+            onOpenDetail: { post in selectedDynamicPost = post },
+            onOpenMedia: { media, allMedia, author in
+                dynamicMediaBrowser = (media, allMedia, author)
+            },
+            selectedCategory: $dynamicCategory
+        )
+        .environmentObject(socketManager)
+        .environmentObject(authService)
+    }
+
     /// 网盘存储视图
     private var storageView: some View {
         GeometryReader { proxy in
@@ -6827,8 +6950,11 @@ private struct FriendChatSplitView: View {
     @State private var selectedFriendId: Int64?
     @State private var friends: [Friend] = []
     @State private var showingAddFriendSheet = false
+    @Binding var dynamicCategory: Int
     @EnvironmentObject var socketManager: SocketManager
     @EnvironmentObject var authService: AuthenticationService
+    /// 动态内容（当 selectedTab==1 时显示在右侧），为 nil 时始终显示聊天
+    var dynamicContent: AnyView? = nil
 
     private var unreadCount: Int {
         friends.reduce(0) { result, friend in
@@ -6847,8 +6973,15 @@ private struct FriendChatSplitView: View {
         GeometryReader { proxy in
             HStack(alignment: .top, spacing: MainWorkspaceLayout.panelSpacing) {
                 if proxy.size.width >= 820 {
-                    recentConversationsCard
-                        .frame(width: MainWorkspaceLayout.sidebarWidth)
+                    if selectedTab == 1 {
+                        dynamicSidebar
+                            .frame(width: MainWorkspaceLayout.sidebarWidth)
+                            .frame(maxHeight: .infinity)
+                    } else {
+                        recentConversationsCard
+                            .frame(width: MainWorkspaceLayout.sidebarWidth)
+                            .frame(maxHeight: .infinity)
+                    }
                 }
 
                 VStack(spacing: MainWorkspaceLayout.panelSpacing) {
@@ -6856,8 +6989,19 @@ private struct FriendChatSplitView: View {
                         compactChatActions
                     }
 
-                    activeConversationCard
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if selectedTab == 1, let dynamicContent {
+                        dynamicContent
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .background(TelegramTheme.panelBackground)
+                            .clipShape(RoundedRectangle(cornerRadius: 16))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16)
+                                    .stroke(TelegramTheme.textSecondary.opacity(0.14), lineWidth: 1)
+                            )
+                    } else {
+                        activeConversationCard
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
             }
             .frame(maxHeight: .infinity)
@@ -7082,6 +7226,70 @@ private struct FriendChatSplitView: View {
             RoundedRectangle(cornerRadius: 16)
                 .stroke(TelegramTheme.textSecondary.opacity(0.14), lineWidth: 1)
         )
+    }
+
+    // MARK: - 动态侧边栏
+
+    private var dynamicSidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("动态")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundColor(TelegramTheme.textPrimary)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 15)
+
+            Divider().overlay(TelegramTheme.textSecondary.opacity(0.12))
+
+            VStack(spacing: 4) {
+                dynamicNavItem(icon: "line.3.horizontal", title: "关注", index: 0)
+                dynamicNavItem(icon: "person", title: "我的动态", index: 1)
+                dynamicNavItem(icon: "heart", title: "点赞过的", index: 2)
+                dynamicNavItem(icon: "bookmark", title: "收藏", index: 3)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 12)
+
+            Spacer(minLength: 0)
+
+            TelegramSidebarTabBar(
+                selectedTab: $selectedTab,
+                unreadCount: unreadCount
+            )
+        }
+        .background(TelegramTheme.panelBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(TelegramTheme.textSecondary.opacity(0.14), lineWidth: 1)
+        )
+    }
+
+    private func dynamicNavItem(icon: String, title: String, index: Int) -> some View {
+        Button(action: { dynamicCategory = index }) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(width: 22)
+                Text(title)
+                    .font(.system(size: 14, weight: dynamicCategory == index ? .semibold : .regular))
+                Spacer()
+            }
+            .foregroundColor(dynamicCategory == index ? TelegramTheme.success : TelegramTheme.textPrimary)
+            .padding(.horizontal, 12)
+            .frame(height: 40)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(dynamicCategory == index ? TelegramTheme.success.opacity(0.12) : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(dynamicCategory == index ? TelegramTheme.success.opacity(0.3) : Color.clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     private func loadMockFriends() {

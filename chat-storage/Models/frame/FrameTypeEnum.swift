@@ -128,6 +128,28 @@ enum FrameTypeEnum: UInt8, CaseIterable {
     /// 聊天消息动作推送
     case chatMessageActionPush = 0x5B
 
+    // ========== 动态帧 (0x60-0x6F) ==========
+    /// 发布动态请求
+    case dynamicCreateReq = 0x60
+    /// 发布动态响应
+    case dynamicCreateResp = 0x61
+    /// 动态时间线请求
+    case dynamicTimelineReq = 0x62
+    /// 动态时间线响应
+    case dynamicTimelineResp = 0x63
+    /// 动态动作请求（点赞/转发/回复）
+    case dynamicActionReq = 0x64
+    /// 动态动作响应
+    case dynamicActionResp = 0x65
+    /// 动态详情请求
+    case dynamicDetailReq = 0x66
+    /// 动态详情响应
+    case dynamicDetailResp = 0x67
+    /// 删除动态请求
+    case dynamicDeleteReq = 0x68
+    /// 删除动态响应
+    case dynamicDeleteResp = 0x69
+
     // ========== 缩略图帧 (0x70-0x7F) ==========
     /// 文件缩略图请求（服务端预生成，base64 返回）
     case thumbnailReq = 0x70
@@ -195,6 +217,16 @@ enum FrameTypeEnum: UInt8, CaseIterable {
         case .chatMessageActionReq: return "聊天消息动作请求"
         case .chatMessageActionResp: return "聊天消息动作响应"
         case .chatMessageActionPush: return "聊天消息动作推送"
+        case .dynamicCreateReq: return "发布动态请求"
+        case .dynamicCreateResp: return "发布动态响应"
+        case .dynamicTimelineReq: return "动态时间线请求"
+        case .dynamicTimelineResp: return "动态时间线响应"
+        case .dynamicActionReq: return "动态动作请求"
+        case .dynamicActionResp: return "动态动作响应"
+        case .dynamicDetailReq: return "动态详情请求"
+        case .dynamicDetailResp: return "动态详情响应"
+        case .dynamicDeleteReq: return "删除动态请求"
+        case .dynamicDeleteResp: return "删除动态响应"
         case .thumbnailReq: return "文件缩略图请求"
         case .thumbnailResp: return "文件缩略图响应"
         }

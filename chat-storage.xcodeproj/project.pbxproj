@@ -68,6 +68,13 @@
 		C0D600012F48000000000001 /* ChatHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D600112F48000000000011 /* ChatHistoryStore.swift */; };
 		C0D700012F49000000000001 /* ChatBackgroundStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D700112F49000000000011 /* ChatBackgroundStore.swift */; };
 		C0D200012F3E000000000001 /* AdaptiveUploadController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D200112F3E000000000011 /* AdaptiveUploadController.swift */; };
+		D8AA7C539C3C51FE522E8D81 /* DynamicModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1582C6A2EBAD7D3475E6E776 /* DynamicModels.swift */; };
+		B26425A58C6515A6F8AAD013 /* RemoteDynamicRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C46688564D1FCACAC05C5D5 /* RemoteDynamicRepository.swift */; };
+		BA78E92D4E1E29C0386BDE96 /* DynamicTimelineViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 839348DB91ED4D3FE96A10A2 /* DynamicTimelineViewModel.swift */; };
+		FB62D8D17F2FBD7484620850 /* MediaBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE66633BEAA917C4D760D6F0 /* MediaBrowserView.swift */; };
+		585E999237926AAB2D24B495 /* DynamicTimelineView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CDBD4DEAE0ECBFD9BF46638 /* DynamicTimelineView.swift */; };
+		DF83360735035012BF88BB01 /* DynamicComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9BA95B7A40C3CACB3824FD3 /* DynamicComposerView.swift */; };
+		8988C173D1845ABCB455D7FB /* DynamicDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1ADB56EBA7E34C003571C2E6 /* DynamicDetailView.swift */; };
 		C0E800012F4A000000000001 /* chat-storage-local-ca.crt in Resources */ = {isa = PBXBuildFile; fileRef = C0E800112F4A000000000011 /* chat-storage-local-ca.crt */; };
 /* End PBXBuildFile section */
 
@@ -155,6 +162,13 @@
 		C0D700112F49000000000011 /* ChatBackgroundStore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ChatBackgroundStore.swift; sourceTree = "<group>"; };
 		C0D200112F3E000000000011 /* AdaptiveUploadController.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = AdaptiveUploadController.swift; sourceTree = "<group>"; };
 		C0E800112F4A000000000011 /* chat-storage-local-ca.crt */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = "chat-storage-local-ca.crt"; sourceTree = "<group>"; };
+		1582C6A2EBAD7D3475E6E776 /* DynamicModels.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = DynamicModels.swift; sourceTree = "<group>"; };
+		2C46688564D1FCACAC05C5D5 /* RemoteDynamicRepository.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = RemoteDynamicRepository.swift; sourceTree = "<group>"; };
+		839348DB91ED4D3FE96A10A2 /* DynamicTimelineViewModel.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = DynamicTimelineViewModel.swift; sourceTree = "<group>"; };
+		EE66633BEAA917C4D760D6F0 /* MediaBrowserView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = Views/MediaBrowserView.swift; sourceTree = "<group>"; };
+		9CDBD4DEAE0ECBFD9BF46638 /* DynamicTimelineView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = DynamicTimelineView.swift; sourceTree = "<group>"; };
+		D9BA95B7A40C3CACB3824FD3 /* DynamicComposerView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = DynamicComposerView.swift; sourceTree = "<group>"; };
+		1ADB56EBA7E34C003571C2E6 /* DynamicDetailView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = DynamicDetailView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -194,6 +208,8 @@
 		2FE232A5382CAF6ABA522A1B /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				EE66633BEAA917C4D760D6F0 /* MediaBrowserView.swift */,
+				45031CE3B42083A0F010420C /* Dynamics */,
 				C0D100222F3D000000000022 /* Chat */,
 				C2F0DEAC3AAE6F6EDB94346C /* StreamingVideoPlayer.swift */,
 			);
@@ -328,6 +344,7 @@
 		4ED769CF2F2CB903006CFB2F /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				683F4C64DF57D58C3474EAAA /* Dynamics */,
 				C0D100212F3D000000000021 /* Chat */,
 				C0D200112F3E000000000011 /* AdaptiveUploadController.swift */,
 				4E2B8E3A2F37294600EE9F33 /* FileDownloadService.swift */,
@@ -365,6 +382,26 @@
 				C0D100132F3D000000000013 /* ChatTextInsertion.swift */,
 			);
 			path = Chat;
+			sourceTree = "<group>";
+		};
+		683F4C64DF57D58C3474EAAA /* Dynamics */ = {
+			isa = PBXGroup;
+			children = (
+				1582C6A2EBAD7D3475E6E776 /* DynamicModels.swift */,
+				2C46688564D1FCACAC05C5D5 /* RemoteDynamicRepository.swift */,
+				839348DB91ED4D3FE96A10A2 /* DynamicTimelineViewModel.swift */,
+			);
+			path = Dynamics;
+			sourceTree = "<group>";
+		};
+		45031CE3B42083A0F010420C /* Dynamics */ = {
+			isa = PBXGroup;
+			children = (
+				9CDBD4DEAE0ECBFD9BF46638 /* DynamicTimelineView.swift */,
+				D9BA95B7A40C3CACB3824FD3 /* DynamicComposerView.swift */,
+				1ADB56EBA7E34C003571C2E6 /* DynamicDetailView.swift */,
+			);
+			path = Views/Dynamics;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -522,6 +559,13 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D8AA7C539C3C51FE522E8D81 /* DynamicModels.swift in Sources */,
+				B26425A58C6515A6F8AAD013 /* RemoteDynamicRepository.swift in Sources */,
+				BA78E92D4E1E29C0386BDE96 /* DynamicTimelineViewModel.swift in Sources */,
+				FB62D8D17F2FBD7484620850 /* MediaBrowserView.swift in Sources */,
+				585E999237926AAB2D24B495 /* DynamicTimelineView.swift in Sources */,
+				DF83360735035012BF88BB01 /* DynamicComposerView.swift in Sources */,
+				8988C173D1845ABCB455D7FB /* DynamicDetailView.swift in Sources */,
 				767210272F2DADC20067C257 /* MainChatStorage.swift in Sources */,
 				C0D100012F3D000000000001 /* ChatMessageModels.swift in Sources */,
 				C0D100022F3D000000000002 /* ChatEmojiStore.swift in Sources */,

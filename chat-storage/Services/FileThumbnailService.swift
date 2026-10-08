@@ -1281,6 +1281,11 @@ actor FileThumbnailService {
     }
 
     private static func decodeImageData(_ data: Data) -> NSImage? {
+        // 优先用 NSImage(data:)，会自动处理 EXIF 方向（竖向照片正确显示）
+        if let image = NSImage(data: data) {
+            return image
+        }
+        // 降级到 CGImage 方式
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let cgImage = CGImageSourceCreateImageAtIndex(
                 source,
